@@ -1,5 +1,25 @@
 # ComfyUI Agent
 
+ComfyUI Agent is a Windows desktop assistant for local ComfyUI workflows.
+ComfyUI itself is an external dependency and is not included in this repository.
+
+## 开发环境
+
+需要 Node.js 20 或更高版本，以及一个可运行的 ComfyUI portable 目录。
+
+```text
+npm install
+npm run dev
+```
+
+常用检查命令：
+
+```text
+npm test
+npm run lint
+npm run build
+```
+
 ## 桌面便携版打包
 
 日常使用项目目录中的批处理入口打包：
