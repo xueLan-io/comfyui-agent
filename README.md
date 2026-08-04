@@ -3,16 +3,47 @@
 ComfyUI Agent is a Windows desktop assistant for local ComfyUI workflows.
 ComfyUI itself is an external dependency and is not included in this repository.
 
-## 开发环境
+## Download
 
-需要 Node.js 20 或更高版本，以及一个可运行的 ComfyUI portable 目录。
+The portable Windows package is available from the [v0.2.0 release](https://github.com/xueLan-io/comfyui-agent/releases/tag/v0.2.0).
+
+Download:
+
+```text
+ComfyUI-Agent-portable-v0.2.0.zip
+```
+
+Extract the ZIP and launch `ComfyUI-Agent.exe`. No Node.js or Python installation is required for the portable package.
+
+On first launch, configure an existing ComfyUI portable root, or use a ComfyUI instance that is already running. A portable root contains:
+
+```text
+python_embeded\python.exe
+ComfyUI\main.py
+```
+
+ComfyUI models are not included. Install or copy models into the ComfyUI `models` directory separately.
+
+## Features
+
+- Local ComfyUI workflow execution
+- Text-to-image, img2img, inpaint, upscale, video, and batch workflows
+- Prompt library with local search and prompt editing
+- Local Ollama or LM Studio providers
+- OpenAI-compatible cloud providers
+- Project, session, and asset management
+- CLI workflow inspection and generation commands
+
+## Development
+
+Requires Node.js 20 or later and a working ComfyUI portable directory.
 
 ```text
 npm install
 npm run dev
 ```
 
-常用检查命令：
+Run the checks before submitting changes:
 
 ```text
 npm test
@@ -20,46 +51,37 @@ npm run lint
 npm run build
 ```
 
-## 桌面便携版打包
+## Build A Portable Package
 
-日常使用项目目录中的批处理入口打包：
+Close any running portable build first, then run:
 
 ```text
 pack-portable.bat
 ```
 
-运行该文件即可。若使用桌面快捷方式，请让快捷方式指向项目目录中的脚本。
+The script searches parent directories for `python_embeded\python.exe` and
+`ComfyUI\main.py`, builds the frontend, validates the packaged runtime, and
+creates `ComfyUI-Agent-portable-v0.2.0.zip`.
 
-打包脚本会从当前目录向上查找包含 `python_embeded\python.exe` 和
-`ComfyUI\main.py` 的 ComfyUI portable 根目录。
+For an Electron installer build, run `build.bat`. The installer output is written to `releases\`; Electron Builder may need to download its runtime the first time it runs.
 
-打包前请先关闭正在运行的便携版。打包完成后，桌面会生成：
+## Data And Paths
+
+- API keys, projects, sessions, and Agent data are stored in the Windows user data directory under `comfy-agent`.
+- The desktop app uses `ComfyUI\user\default\workflows` inside the selected portable root by default.
+- Relative CLI paths use the command working directory. If `--workflow-dir` is omitted, the CLI searches for the portable ComfyUI workflow directory.
+- Project images, videos, and traces stay inside the project directory.
+- ComfyUI `input`, `output`, and `temp` directories remain separate from project files.
+- Do not put API keys into `dist-portable` or commit `.env` files.
+
+Optional local configuration can be placed in `.env`:
 
 ```text
-dist-portable\ComfyUI-Agent.exe
-dist-portable\
+AGENT_DATA_DIR=.\data
+COMFYUI_PORTABLE_ROOT=C:\path\to\ComfyUI_windows_portable
+COMFYUI_BASE_URL=http://127.0.0.1:8188
 ```
 
-启动 `ComfyUI-Agent.exe` 即可运行便携版。脚本会自动查找上级目录中的 `python_embeded\python.exe` 和 `ComfyUI\main.py`，并把找到的 ComfyUI 根目录写入便携包配置。
+## License
 
-## 用户配置
-
-API 密钥、项目、会话和 Agent 数据保存在：
-
-```text
-Windows 用户数据目录下的 `comfy-agent` 文件夹
-```
-
-重新打包不会删除该目录。不要把 API 密钥放进 `dist-portable`，也不要删除这个用户配置目录。
-
-## 路径规则
-
-- 桌面版默认使用同一 portable 根目录下的 `ComfyUI\user\default\workflows`。
-- CLI 的相对路径以命令执行目录为基准；未指定 `--workflow-dir` 时会自动寻找 portable ComfyUI 的工作流目录。
-- `AGENT_DATA_DIR` 和 `COMFYUI_PORTABLE_ROOT` 的相对路径以 Agent 应用目录为基准，建议发布配置使用绝对路径。
-- 项目图片、视频和 trace 保存在项目目录内；ComfyUI 的 `input`、`output` 和 `temp` 不会混入项目目录。
-- 安装版首次运行如果找不到 ComfyUI，请在设置中选择包含 `python_embeded` 和 `ComfyUI` 的 portable 根目录。
-
-## 其他打包方式
-
-项目内的 `build.bat` 使用 `electron-builder`，输出到 `releases\`，适合制作安装包；日常桌面便携版请使用上面的桌面批处理入口。
+MIT License. See [LICENSE](LICENSE).
