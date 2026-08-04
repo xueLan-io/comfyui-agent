@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dist-portable/
+releases/
+artifacts/
+prompts_collected/
+*.zip
+*.log
+*.exe
+.env
+.DS_Store

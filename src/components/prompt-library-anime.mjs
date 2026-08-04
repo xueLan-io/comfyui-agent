@@ -1,0 +1,60 @@
+export const ANIME_PROMPT_PACKS = [
+  {
+    id: 'case-character',
+    title: '角色特征',
+    description: '角色名、发型、角和眼睛',
+    category: '人物',
+    prompt: 'iroi, curled horns, green hair, long hair, animal ears, purple eyes',
+    required: ['iroi', 'curled horns', 'green hair', 'long hair', 'animal ears', 'purple eyes'],
+  },
+  {
+    id: 'case-outfit',
+    title: '服饰配件',
+    description: '领饰、手套、袜子和腿部装饰',
+    category: '服装',
+    prompt: 'black choker, elbow gloves, fingerless gloves, white gloves, garter straps, thighhighs, white stirrup legwear, no shoes',
+    required: ['black choker', 'elbow gloves', 'fingerless gloves', 'white gloves', 'garter straps', 'thighhighs', 'white stirrup legwear', 'no shoes'],
+  },
+  {
+    id: 'case-pose',
+    title: '姿势与镜头',
+    description: '躺姿、抬腿、全身和视线',
+    category: '镜头构图',
+    prompt: 'lying on ground, one leg lifted high upward, another leg bent, full body, (from_side:2), (looking_at_viewer:3), (front face:2), (knee_up:2), sideways glance',
+    required: ['lying on ground', 'one leg lifted high upward', 'another leg bent', 'full body', 'from_side', 'looking_at_viewer', 'front face', 'knee_up', 'sideways glance'],
+  },
+  {
+    id: 'case-expression',
+    title: '表情与气质',
+    description: '保留害羞、开心和轻微慵懒感',
+    category: '表情',
+    prompt: 'open mouth, shy, happy, lazy expression',
+    required: ['open mouth', 'shy', 'happy', 'lazy expression'],
+  },
+  {
+    id: 'case-background',
+    title: '白底棚拍',
+    description: '纯白背景、留白和柔和投影',
+    category: '场景氛围',
+    prompt: 'simple solid pure white background, soft subtle drop shadow behind character, clean empty background, no extra objects',
+    required: ['simple solid pure white background', 'soft subtle drop shadow behind character', 'clean empty background', 'no extra objects'],
+  },
+  {
+    id: 'case-rendering',
+    title: '动漫渲染',
+    description: '软赛璐璐和柔和色调',
+    category: '画风质感',
+    prompt: 'soft cel shading, soft color tone, anime illustration',
+    required: ['soft cel shading', 'soft color tone', 'anime illustration'],
+  },
+  {
+    id: 'case-quality',
+    title: '质量与画师',
+    description: '画师串、质量词和细节增强',
+    category: '细节质量',
+    prompt: '@4x0style, masterpiece, very aesthetic, best quality, score_9, score_8, absurdres, anime screenshot, official art, ultra-detailed, desktop wallpaper, 8K, HDR, sharp focus, shallow depth of field, detailed_face, detailed_hands, detailed_eyes',
+    required: ['@4x0style', 'masterpiece', 'very aesthetic', 'best quality', 'score_9', 'score_8', 'absurdres', 'anime screenshot', 'official art', 'ultra-detailed', 'desktop wallpaper', '8K', 'HDR', 'sharp focus', 'shallow depth of field', 'detailed_face', 'detailed_hands', 'detailed_eyes'],
+  },
+];
+
+export const ANIME_VISIBLE_PROMPT = ANIME_PROMPT_PACKS.map(pack => pack.prompt).join(', ');

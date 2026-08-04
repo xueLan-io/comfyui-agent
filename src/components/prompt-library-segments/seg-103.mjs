@@ -1,0 +1,1 @@
+export default "mascara\t睫毛膏\t5_五官表情/眼睛\t用于控制5_五官表情/眼睛相关画面内容\t4350\tDanbooru SQL, Super Grimoire 分类, Super Grimoire 双语词典, WeiLin 标签词典\npupils\t竖瞳\t5_五官表情/眼睛\t用于控制5_五官表情/眼睛相关画面内容\t0\tSuper Grimoire 分类, Super Grimoire 双语词典";

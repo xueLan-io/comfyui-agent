@@ -1,0 +1,39 @@
+{
+  "anima": {
+    "format": "tags_block + newline + narrative",
+    "tagOrder": ["quality", "subjectCount", "identity", "artist", "appearance", "pose", "scene"],
+    "negative": "baseline + defects_only",
+    "escapeParentheses": true,
+    "weightedTags": "仅用于真实视觉属性",
+    "tagsArray": "non-empty"
+  },
+  "flux": {
+    "format": "natural_language_only",
+    "tagsArray": "empty",
+    "negative": "empty_string",
+    "positive": "包含构图/光照/相机/风格/主体细节"
+  },
+  "wan": {
+    "format": "natural_language_only",
+    "tagsArray": "empty",
+    "negative": "可包含静态帧/模糊/字幕/异常运动/解剖缺陷",
+    "motion": "必须含明确的运动/时间/相机运动描述"
+  },
+  "animatediff": {
+    "format": "natural_language_only",
+    "tagsArray": "empty",
+    "negative": "可包含静态帧/模糊/伪影/文本/解剖缺陷",
+    "motion": "必须含明确的运动/时间描述"
+  },
+  "sdxl": {
+    "format": "tags_block + natural_language",
+    "tagsArray": "optional",
+    "negative": "standard_sdxl_negative",
+    "note": "保留用户主体和构图约束"
+  },
+  "generic": {
+    "format": "natural_language_only",
+    "tagsArray": "empty",
+    "negative": "按工作流定义"
+  }
+}

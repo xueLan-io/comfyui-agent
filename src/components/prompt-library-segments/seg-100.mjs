@@ -1,0 +1,1 @@
+export default "midnight\t午夜\tNSFW/暧昧氛围\t用于控制NSFW/暧昧氛围相关画面内容\t0\tSuper Grimoire 分类, Super Grimoire 双语词典\nteasing\t挑逗\tNSFW/暧昧氛围\t用于描述生成画面的对象、属性或风格\t2896\tDanbooru SQL, WeiLin 标签词典\nwhisper\t耳语\tNSFW/暧昧氛围\t用于控制NSFW/暧昧氛围相关画面内容\t0\tSuper Grimoire 分类, Super Grimoire 双语词典";

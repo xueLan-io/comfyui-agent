@@ -1,0 +1,14 @@
+{
+  "last_node_id": 3,
+  "last_link_id": 2,
+  "nodes": [
+    {"id":1,"type":"LoadImage","pos":[0,0],"size":[250,80],"order":0,"mode":0,"inputs":[{"name":"image","type":"COMBO","widget":{"name":"image"}}],"outputs":[{"name":"IMAGE","type":"IMAGE","links":[1]},{"name":"MASK","type":"MASK","links":[]}],"widgets_values":[""]},
+    {"id":2,"type":"ImageScaleBy","pos":[350,0],"size":[250,110],"order":1,"mode":0,"inputs":[{"name":"image","type":"IMAGE","link":1},{"name":"upscale_method","type":"COMBO","widget":{"name":"upscale_method"}},{"name":"scale_by","type":"FLOAT","widget":{"name":"scale_by"}}],"outputs":[{"name":"IMAGE","type":"IMAGE","links":[2]}],"widgets_values":["lanczos",2.0]},
+    {"id":3,"type":"SaveImage","pos":[700,0],"size":[260,80],"order":2,"mode":0,"inputs":[{"name":"images","type":"IMAGE","link":2},{"name":"filename_prefix","type":"STRING","widget":{"name":"filename_prefix"}}],"outputs":[{"name":"images","type":"IMAGE","links":[]}],"widgets_values":["anime_upscale"]}
+  ],
+  "links": [[1,1,0,2,0,"IMAGE"],[2,2,0,3,0,"IMAGE"]],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

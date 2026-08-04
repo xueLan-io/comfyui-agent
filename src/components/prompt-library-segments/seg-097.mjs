@@ -1,0 +1,1 @@
+export default "bottom-up\t正仰视\t2_构图视角/视角方向\t用于控制2_构图视角/视角方向相关画面内容\t0\tSuper Grimoire 分类, Super Grimoire 双语词典\ncontrapposto\t对立平衡\t2_构图视角/视角方向\t用于控制2_构图视角/视角方向相关画面内容\t29901\tDanbooru SQL, Super Grimoire 分类, Super Grimoire 双语词典, WeiLin 标签词典\ntop-down\t正俯视\t2_构图视角/视角方向\t用于控制2_构图视角/视角方向相关画面内容\t0\tSuper Grimoire 分类, Super Grimoire 双语词典";

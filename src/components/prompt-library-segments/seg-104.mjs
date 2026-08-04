@@ -1,0 +1,1 @@
+export default "carrying\t携带\tNSFW/亲密互动\t用于控制NSFW/亲密互动相关画面内容\t45040\tDanbooru SQL, Super Grimoire 分类, Super Grimoire 双语词典, WeiLin 标签词典\nembrace\t拥抱\tNSFW/亲密互动\t用于控制NSFW/亲密互动相关画面内容\t0\tSuper Grimoire 分类, Super Grimoire 双语词典";

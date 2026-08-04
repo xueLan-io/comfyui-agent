@@ -1,0 +1,1 @@
+export default "headshot\t爆头\t2_构图视角/镜头距离\t用于控制2_构图视角/镜头距离相关画面内容\t373\tDanbooru SQL, Super Grimoire 分类, Super Grimoire 双语词典, WeiLin 标签词典\npanoramic\t全景\t2_构图视角/镜头距离\t用于控制2_构图视角/镜头距离相关画面内容\t0\tSuper Grimoire 分类, Super Grimoire 双语词典";

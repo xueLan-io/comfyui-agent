@@ -1,0 +1,1 @@
+export default "holographic\t全息投影\t艺术风格/数字艺术\t用于控制艺术风格/数字艺术相关画面内容\t0\tSuper Grimoire 分类, Super Grimoire 双语词典\nphoto-bashing\t照片合成\t艺术风格/数字艺术\t用于控制艺术风格/数字艺术相关画面内容\t0\tSuper Grimoire 分类, Super Grimoire 双语词典\nwireframe\t线框渲染\t艺术风格/数字艺术\t用于控制艺术风格/数字艺术相关画面内容\t0\tSuper Grimoire 分类, Super Grimoire 双语词典";

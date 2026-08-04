@@ -1,0 +1,1 @@
+export default "bedhead\t乱蓬蓬\t4_发型发色/发型\t用于控制4_发型发色/发型相关画面内容\t0\tSuper Grimoire 分类, Super Grimoire 双语词典\nchignon\t法式髻\t4_发型发色/发型\t用于控制4_发型发色/发型相关画面内容\t0\tSuper Grimoire 分类, Super Grimoire 双语词典\nodango\t丸子\t4_发型发色/发型\t用于控制4_发型发色/发型相关画面内容\t0\tSuper Grimoire 分类, Super Grimoire 双语词典";

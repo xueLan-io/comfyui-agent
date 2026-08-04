@@ -1,0 +1,1 @@
+export default "steam\t蒸汽\t0_画质基础/渲染效果\t用于控制0_画质基础/渲染效果相关画面内容\t54368\tDanbooru SQL, Super Grimoire 分类, Super Grimoire 双语词典, WeiLin 标签词典\nvignette\t暗角\t0_画质基础/渲染效果\t用于控制0_画质基础/渲染效果相关画面内容\t0\tSuper Grimoire 分类, Super Grimoire 双语词典";
