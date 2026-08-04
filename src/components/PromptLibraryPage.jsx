@@ -132,7 +132,7 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   const [addedId, setAddedId] = useState('');
   const [visibleLimit, setVisibleLimit] = useState(PAGE_SIZE);
   const [collectedItems, setCollectedItems] = useState([]);
-  const [collectionState, setCollectionState] = useState('loading');
+  const [collectionState, setCollectionState] = useState('idle');
   const [collectionProgress, setCollectionProgress] = useState({ percent: 0 });
   const [favorites, setFavorites] = useState(() => new Set(loadLibraryState('comfy-agent.prompt-library.favorites', [])));
   const [customItems, setCustomItems] = useState(() => loadLibraryState('comfy-agent.prompt-library.custom', []));
@@ -534,7 +534,7 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
         <div className="prompt-workbench-header-actions"><span className="prompt-library-model-badge"><Icon name="spark" size={13} /> 本地词库</span><button className="btn btn-icon" onClick={onBack} title="返回对话" aria-label="返回对话"><Icon name="chevronLeft" size={15} /></button>{windowApi && <div className="window-controls prompt-workbench-window-controls" aria-label="窗口控制"><button className="window-control" onClick={() => windowApi.windowMinimize()} title="最小化" aria-label="最小化"><Icon name="minimize" /></button><button className="window-control" onClick={toggleMaximize} title={maximized ? '还原' : '最大化'} aria-label={maximized ? '还原' : '最大化'}><Icon name={maximized ? 'restore' : 'maximize'} /></button><button className="window-control window-control-close" onClick={() => windowApi.windowClose()} title="关闭" aria-label="关闭"><Icon name="windowClose" /></button></div>}</div>
       </header>
 
-      {collectionState === 'loading' && <div className="prompt-library-sync-status" role="status" aria-live="polite">
+      {shouldLoadCollection && collectionState === 'loading' && <div className="prompt-library-sync-status" role="status" aria-live="polite">
         <div className="prompt-library-sync-dialog">
           <span className="prompt-library-sync-spinner" aria-hidden="true"><Icon name="spark" size={24} /></span>
           <strong>正在同步本地词库</strong>
