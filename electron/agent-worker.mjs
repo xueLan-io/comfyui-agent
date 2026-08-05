@@ -62,7 +62,15 @@ function send(message) {
 function runCall(message) {
   return invoke(message.method, message.args || [])
     .then(result => send({ type: 'response', id: message.id, ok: true, result, state: snapshot() }))
-    .catch(error => send({ type: 'response', id: message.id, ok: false, error: error.message, code: error.code || '', stack: error.stack }));
+    .catch(error => send({
+      type: 'response',
+      id: message.id,
+      ok: false,
+      error: error.message,
+      code: error.code || '',
+      policyDecision: error.code === 'CLOUD_POLICY_BLOCKED' ? error.policyDecision || null : null,
+      stack: error.stack,
+    }));
 }
 
 function snapshot() {

@@ -24,7 +24,7 @@ export const TASK_STATUS = ['queued', ...TASK_STATES, 'error'];
 
 export const TASK_TRANSITIONS = {
   idle: ['classifying', 'cancelled'],
-  classifying: ['clarifying', 'planning', 'executing', 'failed', 'cancelled'],
+  classifying: ['clarifying', 'planning', 'awaiting_confirmation', 'executing', 'failed', 'cancelled'],
   clarifying: ['idle', 'classifying', 'planning', 'awaiting_confirmation', 'failed', 'cancelled'],
   planning: ['awaiting_confirmation', 'executing', 'completed', 'failed', 'cancelled'],
   awaiting_confirmation: ['executing', 'classifying', 'idle', 'failed', 'cancelled'],
@@ -107,6 +107,19 @@ export class TaskManager {
     if (!task) return null;
     Object.assign(task, patch, { updatedAt: Date.now() });
     return task;
+  }
+
+  archive(id) {
+    const task = this._byId.get(id);
+    if (!task) return null;
+    const state = task.state || task.status;
+    if (!['submit_unknown', 'observe_timeout', 'archive_failed', 'observing'].includes(state)) return null;
+    return this.update(id, {
+      state: 'abandoned',
+      status: 'abandoned',
+      lastError: task.lastError || 'Archived by user',
+      error: task.error || task.lastError || 'Archived by user',
+    });
   }
 
   transition(id, state, patch = {}) {
@@ -201,6 +214,16 @@ export class TaskManager {
       traceError: error ? sanitizeContextValue(error) : null,
       completedAt: Date.now(),
     });
+  }
+
+  settleComplete(id, { result = {} } = {}) {
+    const task = this._byId.get(id);
+    if (!task) return null;
+    this.complete(id, { result });
+    const current = task.state || task.status;
+    if (canTransition(current, 'completed')) this.transition(id, 'completed');
+    else this.update(id, { status: 'completed', state: 'completed' });
+    return task;
   }
 
   getTrace(id) {

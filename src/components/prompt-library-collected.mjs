@@ -1,4 +1,4 @@
-import { buildSearchIndex } from './prompt-library-search.mjs';
+import { searchTokens } from './prompt-library-search.mjs';
 import {
   COLLECTED_PHRASES_SEGMENT,
   COLLECTED_SEGMENTS,
@@ -7,7 +7,7 @@ import {
 } from './prompt-library-segments/index.mjs';
 
 const COLLECTION_CACHE_NAME = 'comfy-agent-prompt-library';
-const COLLECTION_CACHE_VERSION = 'collected-v3-2026-08-04';
+const COLLECTION_CACHE_VERSION = 'collected-v4-2026-08-05';
 const SEGMENT_BATCH_SIZE = 4;
 
 let collectedItemsPromise = null;
@@ -16,9 +16,9 @@ const loadedItems = [];
 const loadedSegments = new Set();
 const loadPromises = new Map();
 
-const segmentLoaders = typeof import.meta !== 'undefined' && import.meta.glob
-  ? import.meta.glob('./prompt-library-segments/seg-*.mjs')
-  : null;
+function getSegmentLoaders() {
+  return import.meta.glob('./prompt-library-segments/seg-*.mjs');
+}
 
 function createSearchText(title, description, prompt) {
   return `${title}\n${description}\n${prompt}`.toLowerCase();
@@ -105,11 +105,14 @@ function createPhraseItem(line, index) {
   };
 }
 
-function createTagItemsFromSegment(text) {
+async function createTagItemsFromSegment(text) {
   const details = parseTagMetadata(text);
   const items = [];
+  let index = 0;
   for (const tag of details.keys()) {
     items.push(createTagItem(tag, new Map(), details));
+    index += 1;
+    if (index % 400 === 0) await yieldToBrowser();
   }
   return items;
 }
@@ -159,7 +162,7 @@ async function writeCachedRecord(record) {
 }
 
 async function loadSegmentModule(segmentId) {
-  const loader = segmentLoaders?.[`./prompt-library-segments/${segmentId}.mjs`];
+  const loader = getSegmentLoaders()?.[`./prompt-library-segments/${segmentId}.mjs`];
   if (!loader) throw new Error(`missing collected segment ${segmentId}`);
   return loader();
 }
@@ -178,6 +181,19 @@ async function collectSegmentItems(segment) {
   loadedSegments.add(segment.id);
 }
 
+async function buildSearchIndexWithYield(items) {
+  const index = new Map();
+  for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
+    for (const token of searchTokens(items[itemIndex].searchText)) {
+      const matches = index.get(token) || [];
+      matches.push(itemIndex);
+      index.set(token, matches);
+    }
+    if (itemIndex % 1200 === 1199) await yieldToBrowser();
+  }
+  return index;
+}
+
 async function loadAllSegments(onProgress) {
   const tagSegments = COLLECTED_SEGMENTS.filter(segment => segment.id !== COLLECTED_PHRASES_SEGMENT);
   onProgress({ stage: 'loading', percent: 5 });
@@ -193,7 +209,7 @@ async function loadAllSegments(onProgress) {
   onProgress({ stage: 'phrases', percent: 72, count: loadedItems.length });
   await collectSegmentItems({ id: COLLECTED_PHRASES_SEGMENT, kind: 'phrases' });
   const items = loadedItems;
-  cachedRecord = { items, searchIndex: buildSearchIndex(items) };
+  cachedRecord = { items, searchIndex: await buildSearchIndexWithYield(items) };
   try {
     await writeCachedRecord(cachedRecord);
   } catch {

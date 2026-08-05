@@ -27,8 +27,32 @@ export function ComfyUIProvider({ children }) {
   const [workflowManifest, setWorkflowManifest] = useState(null);
   const [generationControls, setGenerationControls] = useState({ settings: {}, nodeOverrides: {}, outputNodeIds: null });
   const [showNodeControls, setShowNodeControls] = useState(false);
+  const [favoriteWorkflows, setFavoriteWorkflows] = useState(() => {
+    try { return JSON.parse(window.localStorage.getItem('comfyui-agent.favorite-workflows') || '[]'); } catch { return []; }
+  });
+  const [recentWorkflows, setRecentWorkflows] = useState(() => {
+    try { return JSON.parse(window.localStorage.getItem('comfyui-agent.recent-workflows') || '[]'); } catch { return []; }
+  });
 
   const connected = comfyState.status === 'ready';
+
+  useEffect(() => {
+    window.localStorage.setItem('comfyui-agent.favorite-workflows', JSON.stringify(favoriteWorkflows));
+  }, [favoriteWorkflows]);
+
+  useEffect(() => {
+    window.localStorage.setItem('comfyui-agent.recent-workflows', JSON.stringify(recentWorkflows));
+  }, [recentWorkflows]);
+
+  const selectWorkflow = useCallback(name => {
+    setSelectedFile(name);
+    if (name) setRecentWorkflows(previous => [name, ...previous.filter(item => item !== name)].slice(0, 8));
+  }, []);
+
+  const toggleFavoriteWorkflow = useCallback(name => {
+    if (!name) return;
+    setFavoriteWorkflows(previous => previous.includes(name) ? previous.filter(item => item !== name) : [...previous, name]);
+  }, []);
 
   useEffect(() => {
     window.electronAPI.listWorkflows().then(result => {
@@ -101,6 +125,36 @@ export function ComfyUIProvider({ children }) {
     setSelectedFile(previous => previous || defaultWorkflow(result.files));
   }, []);
 
+  const importWorkflows = useCallback(async (paths) => {
+    const result = await window.electronAPI.importWorkflows(paths);
+    if (!result) return { results: [], files: [] };
+    setWorkflowDir(result.displayDir || result.dir);
+    setWorkflowFiles(result.files);
+    if (result.imported && result.imported.length > 0) setSelectedFile(result.imported[0]);
+    return result;
+  }, []);
+
+  const applyWorkflowList = useCallback((result) => {
+    if (!result) return null;
+    setWorkflowDir(result.displayDir || result.dir);
+    setWorkflowFiles(result.files);
+    return result;
+  }, []);
+
+  const deleteWorkflow = useCallback(async (name) => {
+    const result = await window.electronAPI.workflowDelete(name);
+    applyWorkflowList(result);
+    setSelectedFile(previous => previous === name ? defaultWorkflow(result.files) : previous);
+    return result;
+  }, [applyWorkflowList]);
+
+  const renameWorkflow = useCallback(async (name, nextName) => {
+    const result = await window.electronAPI.workflowRename(name, nextName);
+    applyWorkflowList(result);
+    setSelectedFile(previous => previous === name ? nextName : previous);
+    return result;
+  }, [applyWorkflowList]);
+
   const value = {
     comfyState,
     connected,
@@ -108,6 +162,10 @@ export function ComfyUIProvider({ children }) {
     workflowFiles,
     selectedFile,
     setSelectedFile,
+    selectWorkflow,
+    favoriteWorkflows,
+    recentWorkflows,
+    toggleFavoriteWorkflow,
     workflowManifest,
     generationControls,
     setGenerationControls,
@@ -116,6 +174,9 @@ export function ComfyUIProvider({ children }) {
     handleShowWorkflowDir,
     handleStartComfyUI,
     refreshWorkflows,
+    importWorkflows,
+    deleteWorkflow,
+    renameWorkflow,
   };
 
   return <ComfyUIContext.Provider value={value}>{children}</ComfyUIContext.Provider>;

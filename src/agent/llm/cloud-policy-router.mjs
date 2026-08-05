@@ -1,9 +1,10 @@
 const POLICY_TRANSITIONS = {
   idle: ['reviewing'],
-  reviewing: ['cloud_allowed', 'local_fallback'],
+  reviewing: ['cloud_allowed', 'local_fallback', 'user_override'],
   cloud_allowed: ['idle', 'local_fallback'],
   local_fallback: ['idle', 'blocked'],
   blocked: ['idle'],
+  user_override: ['idle'],
 };
 
 const EXPLICIT_SEXUAL = /(?:\b(?:nsfw|xxx|porn(?:ography)?|nude|naked|nudity|genitals?|penis|vagina|pussy|masturbat\w*|vibrator|sex scene|blowjob|handjob|hardcore|anal|fuck(?:ing)?|orgasm|cum)\b|色情|性交|性爱|做爱|裸体|裸照|自慰|手淫|口交|乳交|阴部|阴茎|阴道|生殖器|性器官|射精|内射|颜射|群交|兽交)/i;
@@ -91,18 +92,33 @@ export class CloudPolicyRouter {
     this.onStateChange?.({ state: next, ...details });
   }
 
-  review(messages = []) {
+  review(messages = [], options = {}) {
     this._transition('reviewing');
     const { text, hasMedia } = collectRequestContent(messages);
 
     const categories = POLICY_RULES
       .filter(rule => rule.test(text))
       .map(rule => rule.category);
+
+    if (options.forceAllow === true) {
+      const decision = {
+        allowed: true,
+        requiresLocal: false,
+        overridden: true,
+        categories,
+        reason: 'user_override',
+      };
+      this._transition('user_override', { categories: decision.categories, reason: decision.reason });
+      return decision;
+    }
+
+    const mediaBlocked = hasMedia && options.allowMediaToCloud !== true;
+    const requiresLocal = categories.length > 0 || mediaBlocked;
     const decision = {
-      allowed: categories.length === 0 && !hasMedia,
-      requiresLocal: categories.length > 0 || hasMedia,
+      allowed: categories.length === 0 && !requiresLocal,
+      requiresLocal,
       categories,
-      reason: hasMedia ? 'unreviewed_media' : categories.length > 0 ? 'restricted_content' : '',
+      reason: mediaBlocked ? 'unreviewed_media' : categories.length > 0 ? 'restricted_content' : '',
     };
     this._transition(decision.requiresLocal ? 'local_fallback' : 'cloud_allowed', {
       categories: decision.categories,
@@ -112,7 +128,7 @@ export class CloudPolicyRouter {
   }
 
   complete() {
-    if (this.state === 'cloud_allowed' || this.state === 'local_fallback' || this.state === 'blocked') {
+    if (this.state === 'cloud_allowed' || this.state === 'local_fallback' || this.state === 'blocked' || this.state === 'user_override') {
       this._transition('idle');
     }
   }

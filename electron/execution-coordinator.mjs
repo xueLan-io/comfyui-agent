@@ -30,12 +30,12 @@ export class ExecutionCoordinator {
     if (this.active || this.preview) throw busyError(this.active, this.preview);
   }
 
-  registerPreview({ source, previewId, taskId = '', owner, entry = null }) {
+  registerPreview({ source, previewId, taskId = '', owner, entry = null, requestId = '' }) {
     if (!previewId) throw new Error('Generation preview is missing an id');
     if (entry && this.active !== entry) throw new Error('Generation execution has already settled');
     if (!entry && this.active) throw busyError(this.active, this.preview);
     if (this.preview) throw busyError(this.active, this.preview);
-    this.preview = Object.freeze({ source, previewId, taskId, status: 'prepared', owner: Object.freeze({ ...owner }) });
+    this.preview = Object.freeze({ source, previewId, taskId, requestId, status: 'prepared', owner: Object.freeze({ ...owner }) });
     return this.preview;
   }
 

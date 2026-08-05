@@ -1,3 +1,5 @@
+const MAX_SCORED_CANDIDATES = 4000;
+
 const SEARCH_ALIASES = new Map([
   ['红发', ['red hair', 'red-haired', 'copper red hair']],
   ['红色头发', ['red hair', 'red-haired', 'copper red hair']],
@@ -73,6 +75,8 @@ function searchTokens(value) {
   return tokens;
 }
 
+export { searchTokens };
+
 function queryGroups(query) {
   const value = String(query).toLowerCase();
   const matchedLabels = [...SEARCH_ALIASES.keys()]
@@ -142,14 +146,26 @@ function matchingIndexes(group, index) {
 export function searchLibrary(items, query, index) {
   const groups = queryGroups(query);
   if (groups.length === 0) return items;
-
   const matches = groups.map(group => matchingIndexes(group, index));
   const strict = intersect(matches);
   const candidateIndexes = strict.size > 0
     ? strict
     : new Set(matches.flatMap(group => [...group]));
 
-  return [...candidateIndexes]
+  let candidates = [...candidateIndexes];
+  if (candidates.length > MAX_SCORED_CANDIDATES) {
+    const queryText = String(query).toLowerCase();
+    const direct = [];
+    const rest = [];
+    for (const itemIndex of candidates) {
+      const text = String(items[itemIndex]?.searchText || '').toLowerCase();
+      if (text.includes(queryText)) direct.push(itemIndex);
+      else rest.push(itemIndex);
+    }
+    candidates = [...direct, ...rest].slice(0, MAX_SCORED_CANDIDATES);
+  }
+
+  return candidates
     .map(itemIndex => items[itemIndex])
     .map(item => {
       const text = String(item.searchText || '').toLowerCase();

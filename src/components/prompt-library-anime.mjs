@@ -48,6 +48,14 @@ export const ANIME_PROMPT_PACKS = [
     required: ['soft cel shading', 'soft color tone', 'anime illustration'],
   },
   {
+    id: 'case-artist',
+    title: 'Anima 画师标签',
+    description: '只加入当前词库确认过的画师 token',
+    category: '画师标签',
+    prompt: '@4x0style',
+    required: ['@4x0style'],
+  },
+  {
     id: 'case-quality',
     title: '质量与画师',
     description: '画师串、质量词和细节增强',

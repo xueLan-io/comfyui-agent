@@ -156,3 +156,63 @@ test('attempt ids remain distinct across retries', () => {
   assert.notEqual(first.attemptId, second.attemptId);
   assert.equal(mgr.getTrace('retry-task').attempts.length, 2);
 });
+
+test('settleComplete settles observing and archive_failed tasks into completed', () => {
+  const mgr = new TaskManager(null);
+  mgr.create({ id: 'obs', kind: 'run' });
+  mgr.transition('obs', 'classifying');
+  mgr.transition('obs', 'planning');
+  mgr.transition('obs', 'executing');
+  mgr.transition('obs', 'observing');
+  mgr.create({ id: 'arch', kind: 'run' });
+  mgr.transition('arch', 'classifying');
+  mgr.transition('arch', 'planning');
+  mgr.transition('arch', 'executing');
+  mgr.transition('arch', 'observing');
+  mgr.transition('arch', 'archive_failed');
+
+  mgr.settleComplete('obs', { result: { recovered: true } });
+  mgr.settleComplete('arch', { result: { recovered: true } });
+
+  assert.equal(mgr.get('obs').state, 'completed');
+  assert.equal(mgr.get('obs').status, 'completed');
+  assert.deepEqual(mgr.get('obs').result, { recovered: true });
+  assert.ok(mgr.get('obs').completedAt > 0);
+  assert.equal(mgr.get('arch').state, 'completed');
+});
+
+test('settleComplete settles recovery-specific states via direct update', () => {
+  const mgr = new TaskManager(null);
+  mgr.create({ id: 'unknown', kind: 'run' });
+  mgr.transition('unknown', 'classifying');
+  mgr.transition('unknown', 'planning');
+  mgr.transition('unknown', 'executing');
+  mgr.transition('unknown', 'observing');
+  mgr.transition('unknown', 'submit_unknown');
+
+  mgr.settleComplete('unknown', { result: { recovered: true } });
+
+  assert.equal(mgr.get('unknown').state, 'completed');
+  assert.equal(mgr.get('unknown').result.recovered, true);
+});
+
+test('settleComplete returns null for unknown tasks', () => {
+  const mgr = new TaskManager(null);
+  assert.equal(mgr.settleComplete('missing', { result: {} }), null);
+});
+
+test('archive marks recoverable task abandoned', () => {
+  const mgr = new TaskManager(null);
+  mgr.create({ id: 'archive-task', kind: 'run' });
+  mgr.transition('archive-task', 'classifying');
+  mgr.transition('archive-task', 'planning');
+  mgr.transition('archive-task', 'executing');
+  mgr.transition('archive-task', 'observing');
+
+  const archived = mgr.archive('archive-task');
+
+  assert.equal(archived.state, 'abandoned');
+  assert.equal(archived.status, 'abandoned');
+  assert.equal(archived.lastError, 'Archived by user');
+  assert.equal(mgr.archive('archive-task'), null);
+});

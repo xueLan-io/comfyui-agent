@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAgent } from '../contexts/AgentContext.jsx';
 import { useComfyUI } from '../contexts/ComfyUIContext.jsx';
 import { ANIME_PROMPT_PACKS } from './prompt-library-anime.mjs';
@@ -24,6 +24,15 @@ function clampSidebarWidth(value) {
   return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)));
 }
 
+function useDebouncedValue(value, delay = 200) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+  return debounced;
+}
+
 const ANIME_PRESETS = [
   { id: 'anime-portrait', title: '人物肖像', description: '半身、清晰脸部和表情', prompt: 'anime illustration, solo character, upper body, expressive eyes, clean lineart, detailed hair, soft cel shading' },
   { id: 'anime-full-body', title: '完整角色', description: '全身立绘和角色设定', prompt: 'anime illustration, solo character, full body, clear silhouette, balanced pose, detailed costume, clean lineart' },
@@ -37,7 +46,7 @@ const PROMPT_STAGES = [
   { id: 'pose', label: '动作', description: '表情、动作和视线', categoryIds: ['character-expression', 'character-pose', 'character-action'] },
   { id: 'composition', label: '构图', description: '画面范围和视角', categoryIds: ['composition'] },
   { id: 'scene', label: '场景', description: '环境、背景和光线', categoryIds: ['environment', 'lighting'] },
-  { id: 'finish', label: '风格', description: '画风和最后的质量调整', categoryIds: ['style', 'detail'] },
+  { id: 'finish', label: '风格', description: '画师标签、画风和最后的质量调整', categoryIds: ['style', 'artist', 'detail'] },
 ];
 
 const PROMPT_INTENTS = [
@@ -48,7 +57,7 @@ const PROMPT_INTENTS = [
   { id: 'fix', label: '问题修复', stage: 'finish', description: '手部、构图和细节' },
 ];
 
-const BROWSE_GROUP_IDS = ['character', 'action-expression', 'composition', 'scene', 'lighting', 'style', 'quality'];
+const BROWSE_GROUP_IDS = ['character', 'action-expression', 'composition', 'scene', 'lighting', 'style', 'artist', 'quality'];
 const MY_CONTENT_GROUP_IDS = ['favorites', 'custom'];
 
 function promptPathForItem(item, taxonomyGroups) {
@@ -126,6 +135,7 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   const [activeStage, setActiveStage] = useState('');
   const [activeIntent, setActiveIntent] = useState('');
   const [search, setSearch] = useState('');
+  const [artistTier, setArtistTier] = useState('high');
   const [negative, setNegative] = useState('');
   const [composerTarget, setComposerTarget] = useState('positive');
   const [expandedGroups, setExpandedGroups] = useState(() => new Set());
@@ -152,8 +162,8 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   const sidebarResizeStart = useRef(null);
   const promptDragRef = useRef(null);
   const negativeSupported = workflowManifest?.promptProfile?.supportsNegative !== false;
-  const deferredSearch = useDeferredValue(search);
-  const query = deferredSearch.trim().toLowerCase();
+  const debouncedSearch = useDebouncedValue(search);
+  const query = debouncedSearch.trim().toLowerCase();
   const isGlobalSearch = Boolean(query);
   const shouldLoadCollection = activeGroup === 'collected'
     || advancedFilters.source === 'collected'
@@ -288,11 +298,14 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   const selectedGroup = taxonomyNodes.find(group => group.id === activeGroup) || PROMPT_LIBRARY_TAXONOMY[1];
   const selectedParent = PROMPT_LIBRARY_TAXONOMY.find(group => group.children?.some(child => child.id === activeGroup));
   const selectedStage = PROMPT_STAGES.find(stage => stage.id === activeStage);
+  const isArtistView = (activeGroup === 'artist' || activeGroup === 'artist-anime') && !activeStage && !isGlobalSearch;
   const browsedItems = useMemo(() => {
     if (activeGroup === 'favorites') return indexedItems.filter(item => favorites.has(item.id));
     if (activeStage) return indexedItems.filter(item => selectedStage.categoryIds.includes(item.category));
-    return indexedItems.filter(item => matchesPromptTaxonomy(item, selectedGroup));
-  }, [activeGroup, activeStage, favorites, indexedItems, selectedGroup, selectedStage]);
+    let items = indexedItems.filter(item => matchesPromptTaxonomy(item, selectedGroup));
+    if (isArtistView) items = items.filter(item => !item.tier || item.tier === artistTier);
+    return items;
+  }, [activeGroup, activeStage, favorites, indexedItems, selectedGroup, selectedStage, isArtistView, artistTier]);
   const filteredItems = useMemo(() => {
     if (isGlobalSearch) return searchLibrary(filteredLibraryItems, query, searchIndex);
     return applyLibraryFilters(browsedItems, advancedFilters);
@@ -310,7 +323,7 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   const missingStructure = useMemo(() => checkPromptStructure({ positive: input }).map(issue => issue.dimension), [input]);
   const workflowExamples = useMemo(() => workflowPromptExamples(workflowManifest), [workflowManifest]);
 
-  useEffect(() => { setVisibleLimit(PAGE_SIZE); }, [activeGroup, activeStage, advancedFilters, query]);
+  useEffect(() => { setVisibleLimit(PAGE_SIZE); }, [activeGroup, activeStage, advancedFilters, query, artistTier]);
 
   function markAdded(id) {
     setAddedId(id);
@@ -635,9 +648,17 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
           </form>}
 
 
-          {workflowExamples.length > 0 && !isGlobalSearch && <div className="prompt-workbench-workflow-row"><span><strong>当前工作流示例</strong><small>{workflowManifest.workflowName}</small></span>{workflowExamples.slice(0, 2).map(example => <button type="button" key={example.id} onClick={() => replacePrompt(example)}>{example.title}<Icon name="chevronRight" size={13} /></button>)}</div>}
+           {workflowExamples.length > 0 && !isGlobalSearch && <div className="prompt-workbench-workflow-row"><span><strong>当前工作流示例</strong><small>{workflowManifest.workflowName}</small></span>{workflowExamples.slice(0, 2).map(example => <button type="button" key={example.id} onClick={() => replacePrompt(example)}>{example.title}<Icon name="chevronRight" size={13} /></button>)}</div>}
 
-          <div className="prompt-workbench-cards-heading"><strong>{activeIntent ? '接下来可以补充' : '可用内容'}</strong><span>点击加入购物车，替换会覆盖当前编辑内容</span></div>
+          {isArtistView && <div className="prompt-workbench-artist-tiers" role="tablist" aria-label="画师标签分级">
+            {[{ id: 'high', label: '高频', count: indexedItems.filter(item => item.category === 'artist' && item.tier === 'high').length },
+              { id: 'medium', label: '普通', count: indexedItems.filter(item => item.category === 'artist' && item.tier === 'medium').length },
+              { id: 'low', label: '低频', count: indexedItems.filter(item => item.category === 'artist' && item.tier === 'low').length }].map(tier => (
+              <button type="button" key={tier.id} role="tab" aria-selected={artistTier === tier.id} className={artistTier === tier.id ? 'active' : ''} onClick={() => setArtistTier(tier.id)}><span>{tier.label}</span><small>{tier.count}</small></button>
+            ))}
+          </div>}
+
+           <div className="prompt-workbench-cards-heading"><strong>{activeIntent ? '接下来可以补充' : '可用内容'}</strong><span>{activeGroup === 'artist' || activeGroup === 'artist-anime' ? 'Anima 画师候选词；加入后请实际出图确认效果' : '点击加入购物车，替换会覆盖当前编辑内容'}</span></div>
           <div className="prompt-workbench-card-scroll">
             {!isGlobalSearch && advancedFilters.source === 'collected' && collectionState === 'loading' ? <div className="prompt-library-empty"><strong>正在加载收集词库</strong><span>完成后可以搜索完整标签。</span></div> : visibleItems.length === 0 ? <div className="prompt-library-empty"><strong>没有找到匹配内容</strong><span>试试角色、发型、制服、夜景或 cel shading。</span></div> : <div className="prompt-workbench-results-sections">
               {visibleTagItems.length > 0 && <section className="prompt-workbench-result-section"><div className="prompt-workbench-result-section-heading"><strong>词条</strong><span>{visibleTagItems.length.toLocaleString()} 条</span></div><div className="prompt-workbench-card-grid">{visibleTagItems.map(renderPromptCard)}</div></section>}

@@ -70,7 +70,7 @@ function parsePromptResolution(content) {
   return parsed.prompt.trim();
 }
 
-async function resolvePrompt(prompt, conversation, contextPrompt, llmProvider, onChunk, requireAI = false, intent = '', referenceImages = [], imageDataUrl = null) {
+async function resolvePrompt(prompt, conversation, contextPrompt, llmProvider, onChunk, requireAI = false, intent = '', referenceImages = [], imageDataUrl = null, options = {}) {
   const isRefinement = intent === 'refine' || REFINEMENT_REQUEST.test(prompt);
   if (!needsPromptResolution(prompt, contextPrompt) && !(contextPrompt && isRefinement)) return { prompt, resolved: false };
   if (contextPrompt && EXECUTE_LAST_PROMPT.test(String(prompt).trim())) {
@@ -139,6 +139,7 @@ async function resolvePrompt(prompt, conversation, contextPrompt, llmProvider, o
         prefer: 'local',
         timeoutMs: 30000,
         onChunk,
+        allowPolicyOverride: options.allowPolicyOverride === true,
       });
       const resolved = parsePromptResolution(result.content);
       return {
@@ -181,11 +182,16 @@ function rawResult(prompt, mode, profile, existingNegative, constraints, note, r
 }
 
 function aiFailureResult(originalRequest, error) {
-  return {
+  const failure = {
     aiFailure: true,
     originalRequest,
     error: error instanceof Error ? error.message : String(error),
   };
+  if (error?.code === 'CLOUD_POLICY_BLOCKED') {
+    failure.code = error.code;
+    failure.policyDecision = error.policyDecision || null;
+  }
+  return failure;
 }
 
 function compilerInstructions(profile, styleInstruction, customInstruction, feedback = '') {
@@ -237,7 +243,7 @@ ${family === 'flux' ? '- 不创建传统 negative prompt。' : ''}
 ${family === 'wan' || family === 'animatediff' ? '- positive 必须包含明确的运动/时间/相机运动描述。' : ''}
 
 # 约束
-- 当用户指定了艺术家标签时保留；**不得发明**艺术家名
+  - Anima 的 artist 位只保留用户明确指定或已有提示词中的 artist token；**不得发明**艺术家名，也不要把普通风格词当作 artist token
 - 保持在 token 预算内（超限由外部截断，故优先精简）
 - 全部用英文撰写（专有名词除外），句子内不混用语言
 - 遵循提供的工作流格式和 negative 能力，不发明不支持的字段${feedback ? `
@@ -395,6 +401,7 @@ export const PromptEnhanceTool = {
         intent,
         referenceImages,
         imageDataUrl,
+        { allowPolicyOverride: input.allowPolicyOverride === true },
       );
     } catch (error) {
       return aiFailureResult(prompt, error);
@@ -452,6 +459,7 @@ export const PromptEnhanceTool = {
           prefer: 'local',
           timeoutMs: 45000,
           onChunk,
+          allowPolicyOverride: input.allowPolicyOverride === true,
         });
 
         compiled = normalizeCompiled(parseCompiled(result.content), {

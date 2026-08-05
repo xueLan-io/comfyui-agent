@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useComfyUI } from '../contexts/ComfyUIContext.jsx';
 import { useAgent } from '../contexts/AgentContext.jsx';
 import { countControlChanges } from './node-controls.mjs';
@@ -32,17 +32,58 @@ const PROMPT_MODE_HELP = {
 
 const VISIBLE_PROMPT_MODES = PROMPT_MODES.filter(item => ['raw', 'anime', 'anime-character', 'anime-scene', 'anime-polish'].includes(item.id));
 
+function workflowGroups(files) {
+  const rootItems = [];
+  const groups = [];
+  for (const file of files) {
+    const sepIndex = file.indexOf('\\');
+    if (sepIndex === -1) {
+      rootItems.push(file);
+      continue;
+    }
+    const groupName = file.slice(0, sepIndex);
+    let group = groups.find(item => item.name === groupName);
+    if (!group) {
+      group = { name: groupName, items: [] };
+      groups.push(group);
+    }
+    group.items.push(file);
+  }
+  groups.sort((a, b) => a.name.localeCompare(b.name));
+  return { rootItems, groups };
+}
+
+function workflowDisplayName(file) {
+  const sepIndex = file.lastIndexOf('\\');
+  return sepIndex === -1 ? file : file.slice(sepIndex + 1);
+}
+
 export default function WorkspacePanel({ onOpenPromptLibrary }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [importFeedback, setImportFeedback] = useState(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [workflowQuery, setWorkflowQuery] = useState('');
+  const workflowSearchRef = useRef(null);
+  const importFeedbackTimer = useRef(null);
   const {
     selectedFile,
-    setSelectedFile,
+    selectWorkflow,
     workflowFiles,
     workflowDir,
     workflowManifest,
     generationControls,
     setShowNodeControls,
     handleShowWorkflowDir,
+    importWorkflows,
+    deleteWorkflow,
+    renameWorkflow,
+    favoriteWorkflows,
+    recentWorkflows,
+    toggleFavoriteWorkflow,
   } = useComfyUI();
   const {
     promptMode,
@@ -55,8 +96,148 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
   const positiveTargetCount = promptProfile?.positiveTargets?.length || 0;
   const negativeTargetCount = promptProfile?.negativeTargets?.length || 0;
   const promptModeHelp = PROMPT_MODE_HELP[promptMode] || PROMPT_MODE_HELP.anime;
+
+  useEffect(() => () => clearTimeout(importFeedbackTimer.current), []);
+
+  useEffect(() => {
+    const focusWorkflowSearch = event => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        workflowSearchRef.current?.focus();
+        workflowSearchRef.current?.select();
+      }
+    };
+    window.addEventListener('keydown', focusWorkflowSearch);
+    return () => window.removeEventListener('keydown', focusWorkflowSearch);
+  }, []);
+
+  useEffect(() => {
+    const switchWorkflow = event => {
+      if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      const index = Number(event.key) - 1;
+      const candidates = [...favoriteWorkflows, ...recentWorkflows.filter(file => !favoriteWorkflows.includes(file))].filter(file => workflowFiles.includes(file));
+      if (index < 0 || index >= candidates.length) return;
+      event.preventDefault();
+      selectWorkflow(candidates[index]);
+    };
+    window.addEventListener('keydown', switchWorkflow);
+    return () => window.removeEventListener('keydown', switchWorkflow);
+  }, [favoriteWorkflows, recentWorkflows, selectWorkflow, workflowFiles]);
+
+  const showImportFeedback = (type, text) => {
+    setImportFeedback({ type, text });
+    clearTimeout(importFeedbackTimer.current);
+    importFeedbackTimer.current = setTimeout(() => setImportFeedback(null), 6000);
+  };
+
+  const applyImportResult = result => {
+    if (!result) return;
+    const failed = (result.results || []).filter(item => item.status !== 'imported');
+    if (result.imported?.length > 0 && failed.length === 0) {
+      showImportFeedback('ok', `已导入 ${result.imported.length} 个工作流`);
+    } else if (result.imported?.length > 0) {
+      showImportFeedback('warn', `导入 ${result.imported.length} 个，${failed.length} 个失败：${failed.map(item => `${workflowDisplayName(item.name)} ${item.error || ''}`).join('、')}`);
+    } else if (failed.length > 0) {
+      showImportFeedback('error', failed.map(item => `${workflowDisplayName(item.name)} ${item.error || ''}`).join('、'));
+    }
+  };
+
+  const handleImportClick = async () => {
+    try {
+      const result = await window.electronAPI.selectWorkflowFiles();
+      applyImportResult(result);
+    } catch (error) {
+      showImportFeedback('error', error.message || '导入失败');
+    }
+  };
+
+  const handleDrop = async event => {
+    setDragOver(false);
+    const files = Array.from(event.dataTransfer?.files || []);
+    if (files.length === 0) return;
+    try {
+      const paths = files.map(file => window.electronAPI.getPathForFile(file)).filter(Boolean);
+      if (paths.length === 0) {
+        showImportFeedback('error', '无法读取拖入的文件');
+        return;
+      }
+      const result = await importWorkflows(paths);
+      applyImportResult(result);
+    } catch (error) {
+      showImportFeedback('error', error.message || '导入失败');
+    }
+  };
+
+  const handleDragOver = event => {
+    const hasJson = Array.from(event.dataTransfer?.files || []).some(file => /\.json$/i.test(file.name));
+    if (!hasJson) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    setDragOver(true);
+  };
+
+  const startRename = () => {
+    setRenameValue(selectedFile ? workflowDisplayName(selectedFile) : '');
+    setRenameOpen(true);
+    setMenuOpen(false);
+    setConfirmDelete(false);
+  };
+
+  const handleRenameSubmit = async () => {
+    const next = renameValue.trim();
+    if (!next || !selectedFile) return;
+    if (!/\.json$/i.test(next)) {
+      showImportFeedback('error', '文件名必须以 .json 结尾');
+      return;
+    }
+    if (/[\\/]/.test(next)) {
+      showImportFeedback('error', '文件名不能包含路径分隔符');
+      return;
+    }
+    try {
+      await renameWorkflow(selectedFile, next);
+      setRenameOpen(false);
+      setMenuOpen(false);
+      showImportFeedback('ok', `已重命名为 ${next}`);
+    } catch (error) {
+      showImportFeedback('error', error.message || '重命名失败');
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!selectedFile) return;
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    }
+    try {
+      const name = selectedFile;
+      await deleteWorkflow(name);
+      setConfirmDelete(false);
+      setMenuOpen(false);
+      showImportFeedback('ok', `已删除 ${workflowDisplayName(name)}`);
+    } catch (error) {
+      showImportFeedback('error', error.message || '删除失败');
+    }
+  };
+
+  const { rootItems, groups } = workflowGroups(workflowFiles);
+  const normalizedWorkflowQuery = workflowQuery.trim().toLocaleLowerCase();
+  const matchesWorkflow = file => !normalizedWorkflowQuery || file.toLocaleLowerCase().includes(normalizedWorkflowQuery);
+  const filteredRootItems = rootItems.filter(file => matchesWorkflow(file) && !favoriteWorkflows.includes(file) && !recentWorkflows.includes(file));
+  const filteredGroups = groups.map(group => ({ ...group, items: group.items.filter(file => matchesWorkflow(file) && !favoriteWorkflows.includes(file) && !recentWorkflows.includes(file)) })).filter(group => group.items.length > 0);
+  const favoriteFiles = favoriteWorkflows.filter(file => workflowFiles.includes(file) && matchesWorkflow(file));
+  const recentFiles = recentWorkflows.filter(file => workflowFiles.includes(file) && matchesWorkflow(file) && !favoriteFiles.includes(file));
   return (
-    <section className={`panel-right workspace-sidebar${collapsed ? ' collapsed' : ''}`}>
+    <section className={`panel-right workspace-sidebar${collapsed ? ' collapsed' : ''}${dragOver ? ' drag-over' : ''}`}
+      onDragEnter={event => {
+        if (Array.from(event.dataTransfer?.files || []).some(file => /\.json$/i.test(file.name))) setDragOver(true);
+      }}
+      onDragLeave={event => {
+        if (event.currentTarget === event.target) setDragOver(false);
+      }}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}>
       <div className="panel-right-header">
         <div><span className="sidebar-eyebrow">CONTROL ROOM</span><strong className="workspace-title">工作流</strong></div>
         <div className="panel-right-controls">
@@ -67,15 +248,67 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
 
       {!collapsed && <div className="workspace-scroll">
         <section className="workspace-section workflow-section">
-          <div className="workspace-section-heading"><div><span className="section-kicker">01</span><div><h3>工作流</h3><p>{workflowDir || '选择一个 ComfyUI 工作流'}</p></div></div></div>
-          <div className="workflow-picker-row">
-            <select className="wf-select" value={selectedFile} onChange={event => setSelectedFile(event.target.value)} aria-label="选择工作流">
-              <option value="">选择工作流...</option>
-              {workflowFiles.map(file => <option key={file} value={file}>{file}</option>)}
-            </select>
+           <div className="workspace-section-heading"><div><span className="section-kicker">01</span><div><h3>工作流</h3><p>{workflowDir || '选择一个 ComfyUI 工作流'}</p></div></div><span className="workflow-count">{normalizedWorkflowQuery ? `${filteredRootItems.length + filteredGroups.reduce((count, group) => count + group.items.length, 0)} / ` : ''}{workflowFiles.length} 个</span></div>
+           <div className="workflow-picker-row">
+             <div className="workflow-search-wrap"><input ref={workflowSearchRef} className="workflow-search" value={workflowQuery} onChange={event => setWorkflowQuery(event.target.value)} placeholder="搜索工作流..." aria-label="搜索工作流" title="快捷键 Ctrl/Cmd+K" />{workflowQuery && <button className="workflow-search-clear" onClick={() => { setWorkflowQuery(''); workflowSearchRef.current?.focus(); }} aria-label="清空工作流搜索" title="清空搜索"><Icon name="close" size={12} /></button>}</div>
+             <select className="wf-select" value={selectedFile} onChange={event => selectWorkflow(event.target.value)} aria-label="选择工作流">
+               <option value="">选择工作流...</option>
+               {filteredRootItems.length === 0 && filteredGroups.length === 0 && <option value="" disabled>没有匹配的工作流</option>}
+               {favoriteFiles.length > 0 && <optgroup label="收藏"><>{favoriteFiles.map(file => <option key={`favorite-${file}`} value={file}>★ {workflowDisplayName(file)}</option>)}</></optgroup>}
+               {recentFiles.length > 0 && <optgroup label="最近使用"><>{recentFiles.map(file => <option key={`recent-${file}`} value={file}>{workflowDisplayName(file)}</option>)}</></optgroup>}
+               {filteredRootItems.map(file => <option key={file} value={file}>{file}</option>)}
+               {filteredGroups.map(group => (
+                <optgroup key={group.name} label={group.name}>
+                  {group.items.map(file => <option key={file} value={file}>{workflowDisplayName(file)}</option>)}
+                </optgroup>
+              ))}
+             </select>
+             <button className={`btn btn-icon workflow-favorite${favoriteWorkflows.includes(selectedFile) ? ' active' : ''}`} onClick={() => toggleFavoriteWorkflow(selectedFile)} disabled={!selectedFile} title={favoriteWorkflows.includes(selectedFile) ? '取消收藏' : '收藏工作流'} aria-label={favoriteWorkflows.includes(selectedFile) ? '取消收藏' : '收藏工作流'}>★</button>
+            <button className="btn" onClick={handleImportClick} title="从外部导入 ComfyUI 工作流文件（.json）"><Icon name="upload" size={14} /> 导入</button>
             <button className="btn" onClick={handleShowWorkflowDir} title={selectedFile ? '打开 ' + selectedFile + ' 所在目录' : (workflowDir || '打开工作流目录')}>目录</button>
             <button className="btn node-controls-trigger" onClick={() => setShowNodeControls(true)} disabled={!workflowManifest} title="编辑工作流参数"><Icon name="sliders" size={14} /> 参数{controlChangeCount > 0 && <span className="node-control-count">{controlChangeCount}</span>}</button>
+            <div className="workflow-more">
+              <button className="btn btn-icon" onClick={() => { setMenuOpen(value => !value); setConfirmDelete(false); }} disabled={!selectedFile} title="管理工作流"><Icon name="more" size={15} /></button>
+              {menuOpen && (
+                <>
+                  <div className="workflow-more-backdrop" onClick={() => setMenuOpen(false)} />
+                  <div className="workflow-more-menu">
+                    {confirmDelete ? (
+                      <div className="workflow-more-delete-confirm">
+                        <span>确定删除 <strong>{workflowDisplayName(selectedFile)}</strong>？</span>
+                        <div className="workflow-more-actions">
+                          <button className="btn btn-danger" onClick={() => void handleDelete()}>删除</button>
+                          <button className="btn" onClick={() => setConfirmDelete(false)}>取消</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <button className="workflow-more-item" onClick={startRename}><Icon name="edit" size={13} /> 重命名</button>
+                        <button className="workflow-more-item danger" onClick={() => void handleDelete()}><Icon name="trash" size={13} /> 删除</button>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
+          {renameOpen && (
+            <div className="workflow-rename-row">
+              <input className="settings-input" value={renameValue}
+                onChange={event => setRenameValue(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter') void handleRenameSubmit();
+                  if (event.key === 'Escape') setRenameOpen(false);
+                }}
+                placeholder="新文件名（保留 .json）" autoFocus />
+              <button className="btn" onClick={() => void handleRenameSubmit()}>确定</button>
+              <button className="btn" onClick={() => { setRenameOpen(false); setRenameValue(''); }}>取消</button>
+            </div>
+          )}
+           <p className="workflow-import-hint">支持从对话框选择或直接拖拽 .json 文件导入，导入后自动复制到工作流目录并选中。</p>
+           {workflowManifest && <div className="workflow-manifest-summary"><span>{workflowManifest.modelType || workflowManifest.promptProfile?.family || '通用工作流'}</span><span>{workflowManifest.nodeCount || 0} 个节点</span><span>正向 {positiveTargetCount} · 负向 {negativeTargetCount}</span><span>{workflowManifest.capabilities?.modes?.join(' / ') || 'txt2img'}</span></div>}
+          {importFeedback && <div className={`workflow-import-feedback ${importFeedback.type}`}><Icon name={importFeedback.type === 'ok' ? 'check' : 'circleAlert'} size={13} /><span>{importFeedback.text}</span></div>}
+          {dragOver && <div className="workflow-drop-overlay"><Icon name="upload" size={20} /><span>松开以导入工作流</span></div>}
         </section>
 
         <section className="workspace-section prompt-section">

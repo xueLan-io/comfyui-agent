@@ -52,6 +52,6 @@ test('preload keeps chat, AI generation, and direct generation IPC separate', ()
 });
 
 test('chat IPC forwards attached media and intent to the Agent', () => {
-  assert.match(files.main, /agent\.chat\(message, \{ workflowName, workflowManifest, media: controls\.media \|\| null, intent: controls\.intent \|\| 'chat' \}\)/);
+  assert.match(files.main, /agent\.chat\(message, \{\s*workflowName,\s*workflowManifest,\s*media: controls\.media \|\| null,\s*intent: controls\.intent \|\| 'chat',\s*allowPolicyOverride: controls\.allowPolicyOverride === true,\s*\}\)/);
   assert.match(files.preload, /agentChat: .*workflowManifest, controls = \{\}/);
 });

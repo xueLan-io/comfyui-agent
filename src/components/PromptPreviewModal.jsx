@@ -50,8 +50,9 @@ export default function PromptPreviewModal({ preview, onConfirm, onCancel }) {
             <span>请选择下一步，系统不会自动切换生成链。</span>
             <span className="settings-footer-spacer" />
             <button className="btn" onClick={onCancel}>取消</button>
+            {preview.code === 'CLOUD_POLICY_BLOCKED' && <button className="btn btn-primary" onClick={() => onConfirm({ action: 'force_cloud' })}>仍然发送到云端</button>}
             <button className="btn" onClick={() => onConfirm({ action: 'direct_original' })}>按原文直接生成</button>
-            <button className="btn btn-primary" onClick={() => onConfirm({ action: 'retry_ai' })}>重试 AI</button>
+            <button className="btn" onClick={() => onConfirm({ action: 'retry_ai' })}>重试 AI</button>
           </footer>
         </section>
       </div>

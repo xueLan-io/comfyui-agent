@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   windowMinimize: () => ipcRenderer.invoke('window:minimize'),
@@ -10,6 +10,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listWorkflows: () => ipcRenderer.invoke('list-workflows'),
   selectWorkflowDir: () => ipcRenderer.invoke('select-workflow-dir'),
   showWorkflowDir: (workflowName) => ipcRenderer.invoke('show-workflow-dir', { workflowName }),
+  importWorkflows: (paths) => ipcRenderer.invoke('import-workflows', { paths }),
+  selectWorkflowFiles: () => ipcRenderer.invoke('select-workflow-files'),
+  workflowDelete: (name) => ipcRenderer.invoke('workflow:delete', { name }),
+  workflowRename: (name, nextName) => ipcRenderer.invoke('workflow:rename', { name, nextName }),
+  getPathForFile: (file) => webUtils.getPathForFile(file),
   selectMediaFiles: () => ipcRenderer.invoke('select-media-files'),
   mediaImageData: (media) => ipcRenderer.invoke('media:image-data', media),
 
@@ -48,6 +53,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   agentGetRequestStatus: (requestId) => ipcRenderer.invoke('agent:get-request-status', { requestId }),
   agentRecoverTasks: () => ipcRenderer.invoke('agent:recover-tasks'),
   agentRetryRecovery: (taskId) => ipcRenderer.invoke('agent:retry-recovery', { taskId }),
+  agentArchiveTask: (taskId) => ipcRenderer.invoke('agent:archive-task', { taskId }),
   projectsList: () => ipcRenderer.invoke('projects:list'),
   projectCreate: (input) => ipcRenderer.invoke('projects:create', input),
   projectRename: (projectId, name) => ipcRenderer.invoke('projects:rename', { projectId, name }),
@@ -67,6 +73,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   llmSaveProvider: (provider) => ipcRenderer.invoke('llm:save-provider', { provider }),
   llmDeleteProvider: (providerId) => ipcRenderer.invoke('llm:delete-provider', { providerId }),
   llmSelect: (selection) => ipcRenderer.invoke('llm:select', selection),
+  llmMediaPolicy: (allowMediaToCloud) => ipcRenderer.invoke('llm:media-policy', { allowMediaToCloud }),
   llmTest: (providerId, modelId) => ipcRenderer.invoke('llm:test', { providerId, modelId }),
   skillsList: () => ipcRenderer.invoke('skills:list'),
   skillSetEnabled: (id, enabled, custom = false) => ipcRenderer.invoke('skills:set-enabled', { id, enabled, custom }),

@@ -15,11 +15,27 @@ export const PROMPT_LIBRARY_CATEGORIES = [
   { id: 'composition', label: '构图与镜头' },
   { id: 'lighting', label: '光线与色彩' },
   { id: 'style', label: '风格与材质' },
+  { id: 'artist', label: '画师标签' },
   { id: 'environment', label: '环境与氛围' },
   { id: 'detail', label: '细节与质量' },
 ];
 
 export const PROMPT_LIBRARY_ITEMS = [
+  { id: 'artist-4x0style', category: 'artist', title: '@4x0style', description: '当前 Anima 词库中已有依据的画师 token', prompt: '@4x0style' },
+  { id: 'artist-anmi', category: 'artist', title: 'anmi', description: 'Anima 候选画师 token；需用当前模型实测', prompt: 'anmi' },
+  { id: 'artist-ask', category: 'artist', title: 'ask', description: 'Anima 候选画师 token；需用当前模型实测', prompt: 'ask' },
+  { id: 'artist-kantoku', category: 'artist', title: 'kantoku', description: 'Anima 候选画师 token；需用当前模型实测', prompt: 'kantoku' },
+  { id: 'artist-lack', category: 'artist', title: 'lack', description: 'Anima 候选画师 token；需用当前模型实测', prompt: 'lack' },
+  { id: 'artist-mika-pikazo', category: 'artist', title: 'mika pikazo', description: 'Anima 候选画师 token；需用当前模型实测', prompt: 'mika pikazo' },
+  { id: 'artist-neco', category: 'artist', title: 'neco', description: 'Anima 候选画师 token；需用当前模型实测', prompt: 'neco' },
+  { id: 'artist-redjuice', category: 'artist', title: 'redjuice', description: 'Anima 候选画师 token；需用当前模型实测', prompt: 'redjuice' },
+  { id: 'artist-shirabi', category: 'artist', title: 'shirabi', description: 'Anima 候选画师 token；需用当前模型实测', prompt: 'shirabi' },
+  { id: 'artist-sime', category: 'artist', title: 'sime', description: 'Anima 候选画师 token；需用当前模型实测', prompt: 'sime' },
+  { id: 'artist-tiv', category: 'artist', title: 'tiv', description: 'Anima 候选画师 token；需用当前模型实测', prompt: 'tiv' },
+  { id: 'artist-torino', category: 'artist', title: 'torino', description: 'Anima 候选画师 token；需用当前模型实测', prompt: 'torino' },
+  { id: 'artist-wlop', category: 'artist', title: 'wlop', description: 'Anima 候选画师 token；需用当前模型实测', prompt: 'wlop' },
+  { id: 'artist-anime-screenshot', category: 'style', title: '动漫截图感', description: '偏向动画截图与官方美术质感', prompt: 'anime screenshot, official art' },
+  { id: 'artist-clean-lineart', category: 'style', title: '清晰线稿', description: '增强动漫插画的线稿表现', prompt: 'clean lineart' },
   { id: 'role-young-woman', category: 'character-role', title: '年轻女性', description: '人物身份词块', prompt: 'a young adult woman' },
   { id: 'role-young-man', category: 'character-role', title: '年轻男性', description: '人物身份词块', prompt: 'a young adult man' },
   { id: 'role-teenage-girl', category: 'character-role', title: '少女', description: '人物身份词块', prompt: 'a teenage girl' },
@@ -544,3 +560,6 @@ export const PROMPT_LIBRARY_ITEMS = [
   { id: 'detail-scale', category: 'detail', title: '尺度参照', description: '帮助观众理解场景大小', prompt: 'clear human or object scale references, believable proportions, readable distance and monumental spatial context' },
   { id: 'detail-imperfection', category: 'detail', title: '自然瑕疵', description: '避免画面过度完美和塑料感', prompt: 'subtle natural imperfections, varied surfaces, believable asymmetry, authentic handcrafted or lived-in detail' },
 ];
+
+PROMPT_LIBRARY_ITEMS.push(...ANIMA_ARTIST_ITEMS.filter(item => !PROMPT_LIBRARY_ITEMS.some(existing => existing.prompt === item.prompt)));
+import { ANIMA_ARTIST_ITEMS } from './prompt-library-artists.mjs';

@@ -246,6 +246,7 @@ export class AgentProcessClient {
     else {
       const error = rejected(message.error || 'Agent RPC failed', message.code || 'AGENT_RPC_FAILED');
       error.stack = message.stack || error.stack;
+      if (message.code === 'CLOUD_POLICY_BLOCKED') error.policyDecision = message.policyDecision || null;
       request.reject(error);
     }
   }

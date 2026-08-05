@@ -136,6 +136,69 @@ test('auto local selection surfaces the local error and never falls back to clou
   }
 });
 
+test('forceAllow review decision is marked as overridden', () => {
+  const states = [];
+  const router = new CloudPolicyRouter({ onStateChange: event => states.push(event.state) });
+  const decision = router.review([{ role: 'user', content: 'nude character' }], { forceAllow: true });
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.requiresLocal, false);
+  assert.equal(decision.overridden, true);
+  assert.deepEqual(decision.categories, ['sexual_content']);
+  assert.deepEqual(states, ['reviewing', 'user_override']);
+  router.complete();
+  assert.equal(router.state, 'idle');
+});
+
+test('manual override sends restricted content to cloud after confirmation', async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedModels = [];
+  globalThis.fetch = async (_url, options) => {
+    if (options.method === 'GET') return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    const model = JSON.parse(options.body).model;
+    requestedModels.push(model);
+    return response('cloud response');
+  };
+  try {
+    const provider = new LLMProvider({
+      providers: [LOCAL_AND_CLOUD[1]],
+      active: { providerId: 'cloud', modelId: 'cloud-model', strategy: 'cloud' },
+    });
+    const states = [];
+    provider.setPolicyStateHandler(({ state }) => states.push(state));
+    const result = await provider.chat({
+      messages: [{ role: 'user', content: 'graphic violence and gore' }],
+      allowPolicyOverride: true,
+    });
+    assert.equal(result.content, 'cloud response');
+    assert.deepEqual(requestedModels, ['cloud-model']);
+    assert.ok(states.includes('user_override'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('without confirmation restricted content is still blocked for cloud', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return response('should not be returned');
+  };
+  try {
+    const provider = new LLMProvider({
+      providers: [LOCAL_AND_CLOUD[1]],
+      active: { providerId: 'cloud', modelId: 'cloud-model', strategy: 'cloud' },
+    });
+    await assert.rejects(
+      provider.chat({ messages: [{ role: 'user', content: 'nude character' }] }),
+      error => error instanceof CloudPolicyBlockedError && error.code === 'CLOUD_POLICY_BLOCKED',
+    );
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('cloud request emits review before the cloud call', async () => {
   const originalFetch = globalThis.fetch;
   const states = [];
@@ -151,4 +214,68 @@ test('cloud request emits review before the cloud call', async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+const IMAGE_MESSAGE = [{ role: 'user', content: [{ type: 'text', text: 'a portrait' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,abc' } }] }];
+
+test('images go to cloud by default when the media policy allows it', async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedModels = [];
+  globalThis.fetch = async (_url, options) => {
+    if (options.method === 'GET') return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    requestedModels.push(JSON.parse(options.body).model);
+    return response('cloud response');
+  };
+  try {
+    const provider = new LLMProvider({
+      providers: LOCAL_AND_CLOUD,
+      active: { providerId: 'cloud', modelId: 'cloud-model', strategy: 'cloud' },
+    });
+    const result = await provider.chat({ messages: IMAGE_MESSAGE });
+    assert.equal(result.content, 'cloud response');
+    assert.deepEqual(requestedModels, ['cloud-model']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('images are treated as unreviewed media and routed to local when the policy disallows cloud', async () => {
+  const router = new CloudPolicyRouter();
+  const decision = router.review(IMAGE_MESSAGE, { allowMediaToCloud: false });
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.requiresLocal, true);
+  assert.equal(decision.reason, 'unreviewed_media');
+  assert.deepEqual(decision.categories, []);
+  router.complete();
+});
+
+test('media policy switch forces image messages to local model', async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedModels = [];
+  globalThis.fetch = async (_url, options) => {
+    if (options.method === 'GET') return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    requestedModels.push(JSON.parse(options.body).model);
+    return response('local response');
+  };
+  try {
+    const provider = new LLMProvider({
+      providers: LOCAL_AND_CLOUD,
+      active: { providerId: 'cloud', modelId: 'cloud-model', strategy: 'cloud' },
+      allowMediaToCloud: false,
+    });
+    const result = await provider.chat({ messages: IMAGE_MESSAGE });
+    assert.equal(result.content, 'local response');
+    assert.deepEqual(requestedModels, ['local-model']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('restricted text still blocks for cloud even when media is allowed', async () => {
+  const router = new CloudPolicyRouter();
+  const decision = router.review([{ role: 'user', content: 'nude character' }], { allowMediaToCloud: true });
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.requiresLocal, true);
+  assert.equal(decision.reason, 'restricted_content');
+  router.complete();
 });

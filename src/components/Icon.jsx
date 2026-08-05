@@ -27,6 +27,7 @@ const PATHS = {
   edit: <><path d="m4.5 16.75-.75 3.5 3.5-.75L18.5 8.25a2.47 2.47 0 0 0-3.5-3.5L4.5 16.75Z" /><path d="m13.5 6.25 4.25 4.25" /></>,
   copy: <><rect x="8" y="8" width="11" height="11" rx="1.5" /><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8" /></>,
   folder: <path d="M3.5 7.5A2 2 0 0 1 5.5 5h4l2 2h9v10.5a2 2 0 0 1-2 2h-15Z" />,
+  upload: <><path d="M12 16V4.5M7.5 9 12 4.5 16.5 9" /><path d="M4.5 15.5v3a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-3" /></>,
   panelLeft: <><rect x="3.5" y="4" width="17" height="16" rx="2" /><path d="M9 4v16M6.25 8h.01M6.25 12h.01M6.25 16h.01" /></>,
   panelRight: <><rect x="3.5" y="4" width="17" height="16" rx="2" /><path d="M15 4v16M17.75 8h.01M17.75 12h.01M17.75 16h.01" /></>,
   workflow: <><circle cx="6" cy="6" r="2" /><circle cx="18" cy="12" r="2" /><circle cx="6" cy="18" r="2" /><path d="M8 6h4a4 4 0 0 1 4 4v0M8 18h4a4 4 0 0 0 4-4v0" /></>,

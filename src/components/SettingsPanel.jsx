@@ -103,7 +103,7 @@ function ProviderForm({ value, onChange, onSave, onTest, testState, saveState })
 export default function SettingsPanel({ onClose }) {
   const session = useSession();
   const { comfyState, refreshWorkflows } = useComfyUI();
-  const [tab, setTab] = useState('appearance');
+  const [tab, setTab] = useState(() => window.localStorage.getItem('comfyui-agent.settings-tab') || 'appearance');
   const [llm, setLLM] = useState({ providers: [], active: {} });
   const [editing, setEditing] = useState(EMPTY_PROVIDER);
   const [skills, setSkills] = useState({ system: {}, custom: [] });
@@ -115,6 +115,18 @@ export default function SettingsPanel({ onClose }) {
   const [comfyBaseUrl, setComfyBaseUrl] = useState(comfyState.baseUrl || 'http://127.0.0.1:8188');
   const [comfyStateMsg, setComfyStateMsg] = useState({ status: '', text: '' });
   const [comfyBusy, setComfyBusy] = useState(false);
+
+  useEffect(() => {
+    window.localStorage.setItem('comfyui-agent.settings-tab', tab);
+  }, [tab]);
+
+  useEffect(() => {
+    const handleKeyDown = event => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
 
   useEffect(() => {
     setComfyBaseUrl(comfyState.baseUrl || 'http://127.0.0.1:8188');
@@ -158,6 +170,12 @@ export default function SettingsPanel({ onClose }) {
 
   async function selectStrategy(strategy) {
     const updated = await window.electronAPI.llmSelect({ strategy });
+    setLLM(updated);
+    window.dispatchEvent(new Event('llm-config-changed'));
+  }
+
+  async function toggleMediaPolicy(allowMediaToCloud) {
+    const updated = await window.electronAPI.llmMediaPolicy(allowMediaToCloud);
     setLLM(updated);
     window.dispatchEvent(new Event('llm-config-changed'));
   }
@@ -247,24 +265,26 @@ export default function SettingsPanel({ onClose }) {
 
   return <div className="modal-overlay" onClick={onClose}>
     <section className="settings-panel" onClick={event => event.stopPropagation()} aria-label="设置">
-      <div className="modal-header"><h2>设置</h2><button className="btn btn-icon" onClick={onClose} title="关闭"><Icon name="close" /></button></div>
-      <div className="settings-tabs">
-        <button className={tab === 'appearance' ? 'active' : ''} onClick={() => setTab('appearance')}>外观</button>
-        <button className={tab === 'models' ? 'active' : ''} onClick={() => setTab('models')}>模型</button>
-        <button className={tab === 'skills' ? 'active' : ''} onClick={() => setTab('skills')}>技能</button>
-        <button className={tab === 'generation' ? 'active' : ''} onClick={() => setTab('generation')}>生成</button>
-        <button className={tab === 'comfyui' ? 'active' : ''} onClick={() => setTab('comfyui')}>连接</button>
+      <div className="modal-header"><div><h2>设置</h2><p className="settings-header-note">调整界面、模型和生成工作流的默认行为</p></div><button className="btn btn-icon" onClick={onClose} title="关闭"><Icon name="close" /></button></div>
+      <div className="settings-tabs" role="tablist" aria-label="设置分类">
+        {[['appearance', '外观', '界面显示'], ['models', '模型', `${llm.providers.length} 个提供商`], ['skills', '技能', '意图路由'], ['generation', '生成', '提示词与研究'], ['comfyui', '连接', comfyState.status === 'ready' ? '已连接' : '未连接']].map(([id, label, note]) => (
+          <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)} role="tab" aria-selected={tab === id} title={note}><strong>{label}</strong><small>{note}</small></button>
+        ))}
       </div>
       <div className="settings-content">
         {tab === 'appearance' ? <AppearanceSettings /> : tab === 'models' ? <div className="models-settings">
           <div className="strategy-control">
-            <span>模型策略</span>
+             <div className="strategy-label"><strong>模型策略</strong><small>{llm.active.providerId ? `当前：${activeProvider?.name || llm.active.providerId}` : '尚未选择模型'}</small></div>
             <div role="group" aria-label="模型策略">
               {[{ id: 'auto', label: '自动' }, { id: 'local', label: '本地' }, { id: 'cloud', label: '云端' }].map(item => (
                 <button key={item.id} className={llm.active.strategy === item.id ? 'active' : ''} onClick={() => selectStrategy(item.id)} title={item.id === 'auto' ? '智能：使用当前选择的模型；所选模型不可用或未配置时才切换' : item.id === 'local' ? '固定使用本地模型' : '固定使用云端模型'}>{item.label}</button>
               ))}
             </div>
           </div>
+          <label className="media-policy-toggle">
+            <input type="checkbox" checked={llm.allowMediaToCloud !== false} onChange={event => toggleMediaPolicy(event.target.checked)} />
+            <span><strong>允许图片直发云端</strong><small>开启后图生图等带参考图的消息可直接发送云端模型；关闭后带图消息一律视为未审查媒体，强制走本地模型</small></span>
+          </label>
           <aside className="provider-list">
             {llm.providers.map(provider => <div key={provider.id} className={`provider-card${editing.id === provider.id ? ' active' : ''}`}>
               <button onClick={() => { setEditing(provider); setTestState({ status: '', message: '' }); setSaveState({ status: '', message: '' }); }}><strong>{provider.name}</strong><span>{provider.models?.length || 0} 个模型{activeProvider?.id === provider.id ? ' · 当前' : ''}</span></button>
@@ -284,7 +304,7 @@ export default function SettingsPanel({ onClose }) {
         {tab === 'generation' && <div className="generation-settings">
           <ResearchSettings />
           <section>
-            <h3>提示词长度预算</h3>
+             <div className="settings-section-heading"><div><h3>提示词长度预算</h3><p>限制发送给模型的提示词规模，避免超出上下文窗口。</p></div><Icon name="sliders" size={16} /></div>
             <p className="settings-muted">仅在提示词优化模式（非保留原文）下生效。超出预算时从尾部压缩，并丢弃整条标签词/整句叙述。留空表示不限制。</p>
             <div className="settings-grid">
               <div className="settings-field">
@@ -304,7 +324,7 @@ export default function SettingsPanel({ onClose }) {
         </div>}
         {tab === 'comfyui' && <div className="comfyui-settings">
           <section>
-            <h3>ComfyUI 连接</h3>
+             <div className="settings-section-heading"><div><h3>ComfyUI 连接</h3><p>选择本机运行时，或连接到已有的 ComfyUI 服务。</p></div><Icon name="workflow" size={16} /></div>
             <p className="settings-muted">选择本机 ComfyUI portable 根目录（含 python_embeded 和 ComfyUI 文件夹）由本程序代为启动，或连接已在运行的实例。未指定目录时自动向上级目录探测。</p>
             <div className="settings-field">
               <label>当前目录</label>
@@ -316,7 +336,7 @@ export default function SettingsPanel({ onClose }) {
             </div>
           </section>
           <section>
-            <h3>连接地址</h3>
+             <div className="settings-section-heading"><div><h3>连接地址</h3><p>适用于本机其他端口或局域网中的 ComfyUI 实例。</p></div><Icon name="workflow" size={16} /></div>
             <p className="settings-muted">ComfyUI 已在其他位置运行（本机其他端口或局域网其他机器）时，填写其地址。</p>
             <div className="settings-grid">
               <div className="settings-field span-2">

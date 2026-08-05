@@ -243,6 +243,7 @@ export class LLMProvider {
     this.config = resolveActiveConfig({ providers, active });
     this._instances = new Map();
     this._pool = { local: [], cloud: [] };
+    this._allowMediaToCloud = this.sourceConfig.allowMediaToCloud !== false;
     for (const provider of providers) {
       if (!configuredProvider(provider)) continue;
       const entry = {
@@ -363,6 +364,7 @@ export class LLMProvider {
   }
 
   async chat(options = {}) {
+    const allowOverride = options.allowPolicyOverride === true;
     const route = await this._route(options.prefer);
     if (!route || route.error || !route.primary) {
       if (route?.error) throw new Error(route.error);
@@ -379,11 +381,18 @@ export class LLMProvider {
       return await this._call(route.primary, options);
     } catch (error) {
       if (!route.fallback) throw error;
-      const decision = this._policyRouter.review(options.messages);
-      if (decision.requiresLocal) {
+      const decision = this._policyRouter.review(options.messages, { forceAllow: allowOverride, allowMediaToCloud: this._allowMediaToCloud });
+      if (!allowOverride && decision.requiresLocal) {
         this._policyRouter.block(decision);
         this._policyRouter.complete();
         throw new CloudPolicyBlockedError('该请求未发送到云端：本地模型不可用，安全路由已停止云端兜底。', { ...decision, localUnavailable: true });
+      }
+      if (route.fallback.kind !== 'cloud') {
+        this._policyRouter.complete();
+        throw new CloudPolicyBlockedError(
+          allowOverride ? '该请求无法发送到云端：当前没有可用的云端模型。' : '该请求未发送到云端：本地模型不可用，安全路由已停止云端兜底。',
+          { ...decision, localUnavailable: true },
+        );
       }
       try {
         return await this._call(route.fallback, options);
@@ -396,7 +405,18 @@ export class LLMProvider {
   }
 
   async _chatLocalOrBlock(localEntry, options, decision) {
+    const allowOverride = options.allowPolicyOverride === true;
     if (!localEntry) {
+      if (allowOverride) {
+        const cloud = this._pool.cloud[0];
+        if (cloud) {
+          try {
+            return await this._call(cloud, options);
+          } finally {
+            this._policyRouter.complete();
+          }
+        }
+      }
       this._policyRouter.block(decision);
       this._policyRouter.complete();
       throw new CloudPolicyBlockedError('该请求未发送到云端：内部审查要求使用本地模型，但当前没有可用的本地模型。', decision);
@@ -405,6 +425,16 @@ export class LLMProvider {
       return await this._call(localEntry, options);
     } catch (error) {
       if (decision.requiresLocal) {
+        if (allowOverride) {
+          const cloud = this._pool.cloud[0];
+          if (cloud) {
+            try {
+              return await this._call(cloud, options);
+            } finally {
+              this._policyRouter.complete();
+            }
+          }
+        }
         this._policyRouter.block(decision);
         throw new CloudPolicyBlockedError('该请求未发送到云端：本地模型处理失败，安全路由已停止云端发送。', { ...decision, localUnavailable: true });
       }
@@ -415,7 +445,7 @@ export class LLMProvider {
   }
 
   async _chatCloudOrLocal(cloudEntry, options, route) {
-    const decision = this._policyRouter.review(options.messages);
+    const decision = this._policyRouter.review(options.messages, { forceAllow: options.allowPolicyOverride === true, allowMediaToCloud: this._allowMediaToCloud });
     if (decision.requiresLocal) {
       const localEntry = route.localUnavailable ? null : route.fallback?.kind === 'local' ? route.fallback : this._pool.local[0];
       return this._chatLocalOrBlock(localEntry, options, decision);

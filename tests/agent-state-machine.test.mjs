@@ -16,6 +16,14 @@ test('task state transitions reject invalid edges', () => {
   assert.throws(() => manager.transition('state-task', 'completed'), /Invalid task state transition/);
 });
 
+test('classifying can pause for a generation confirmation preview', () => {
+  const manager = new TaskManager(null);
+  manager.create({ id: 'confirmation-task', kind: 'generate', message: 'make an image' });
+  manager.transition('confirmation-task', 'classifying');
+  manager.transition('confirmation-task', 'awaiting_confirmation');
+  assert.equal(manager.get('confirmation-task').state, 'awaiting_confirmation');
+});
+
 test('replanning runs once with compact remaining-step context', async () => {
   const agent = new Agent({ llmConfig: { provider: 'openai-compatible', model: 'gpt-4o' }, maxReplans: 1 });
   agent._taskId = 'replan-task';

@@ -88,12 +88,18 @@ function aiFailure(originalRequest, error) {
     || /(?:语言模型|本地模型).*(?:超时|没有响应)/i.test(message)
     ? '\u8bed\u8a00\u6a21\u578b\u8bf7\u6c42\u8d85\u65f6\uff0c\u8bf7\u68c0\u67e5\u6a21\u578b\u5730\u5740\u3001\u4ee3\u7406\u548c\u672c\u5730\u6a21\u578b\u662f\u5426\u5df2\u542f\u52a8\u540e\u91cd\u8bd5\u3002'
     : message;
-  return {
+  const failure = {
     action: 'ai_failed',
     error: normalizedError,
     originalRequest,
     choices: ['retry_ai', 'direct_original'],
   };
+  if (error?.code === 'CLOUD_POLICY_BLOCKED') {
+    failure.code = error.code;
+    failure.policyDecision = error.policyDecision || null;
+    failure.choices = [...failure.choices, 'force_cloud'];
+  }
+  return failure;
 }
 
 function researchPreview(context) {
@@ -253,6 +259,7 @@ export class Agent {
         cloud_allowed: '内容审查通过，发送到云端模型',
         local_fallback: '内容需在本地模型处理，已切换本地模型',
         blocked: '内容包含禁止项，已停止发送',
+        user_override: '已通过手动确认，发送到云端模型',
         idle: '',
       };
       emit(AgentEventTypes.PROGRESS, { scope: 'llm-policy', stage: state, policyState: state, message: messages[state] || state, taskId: this._taskId, traceId: this._traceId });
@@ -367,6 +374,7 @@ export class Agent {
       workflowManifest: input.workflowManifest || null,
       media: input.media || null,
       sourceTurnId: turnId,
+      allowPolicyOverride: input.allowPolicyOverride === true,
     };
 
     const sessionState = this.sessionManager.getSessionState?.() || {};
@@ -1188,7 +1196,7 @@ export class Agent {
         mode: enhanceMode,
         modelType: workflowManifest.modelType,
         promptProfile: profile,
-        existingNegative: profile.currentNegative || '',
+        existingNegative: this.project.get('lastCompiledPrompt')?.negative || profile.currentNegative || '',
         constraints: enhanceStep?.input?.constraints || {},
         customInstruction: enhanceStep?.input?.customInstruction,
         budgets: enhanceStep?.input?.budgets || this.project.get('budgets') || undefined,
@@ -1201,10 +1209,13 @@ export class Agent {
         llmProvider: this.llm?.isConfigured ? this.llm : undefined,
         onChunk: this._thinkingStream(),
         requireAI: true,
+        allowPolicyOverride: options.allowPolicyOverride === true,
       };
       const compiledPrompt = await PromptEnhanceTool.execute(compileInput);
       if (compiledPrompt.aiFailure) {
         const failure = aiFailure(request, compiledPrompt.error);
+        if (compiledPrompt.code) failure.code = compiledPrompt.code;
+        if (compiledPrompt.policyDecision) failure.policyDecision = compiledPrompt.policyDecision;
         this.taskManager?.complete?.(this._taskId, { error: { message: failure.error, stage: 'ai' } });
         this._transitionState('failed', { lastError: failure.error, message: failure.error });
         return failure;
@@ -2361,6 +2372,7 @@ ${projectContext}${workflowContext}${researchContext}${visionImages.length > 0 ?
 ${researchContext}`,
           prefer: resolveLLMStrategy(this.llm),
           maxTokens: 1024,
+          allowPolicyOverride: options.allowPolicyOverride === true,
           onChunk: (() => {
             let streamedContent = '';
             return delta => {
@@ -2398,7 +2410,13 @@ ${researchContext}`,
       return { response, taskId: this._taskId };
     } catch (error) {
       this.taskManager.complete(this._taskId, { error: { message: error.message } });
-      emit(AgentEventTypes.ERROR, { message: error.message, taskId: this._taskId, traceId });
+      emit(AgentEventTypes.ERROR, {
+        message: error.message,
+        code: error.code || '',
+        policyDecision: error.code === 'CLOUD_POLICY_BLOCKED' ? error.policyDecision || null : null,
+        taskId: this._taskId,
+        traceId,
+      });
       if (this._state !== 'failed') this._transitionState('failed', { lastError: error.message, message: error.message });
       emit(AgentEventTypes.STATUS, { status: 'error', message: error.message, taskId: this._taskId, traceId });
       this.taskManager.update(this._taskId, { status: 'failed', state: 'failed', error: error.message, lastError: error.message });

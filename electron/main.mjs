@@ -6,7 +6,7 @@ import { join, dirname, extname, isAbsolute, relative, resolve, basename } from 
 import { fileURLToPath } from 'url';
 import { readFile, readdir, stat, writeFile, mkdir, copyFile, unlink, rename, rm, realpath, lstat } from 'fs/promises';
 import { createWriteStream, existsSync, readFileSync, readdirSync, statSync } from 'fs';
-import { ComfyUITool, on, AgentEventTypes, configureSkills } from '../src/agent/index.mjs';
+import { ComfyUITool, on, AgentEventTypes, configureSkills, CloudPolicyBlockedError } from '../src/agent/index.mjs';
 import { LLMProvider, resolveLLMRouting } from '../src/agent/llm/provider.mjs';
 import { PreferenceMemory } from '../src/agent/memory/preference.mjs';
 import { ComfyUIClient } from '../src/agent/tools/comfyui/client.mjs';
@@ -20,6 +20,7 @@ import { ExecutionCoordinator } from './execution-coordinator.mjs';
 import { SANDBOX_AUTHORIZED_FILES, resolveSandboxPath } from '../src/agent/security/sandbox.mjs';
 import { normalizeAssetPath, projectAssetRoot, removeEmptyAssetDirectories, scanProjectAssets } from '../src/runtime/project-assets.mjs';
 import { displayPath } from '../src/runtime/path-display.mjs';
+import { importWorkflowFiles, collectWorkflowFiles, deleteWorkflowFile, renameWorkflowFile } from '../src/runtime/workflow-import.mjs';
 import { directGenerationRequest } from '../src/runtime/generation-contract.mjs';
 import { traceError, validateTaskTrace } from '../src/runtime/trace-contract.mjs';
 import { RequestLedger } from './request-ledger.mjs';
@@ -141,18 +142,7 @@ function assertExecutionAvailable() {
 }
 
 function listWorkflowFiles(dir) {
-  if (!isDirectoryPath(dir)) return [];
-  const files = [];
-  function collect(currentDir, prefix = '') {
-    for (const entry of readdirSync(currentDir, { withFileTypes: true })) {
-      const relativeName = join(prefix, entry.name);
-      const filePath = join(currentDir, entry.name);
-      if (entry.isDirectory()) collect(filePath, relativeName);
-      else if (entry.name.toLowerCase().endsWith('.json') && !entry.name.toLowerCase().includes('backup')) files.push(relativeName);
-    }
-  }
-  collect(dir);
-  return files.sort((a, b) => a.localeCompare(b));
+  return collectWorkflowFiles(dir);
 }
 
 function directSandboxInput() {
@@ -683,7 +673,7 @@ async function recoverAgentTasks() {
         projectId: task?.projectId,
         sessionId: task?.sessionId,
       });
-      agent.taskManager.complete(item.taskId, { result: archived });
+      agent.taskManager.settleComplete(item.taskId, { result: archived });
       await agent.taskManager.persist();
     } catch (error) {
       const task = agent.taskManager.get(item.taskId);
@@ -779,6 +769,20 @@ ipcMain.handle('list-workflows', async () => {
   return { dir, displayDir: getDisplayPath(dir), files: listWorkflowFiles(dir) };
 });
 
+ipcMain.handle('workflow:delete', async (_, { name } = {}) => {
+  const dir = getWorkflowDir({ workflowDir: agent?.workflowDir });
+  if (!dir) throw new Error('工作流目录不存在');
+  const result = await deleteWorkflowFile(name, dir);
+  return { dir, displayDir: getDisplayPath(dir), ...result };
+});
+
+ipcMain.handle('workflow:rename', async (_, { name, nextName } = {}) => {
+  const dir = getWorkflowDir({ workflowDir: agent?.workflowDir });
+  if (!dir) throw new Error('工作流目录不存在');
+  const result = await renameWorkflowFile(name, nextName, dir);
+  return { dir, displayDir: getDisplayPath(dir), ...result };
+});
+
 ipcMain.handle('select-workflow-dir', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openDirectory'],
@@ -806,6 +810,33 @@ ipcMain.handle('show-workflow-dir', async (_, { workflowName = '' } = {}) => {
     await shell.openPath(dir);
   }
   return { dir };
+});
+
+ipcMain.handle('select-workflow-files', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile', 'multiSelections'],
+    title: '导入工作流',
+    filters: [
+      { name: 'ComfyUI 工作流', extensions: ['json'] },
+      { name: '所有文件', extensions: ['*'] },
+    ],
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  const dir = getWorkflowDir({ workflowDir: agent?.workflowDir });
+  if (!dir) throw new Error('工作流目录不存在');
+  const imported = await importWorkflowFiles(result.filePaths, dir);
+  if (agent && dir !== agent.workflowDir) await agent.setWorkflowDir(dir);
+  directService?.setWorkflowDir(dir);
+  return { dir, displayDir: getDisplayPath(dir), ...imported };
+});
+
+ipcMain.handle('import-workflows', async (_, { paths = [] } = {}) => {
+  const dir = getWorkflowDir({ workflowDir: agent?.workflowDir });
+  if (!dir) throw new Error('工作流目录不存在');
+  const result = await importWorkflowFiles(paths, dir);
+  if (agent && dir !== agent.workflowDir) await agent.setWorkflowDir(dir);
+  directService?.setWorkflowDir(dir);
+  return { dir, displayDir: getDisplayPath(dir), ...result };
 });
 
 ipcMain.handle('select-media-files', async () => {
@@ -843,6 +874,18 @@ function generationOptions(clientId, controls = {}) {
     readiness: controls.readiness || null,
     webResearch: controls.webResearch !== false,
     webResearchOptions: controls.webResearchOptions || {},
+    allowPolicyOverride: controls.allowPolicyOverride === true,
+  };
+}
+
+function policyBlockResult(error, turnId = '') {
+  if (!(error instanceof CloudPolicyBlockedError) && error?.code !== 'CLOUD_POLICY_BLOCKED') return null;
+  return {
+    action: 'policy_block',
+    turnId,
+    code: 'CLOUD_POLICY_BLOCKED',
+    message: error.message,
+    policyDecision: error.policyDecision || null,
   };
 }
 
@@ -879,6 +922,8 @@ ipcMain.handle('agent:prepare', async (_, { message, workflowName, clientId, con
   const requestId = controls.requestId || `ai_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const fingerprint = JSON.stringify({ source: 'ai', message, workflowName, controls });
   const existing = requestLedger.begin(requestId, { source: 'ai', fingerprint });
+  if (existing?.state === 'completed') return existing.result || existing.preview;
+  if (existing?.state === 'executing') return requestLedger.snapshot(requestId);
   if (existing.preview) return existing.preview;
   return executionCoordinator.execute({
     source: 'ai',
@@ -894,6 +939,7 @@ ipcMain.handle('agent:prepare', async (_, { message, workflowName, clientId, con
           source: 'ai',
           previewId: preview.previewId,
           taskId: agent.taskId,
+          requestId,
           owner,
           entry,
         });
@@ -911,6 +957,8 @@ ipcMain.handle('agent:generate', async (_, { message, workflowName, clientId, co
   const requestId = controls.requestId || `ai_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const fingerprint = JSON.stringify({ source: 'ai', message, workflowName, controls });
   const existing = requestLedger.begin(requestId, { source: 'ai', fingerprint });
+  if (existing?.state === 'completed') return existing.result || existing.preview;
+  if (existing?.state === 'executing') return requestLedger.snapshot(requestId);
   if (existing.preview) return existing.preview;
   return executionCoordinator.execute({
     source: 'ai',
@@ -927,6 +975,7 @@ ipcMain.handle('agent:generate', async (_, { message, workflowName, clientId, co
           source: 'ai',
           previewId: preview.previewId,
           taskId: agent.taskId,
+          requestId,
           owner,
           entry,
         });
@@ -1006,7 +1055,6 @@ ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options
   const ledgerEntry = requestLedger.get(requestId);
   if (ledgerEntry?.state === 'completed') return ledgerEntry.result;
   if (ledgerEntry?.state === 'executing') return requestLedger.snapshot(requestId);
-  requestLedger.update(requestId, { state: 'executing', taskId, previewId });
   const directContext = { projectId: owner.projectId, sessionId: owner.sessionId, taskId };
   return executionCoordinator.execute({
     source: 'direct',
@@ -1015,6 +1063,7 @@ ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options
     previewId,
     cancel: () => service.cancel(),
     work: async entry => {
+      requestLedger.update(requestId, { state: 'executing', taskId, previewId });
       updateDirectTask(taskId, 'executing', { currentStep: 'comfyui', currentAttempt: 1 });
       sendToRenderer('direct:status', {
         source: 'direct',
@@ -1130,11 +1179,23 @@ ipcMain.handle('agent:send', async (_, { message, workflowName, workflowManifest
         return { action: 'clarify', decision, result: await agent.clarify(message, decision) };
       }
       if (decision.action === 'reply') {
-        return {
-          action: 'chat',
-          decision,
-          result: await agent.chat(message, { workflowName, workflowManifest, intent: decision.intent, media: controls.media || null }),
-        };
+        try {
+          return {
+            action: 'chat',
+            decision,
+            result: await agent.chat(message, {
+              workflowName,
+              workflowManifest,
+              intent: decision.intent,
+              media: controls.media || null,
+              allowPolicyOverride: controls.allowPolicyOverride === true,
+            }),
+          };
+        } catch (error) {
+          const blocked = policyBlockResult(error);
+          if (blocked) return blocked;
+          throw error;
+        }
       }
 
       const comfyState = await comfyManager.ensureStarted();
@@ -1185,22 +1246,31 @@ ipcMain.handle('agent:turn', async (_, turn = {}) => {
     previewId,
     cancel: taskId => agent.cancel(taskId || ''),
     work: async entry => {
-      const response = await agent.handleTurn({
-        text: turn.text || '',
-        modeHint: turn.modeHint === 'generate' ? 'generate' : 'answer',
-        media: turn.media || null,
-        workflowName: turn.workflowName || '',
-        workflowManifest: turn.workflowManifest || null,
-        sessionId: turn.sessionId || agent.sessionManager.activeSessionId,
-        turnId: turn.turnId || '',
-        recordConfirmation: turn.recordConfirmation !== false,
-        confirmation: turn.confirmation || {},
-      });
+      let response;
+      try {
+        response = await agent.handleTurn({
+          text: turn.text || '',
+          modeHint: turn.modeHint === 'generate' ? 'generate' : 'answer',
+          media: turn.media || null,
+          workflowName: turn.workflowName || '',
+          workflowManifest: turn.workflowManifest || null,
+          sessionId: turn.sessionId || agent.sessionManager.activeSessionId,
+          turnId: turn.turnId || '',
+          recordConfirmation: turn.recordConfirmation !== false,
+          confirmation: turn.confirmation || {},
+          allowPolicyOverride: turn.allowPolicyOverride === true,
+        });
+      } catch (error) {
+        const blocked = policyBlockResult(error, turn.turnId || '');
+        if (blocked) return blocked;
+        throw error;
+      }
       if (response?.action === 'prepare' && response.preview?.previewId) {
         executionCoordinator.registerPreview({
           source: 'ai',
           previewId: response.preview.previewId,
           taskId: response.preview.taskId || agent.taskId,
+          requestId,
           owner,
           entry,
         });
@@ -1238,7 +1308,10 @@ ipcMain.handle('agent:run-prepared', async (_, { previewId, edits = {} }) => {
         await agent.discardPrepared(previewId);
         return { cancelled: true };
       }
-      return archiveProjectResult(await agent.runPrepared(previewId, edits), owner);
+      const result = await archiveProjectResult(await agent.runPrepared(previewId, edits), owner);
+      const requestId = executionCoordinator.getPreview(previewId)?.requestId || '';
+      if (requestId) requestLedger.complete(requestId, result);
+      return result;
     },
   });
 });
@@ -1256,7 +1329,21 @@ ipcMain.handle('agent:chat', async (_, { message, workflowName, workflowManifest
   return executionCoordinator.execute({
     source: 'ai',
     owner,
-    work: () => agent.chat(message, { workflowName, workflowManifest, media: controls.media || null, intent: controls.intent || 'chat' }),
+    work: async () => {
+      try {
+        return await agent.chat(message, {
+          workflowName,
+          workflowManifest,
+          media: controls.media || null,
+          intent: controls.intent || 'chat',
+          allowPolicyOverride: controls.allowPolicyOverride === true,
+        });
+      } catch (error) {
+        const blocked = policyBlockResult(error);
+        if (blocked) return blocked;
+        throw error;
+      }
+    },
   });
 });
 
@@ -1301,7 +1388,7 @@ ipcMain.handle('agent:retry-recovery', async (_, { taskId } = {}) => {
   const recovered = await ComfyUITool.recoverResult(promptId, result.history);
   try {
     const archived = await archiveProjectResult({ ...recovered, taskId, promptId }, { projectId: task.projectId, sessionId: task.sessionId });
-    agent.taskManager.complete(taskId, { result: archived });
+    agent.taskManager.settleComplete(taskId, { result: archived });
     await agent.taskManager.persist();
     return { status: 'completed', result: archived };
   } catch (error) {
@@ -1309,6 +1396,14 @@ ipcMain.handle('agent:retry-recovery', async (_, { taskId } = {}) => {
     await agent.taskManager.persist();
     throw error;
   }
+});
+
+ipcMain.handle('agent:archive-task', async (_, { taskId } = {}) => {
+  if (!agent) throw new Error('Agent not ready');
+  const archived = agent.taskManager.archive(taskId);
+  if (!archived) throw new Error('Task not found or is not recoverable');
+  await agent.taskManager.persist();
+  return { archived: true, taskId };
 });
 
 ipcMain.handle('agent:cancel', async (_, { taskId } = {}) => {
@@ -1512,6 +1607,14 @@ ipcMain.handle('llm:select', async (_, selection = {}) => {
     active.reasoningEffort = selection.reasoningEffort;
   }
   llm.active = active;
+  prefStore.set('llm', llm);
+  await agent?.reconfigureLLM(llm);
+  return llm;
+});
+
+ipcMain.handle('llm:media-policy', async (_, { allowMediaToCloud }) => {
+  const llm = prefStore.get('llm');
+  llm.allowMediaToCloud = allowMediaToCloud !== false;
   prefStore.set('llm', llm);
   await agent?.reconfigureLLM(llm);
   return llm;
