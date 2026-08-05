@@ -37,4 +37,11 @@ ComfyUI 智能创作台 - 便携版
      权重需另行下载到 models 目录）。
   3. 双击无反应：检查 Windows 10 1803 及以上版本。
 
+六、更新方式
+  完整便携包只需首次下载。后续更新请使用
+  ComfyUI-Agent-update-v*.zip，不要重新下载完整便携包。
+  关闭程序后，将更新包解压到现有 dist-portable 文件夹并覆盖
+  resources\app 目录。不要删除或替换 electron.exe 及其旁边的
+  Chromium 运行时文件。
+
 卸载：直接删除本文件夹即可，不留注册表残留。
