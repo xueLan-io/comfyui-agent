@@ -188,7 +188,7 @@ COMFYUI_BASE_URL=http://127.0.0.1:8188
 - 便携版应用可在设置的“应用更新”页检查并安装应用层更新。更新器只替换 `resources\app`，不会修改 ComfyUI、模型和用户数据。
 - Stable 使用普通版本 Tag；包含预发布标识的版本（例如 `v0.3.0-preview.1`）会作为 Preview Release。
 - 发布 manifest 使用 Ed25519 detached signature（`.json.sig`）签名，客户端内置公钥并在读取版本信息前验签。更新包中的 Windows 可执行文件由 CI 使用 Authenticode/SHA-256 签名。
-- GitHub Actions 需要配置 `RELEASE_SIGNING_PRIVATE_KEY_B64`、`RELEASE_CERT_BASE64` 和 `RELEASE_CERT_PASSWORD` Secrets。私钥和 PFX 证书不能提交到仓库或写入发布包。
+- GitHub Actions 必须配置 `RELEASE_SIGNING_PRIVATE_KEY_B64`；`RELEASE_CERT_BASE64` 和 `RELEASE_CERT_PASSWORD` 为可选 Secrets。配置 PFX 后，CI 会额外对 Windows 可执行文件执行 Authenticode 签名。私钥和 PFX 证书不能提交到仓库或写入发布包。
 
 ### 发布签名密钥配置
 
@@ -206,7 +206,7 @@ Windows Authenticode 使用代码签名证书导出的 PFX：
 - `RELEASE_CERT_PASSWORD`：PFX 密码
 - PFX 私钥必须包含在证书中，且不能提交到仓库
 
-本地运行 `pack-portable.bat` 时不设置 `RELEASE_CERT`，不会执行 Authenticode 签名；GitHub Actions 会强制要求证书 Secret 并在 Release 前签名三个 Windows 可执行文件。
+本地运行 `pack-portable.bat` 时不设置 `RELEASE_CERT`，不会执行 Authenticode 签名。未配置 PFX 时 Release 仍可发布，但 Windows 文件不会带 Authenticode 签名；以后补充证书后重新发布即可。
 - 发布产物和压缩包不应提交到源代码仓库；相关目录和文件已加入 `.gitignore`。
 - ComfyUI、模型权重及其第三方节点遵循各自项目和模型的许可证。
 

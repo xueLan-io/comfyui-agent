@@ -42,7 +42,10 @@ jobs:
         env:
           RELEASE_CERT_BASE64: ${{ secrets.RELEASE_CERT_BASE64 }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:RELEASE_CERT_BASE64)) { throw 'RELEASE_CERT_BASE64 secret is required' }
+          if ([string]::IsNullOrWhiteSpace($env:RELEASE_CERT_BASE64)) {
+            Write-Host 'Authenticode certificate not configured; continuing with Ed25519 manifest signing only.'
+            exit 0
+          }
           [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\release-signing.pfx", [Convert]::FromBase64String($env:RELEASE_CERT_BASE64))
           "RELEASE_CERT=$env:RUNNER_TEMP\release-signing.pfx" >> $env:GITHUB_ENV
           $signTool = Get-ChildItem "$env:ProgramFiles(x86)\Windows Kits\10\bin" -Filter signtool.exe -Recurse | Sort-Object FullName -Descending | Select-Object -First 1
