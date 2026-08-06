@@ -32,7 +32,7 @@ jobs:
       - name: Prepare packaging-only ComfyUI root
         shell: pwsh
         run: |
-          $portableRoot = Join-Path (Split-Path $env:GITHUB_WORKSPACE -Parent) 'comfyui-packaging-root'
+          $portableRoot = Split-Path $env:GITHUB_WORKSPACE -Parent
           New-Item -ItemType Directory -Force -Path (Join-Path $portableRoot 'python_embeded') | Out-Null
           New-Item -ItemType Directory -Force -Path (Join-Path $portableRoot 'ComfyUI') | Out-Null
           New-Item -ItemType File -Force -Path (Join-Path $portableRoot 'python_embeded\python.exe') | Out-Null
