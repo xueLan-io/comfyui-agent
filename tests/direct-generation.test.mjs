@@ -96,6 +96,21 @@ test('direct service prepares and executes without an agent runtime', async () =
   assert.equal(service.getPreview(preview.previewId), null);
 });
 
+test('direct service returns the unified media result for video output', async () => {
+  const service = new DirectService({
+    executor: {
+      async inspect() { return workflow(); },
+      async execute() { return { media: [{ filename: 'result.mp4' }] }; },
+    },
+  });
+  const preview = await service.prepare({ workflowName: 'video.json', positive: 'a cat', negative: '' });
+  const result = await service.run(preview.previewId);
+
+  assert.equal(result.media.length, 1);
+  assert.equal(result.images.length, 0);
+  assert.equal(result.videos[0].filename, 'result.mp4');
+});
+
 test('direct service reports pending previews as busy', async () => {
   const service = new DirectService({
     executor: {
@@ -193,6 +208,20 @@ test('direct validator blocks unsupported negative prompts without changing them
   assert.equal(request.negative, 'blurry');
 });
 
+test('direct preflight exposes the shared diagnostic report', () => {
+  const request = directGenerationRequest({ workflowName: 'anima.json', positive: 'a cat', negative: '' });
+  const result = validateDirectRequest(request, workflow({
+    modelReady: false,
+    missingModels: [{ value: 'missing.safetensors', available: false }],
+  }));
+
+  assert.equal(result.valid, false);
+  assert.equal(result.modelReady, false);
+  assert.equal(result.errorCount, 1);
+  assert.equal(result.issues[0].code, 'model_missing');
+  assert.deepEqual(result.missingModels.map(item => item.value), ['missing.safetensors']);
+});
+
 test('shared Comfy executor passes an empty negative prompt without workflow fallback', async () => {
   let input;
   const executor = new ComfyExecutor({
@@ -230,6 +259,33 @@ test('direct service retries technical failures without changing the prompt', as
   assert.equal(attempts, 2);
   assert.equal(result.prompt, '(masterpiece, best quality:1.2)');
   assert.equal(result.executionPolicy.mutatePrompt, false);
+});
+
+test('direct service stops retrying when cancellation is requested during backoff', async () => {
+  let attempts = 0;
+  const controller = new AbortController();
+  const service = new DirectService({
+    executor: {
+      async inspect() { return workflow(); },
+      async execute() {
+        attempts++;
+        throw Object.assign(new Error('temporary failure'), { failureType: 'comfyui_transient', retryable: true });
+      },
+    },
+  });
+  const preview = await service.prepare({
+    workflowName: 'anima.json',
+    positive: 'a cat',
+    negative: '',
+    executionPolicy: { retry: true, evaluate: false, mutatePrompt: false },
+  });
+
+  const execution = service.run(preview.previewId, {}, { signal: controller.signal });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  controller.abort();
+
+  await assert.rejects(execution, error => error.code === 'GENERATION_CANCELLED');
+  assert.equal(attempts, 1);
 });
 
 test('direct service switches to an img2img workflow when a reference image is attached', async () => {

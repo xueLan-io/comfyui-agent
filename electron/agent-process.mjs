@@ -60,6 +60,7 @@ export class AgentProcessClient {
       update: (taskId, patch) => this.call('task.update', [taskId, patch]),
       transition: (taskId, state, patch) => this.call('task.transition', [taskId, state, patch]),
       complete: (taskId, result) => this.call('task.complete', [taskId, result]),
+      settleComplete: (taskId, result) => this.call('task.settleComplete', [taskId, result]),
       persist: () => this.call('task.persist'),
     };
     this.conversation = {

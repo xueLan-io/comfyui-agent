@@ -14,6 +14,7 @@ export const AgentEventTypes = {
   TRACE: 'agent:trace',
   PROGRESS: 'agent:progress',
   FEEDBACK: 'agent:feedback',
+  CONTEXT_USAGE: 'agent:context-usage',
 };
 
 let projectId = '';

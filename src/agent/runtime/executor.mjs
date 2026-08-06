@@ -4,6 +4,7 @@ import { matchesExpectedOutput } from '../schemas/plan-schema.mjs';
 import { classifyFailure } from '../optimizer/retry-policy.mjs';
 import { ComfyExecutor } from '../../runtime/executor/comfy-executor.mjs';
 import { createSandboxPolicy, SANDBOX_AUTHORIZED_FILES } from '../security/sandbox.mjs';
+import { normalizeGenerationResult } from '../../runtime/generation-contract.mjs';
 
 export class Executor {
   constructor(toolRegistry, llmProvider, sandbox) {
@@ -138,13 +139,14 @@ export class Executor {
       }
       this.sandbox.assertToolCall(step.tool, enrichedInput);
 
-      const result = step.tool === 'comfyui'
+      let result = step.tool === 'comfyui'
         ? await this.comfyExecutor.executeToolInput(enrichedInput, {
           workflowDir: trustedWorkflowDir,
           sandboxInput: enrichedInput.sandboxInput,
           onProgress: context.onProgress,
         })
         : await tool.execute(enrichedInput);
+      if (step.tool === 'comfyui') result = normalizeGenerationResult(result);
       const duration = Date.now() - startTime;
       this._stepTimings[step.id] = duration;
 
@@ -200,8 +202,10 @@ export class Executor {
         context.enhancedPrompt = result.enhanced;
         context.compiledPrompt = result;
       }
-      if (step.tool === 'comfyui' && result.images) {
-        context.lastImages = result.images;
+      if (step.tool === 'comfyui') {
+        context.lastMedia = result.media || [];
+        context.lastImages = result.images || [];
+        context.lastVideos = result.videos || [];
         context.lastPromptId = result.promptId;
       }
       if (step.tool === 'web' && !result.error) {

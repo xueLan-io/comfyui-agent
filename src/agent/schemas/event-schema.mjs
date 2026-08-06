@@ -10,6 +10,7 @@ const EventTypes = [
   'agent:trace',
   'agent:progress',
   'agent:feedback',
+  'agent:context-usage',
 ];
 
 const BaseEventSchema = {

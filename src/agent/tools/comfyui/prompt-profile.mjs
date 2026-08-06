@@ -2,6 +2,12 @@ function activeNodes(workflow) {
   return (workflow.nodes || []).filter(node => node.mode === 0);
 }
 
+function widgetValues(node) {
+  if (Array.isArray(node.widgets_values)) return node.widgets_values;
+  if (node.widgets_values && typeof node.widgets_values === 'object') return Object.values(node.widgets_values);
+  return [];
+}
+
 function inputSource(node, inputName, links) {
   const input = (node.inputs || []).find(item => item.name === inputName);
   const link = links.get(input?.link);
@@ -27,11 +33,12 @@ function collectUpstream(source, nodes, links) {
 
 function detectFamily(workflow, fallback = 'generic') {
   const signature = activeNodes(workflow)
-    .flatMap(node => [node.type, node.title, ...(node.widgets_values || [])])
+    .flatMap(node => [node.type, node.title, ...widgetValues(node), ...(node.properties?.models || []).flatMap(model => [model.name, model.directory])])
     .filter(value => typeof value === 'string')
     .join(' ')
     .toLowerCase();
 
+  if (/minimaxh3|mini.?max.?h3|qwen3vl.*minimax_h3/.test(signature)) return 'minimax_h3';
   if (/miaomiao|anima(?!tediff)/.test(signature)) return 'anima';
   if (/\bflux\b/.test(signature)) return 'flux';
   if (/\bwan(?:2|\s|_|-|\.)/.test(signature)) return 'wan';
@@ -68,6 +75,22 @@ function currentText(targets, nodes) {
 export function buildPromptProfile(workflow, modelType = 'generic') {
   const nodes = new Map(activeNodes(workflow).map(node => [String(node.id), node]));
   const links = new Map((workflow.links || []).map(link => [link[0], link]));
+  const h3Targets = [...nodes.values()]
+    .filter(node => /minimaxh3referencetovideo/i.test(node.type || '') && (node.inputs || []).some(input => input.name === 'prompt'))
+    .map(node => ({ nodeId: String(node.id), input: 'prompt', type: node.type }));
+  if (h3Targets.length > 0) {
+    const family = 'minimax_h3';
+    return {
+      family,
+      format: 'narrative',
+      positiveTargets: h3Targets,
+      negativeTargets: [],
+      promptLists: [],
+      supportsNegative: false,
+      currentPositive: currentText(h3Targets, nodes),
+      currentNegative: '',
+    };
+  }
   const samplers = [...nodes.values()].filter(node => /ksampler/i.test(node.type || ''));
   const positiveNodes = new Set();
   const negativeNodes = new Set();
@@ -102,6 +125,8 @@ export function promptProfileLabel(profile) {
     sdxl: 'SDXL',
     wan: 'Wan 2.2',
     animatediff: 'AnimateDiff',
+    minimax_h3: 'MiniMax H3',
+    minimax_h3: 'MiniMax H3',
   };
   return labels[profile?.family] || profile?.family || 'Generic';
 }

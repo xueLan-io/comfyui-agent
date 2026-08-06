@@ -22,6 +22,13 @@ test('evaluateTechnical fails with no images', () => {
   assert.equal(result.score, 0);
 });
 
+test('evaluateTechnical accepts video media without images', () => {
+  const result = evaluateTechnical({ videos: [{ filename: 'clip.mp4' }] });
+  assert.equal(result.passed, true);
+  assert.equal(result.checks.videoCount, 1);
+  assert.equal(result.checks.mediaCount, 1);
+});
+
 test('buildEvaluation computes overall score', () => {
   const evaluation = buildEvaluation({
     technical: { passed: true, score: 1, detail: 'ok' },

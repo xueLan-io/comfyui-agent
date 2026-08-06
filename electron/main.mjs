@@ -1,13 +1,16 @@
 import pkg from 'electron';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { get as httpGet } from 'http';
 import { get as httpsGet } from 'https';
 import { join, dirname, extname, isAbsolute, relative, resolve, basename } from 'path';
 import { fileURLToPath } from 'url';
-import { readFile, readdir, stat, writeFile, mkdir, copyFile, unlink, rename, rm, realpath, lstat } from 'fs/promises';
-import { createWriteStream, existsSync, readFileSync, readdirSync, statSync } from 'fs';
-import { ComfyUITool, on, AgentEventTypes, configureSkills, CloudPolicyBlockedError } from '../src/agent/index.mjs';
+import { readFile, readdir, stat, writeFile, mkdir, copyFile, unlink, rename, rm, realpath, lstat, mkdtemp } from 'fs/promises';
+import { createWriteStream, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { ComfyUITool, on, AgentEventTypes, configureSkills, skillManifest, createCustomSkill, SKILLS, CloudPolicyBlockedError, CloudPolicyRouter, createMcpHttpServer, createWebMcpServer } from '../src/agent/index.mjs';
+import { externalSkillConfig, loadExternalSkillFile, normalizeExternalSkill } from '../src/agent/skills/external.mjs';
 import { LLMProvider, resolveLLMRouting } from '../src/agent/llm/provider.mjs';
+import { OpenAIImageProvider } from '../src/agent/llm/openai-image.mjs';
 import { PreferenceMemory } from '../src/agent/memory/preference.mjs';
 import { ComfyUIClient } from '../src/agent/tools/comfyui/client.mjs';
 import { ComfyUIManager, hasPortableLayout, findPortableRoot } from './comfyui-manager.mjs';
@@ -23,18 +26,73 @@ import { displayPath } from '../src/runtime/path-display.mjs';
 import { importWorkflowFiles, collectWorkflowFiles, deleteWorkflowFile, renameWorkflowFile } from '../src/runtime/workflow-import.mjs';
 import { directGenerationRequest } from '../src/runtime/generation-contract.mjs';
 import { traceError, validateTaskTrace } from '../src/runtime/trace-contract.mjs';
+import { verifyUpdateManifest } from '../src/runtime/update-signature.mjs';
 import { RequestLedger } from './request-ledger.mjs';
+import { listGlobalPresets, createGlobalPreset, updateGlobalPreset, deleteGlobalPreset, copyGlobalPreset, markPresetUsed, rateGlobalPreset, composeGlobalPresets, replacePresetModel, copyPresetCover, importGlobalPreset, FORMAT, VERSION, assertInside } from '../src/runtime/global-presets.mjs';
 
-const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = pkg;
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell, Tray, nativeImage, globalShortcut, screen } = pkg;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const APP_NAME = 'ComfyUI 智能创作台';
+const APP_NAME = 'ComfyMuse';
 const APP_ID = 'com.comfyui.agent';
 const USER_DATA_DIR_NAME = 'comfy-agent';
 const APP_ICON_PATH = join(__dirname, 'icon.ico');
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8188';
 const portableRootPath = join(__dirname, '..', 'comfyui-root.txt');
 const appRoot = dirname(__dirname);
+const FLOATING_WINDOW_SIZE = { width: 420, height: 680 };
+const FLOATING_ORB_SIZE = { width: 72, height: 72 };
+const FLOATING_MIN_SIZE = { width: 360, height: 430 };
+const FLOATING_EDGE_GUTTER = 2;
+let floatingPosition = null;
+let floatingExpandedSize = { ...FLOATING_WINDOW_SIZE };
+let floatingBoundsGuard = false;
+let pendingFloatingDrag = null;
+let floatingWindowPointerGrab = null;
+let floatingMoveToken = 0;
+let floatingResizeTimer = null;
+let floatingAnimationReleaseTimer = null;
+let floatingAnimating = false;
+
+function floatingPositionPath() { return join(app.getPath('userData'), 'floating-position.json'); }
+
+function clampFloatingPosition(x, y, width, height) {
+  const display = screen.getDisplayNearestPoint({ x, y });
+  const area = display.workArea;
+  const safeWidth = Math.min(width, area.width);
+  const safeHeight = Math.min(height, area.height);
+  const horizontalGutter = area.width > safeWidth + FLOATING_EDGE_GUTTER * 2 ? FLOATING_EDGE_GUTTER : 0;
+  const verticalGutter = area.height > safeHeight + FLOATING_EDGE_GUTTER * 2 ? FLOATING_EDGE_GUTTER : 0;
+  return {
+    x: Math.max(area.x + horizontalGutter, Math.min(Math.round(x), area.x + area.width - safeWidth - horizontalGutter)),
+    y: Math.max(area.y + verticalGutter, Math.min(Math.round(y), area.y + area.height - safeHeight - verticalGutter)),
+  };
+}
+
+function clampFloatingBounds(x, y, width, height) {
+  const display = screen.getDisplayNearestPoint({ x, y });
+  const area = display.workArea;
+  const minWidth = Math.min(FLOATING_MIN_SIZE.width, area.width);
+  const minHeight = Math.min(FLOATING_MIN_SIZE.height, area.height);
+  const safeWidth = Math.max(minWidth, Math.min(Math.round(width), area.width));
+  const safeHeight = Math.max(minHeight, Math.min(Math.round(height), area.height));
+  const position = clampFloatingPosition(x, y, safeWidth, safeHeight);
+  return { ...position, width: safeWidth, height: safeHeight };
+}
+
+function readFloatingPosition() {
+  if (floatingPosition) return floatingPosition;
+  try { floatingPosition = JSON.parse(readFileSync(floatingPositionPath(), 'utf8')); } catch { floatingPosition = null; }
+  if (floatingPosition?.width > FLOATING_ORB_SIZE.width && floatingPosition?.height > FLOATING_ORB_SIZE.height) {
+    floatingExpandedSize = { width: Number(floatingPosition.width), height: Number(floatingPosition.height) };
+  }
+  return floatingPosition;
+}
+
+function saveFloatingPosition(x, y, size = {}) {
+  floatingPosition = { ...(floatingPosition || {}), x, y, ...size };
+  try { writeFileSync(floatingPositionPath(), JSON.stringify(floatingPosition)); } catch { /* persistence is best effort */ }
+}
 
 function resolveAppPath(value) {
   return value && isAbsolute(value) ? resolve(value) : value ? resolve(appRoot, value) : '';
@@ -65,6 +123,8 @@ const envConfig = loadEnvFile();
 const COMFY_START_DIRS = [packagedPortableRoot, appRoot, dirname(process.execPath)];
 
 let mainWindow;
+let floatingWindow;
+let tray;
 let agent;
 let agentReadyPromise;
 let agentEventUnsubscribers = [];
@@ -73,6 +133,12 @@ let prefStore;
 const authorizedMediaPaths = new Set();
 const executionCoordinator = new ExecutionCoordinator();
 const requestLedger = new RequestLedger();
+const activeImageRequests = new Map();
+let globalPresetsRoot = '';
+let embeddedMcpTransport;
+const workflowInspectionRequests = new Map();
+let updateState = { status: 'idle', progress: 0, version: '', error: '' };
+let downloadedUpdate = null;
 
 const comfyManager = new ComfyUIManager({
   baseUrl: envConfig.COMFYUI_BASE_URL || DEFAULT_BASE_URL,
@@ -148,6 +214,7 @@ function listWorkflowFiles(dir) {
 function directSandboxInput() {
   const project = agent?.sessionManager.getActiveProject?.();
   const allowedRoots = project?.dir ? [{ name: 'project', path: project.dir }] : [];
+  allowedRoots.push({ name: 'preset', path: presetRoot() });
   return {
     workflowDir: agent?.workflowDir || getDefaultWorkflowDir(),
     allowedRoots,
@@ -286,6 +353,38 @@ function getStoredConfig() {
   return prefStore.getAll();
 }
 
+function publicProvider(provider) {
+  const { apiKey, _encryptedApiKey, apiKeyError, ...safe } = provider || {};
+  return { ...safe, hasApiKey: Boolean(apiKey || _encryptedApiKey), apiKeyError: apiKeyError || '' };
+}
+
+function publicLLM(llm) {
+  return {
+    ...llm,
+    providers: (llm.providers || []).map(publicProvider),
+    resolved: resolveLLMRouting(llm),
+  };
+}
+
+function normalizeHttpUrl(value, label) {
+  let url;
+  try { url = new URL(String(value || '').trim()); } catch { throw new Error(`${label}必须是有效的 HTTP/HTTPS 地址`); }
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error(`${label}仅支持 HTTP/HTTPS 协议`);
+  if (url.username || url.password) throw new Error(`${label}不能包含账号密码`);
+  return url.toString().replace(/\/$/, '');
+}
+
+function normalizeHeaders(headers = {}) {
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return {};
+  const result = {};
+  for (const [key, value] of Object.entries(headers).slice(0, 32)) {
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,80}$/.test(key) || /[\r\n]/.test(String(value)) || String(value).length > 4096) throw new Error('请求头名称或值无效');
+    if (/^(authorization|cookie|proxy-authorization|host|content-length)$/i.test(key)) throw new Error(`不允许自定义请求头：${key}`);
+    result[key] = String(value);
+  }
+  return result;
+}
+
 function syncProjectPreferences() {
   if (!agent) return;
   const mappings = Object.fromEntries(agent.sessionManager.projects.map(project => [project.id, {
@@ -365,6 +464,11 @@ async function archiveProjectResult(result, owner = {}) {
     ...entry,
     projectId: project.id,
     sessionId: ownerSessionId,
+    source: result.source || 'direct',
+    positive: result.compiledPrompt?.positive || result.positive || '',
+    negative: result.compiledPrompt?.negative || result.negative || '',
+    workflowName: result.workflowName || result.workflow?.name || '',
+    parameters: result.settings || result.parameters || {},
   }));
   const videoDir = join(project.dir, 'videos', taskId);
   const videoEntries = await commitCopies(
@@ -377,6 +481,11 @@ async function archiveProjectResult(result, owner = {}) {
     ...entry,
     projectId: project.id,
     sessionId: ownerSessionId,
+    source: result.source || 'direct',
+    positive: result.compiledPrompt?.positive || result.positive || '',
+    negative: result.compiledPrompt?.negative || result.negative || '',
+    workflowName: result.workflowName || result.workflow?.name || '',
+    parameters: result.settings || result.parameters || {},
   }));
   if (result.isVideoWorkflow && (result.videos?.length || 0) === 0 && (result.images?.length || 0) > 1) {
     try {
@@ -397,6 +506,7 @@ async function archiveProjectResult(result, owner = {}) {
           type: 'project',
           projectId: project.id,
           sessionId: ownerSessionId,
+          source: result.source || 'direct',
         });
       }
     } catch (error) {
@@ -469,6 +579,62 @@ async function readTaskTrace(taskId) {
   return validateTaskTrace(trace, taskId, project.id);
 }
 
+function mcpGenerationBridge() {
+  return {
+    prepare: async request => {
+      await startAgent(getStoredConfig());
+      return ensureDirectService().prepare(directGenerationRequest({
+        ...request,
+        requestId: request.requestId || `mcp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        projectId: request.projectId || agent?.sessionManager.activeProjectId || '',
+        sessionId: request.sessionId || agent?.sessionManager.activeSessionId || '',
+      }), { sandboxInput: directSandboxInput() });
+    },
+    runPrepared: async (previewId, edits) => {
+      const result = await ensureDirectService().run(previewId, edits, { source: 'mcp' });
+      return archiveProjectResult(result, executionOwner());
+    },
+    status: async ({ requestId = '', taskId = '' } = {}) => {
+      if (requestId) return requestLedger.snapshot(requestId);
+      if (taskId && agent) return agent.getTrace(taskId) || agent.taskManager.get(taskId) || { taskId, status: 'unknown' };
+      return { status: 'unknown' };
+    },
+    cancel: async ({ previewId = '', taskId = '' } = {}) => {
+      if (previewId) return ensureDirectService().discardPreview(previewId);
+      if (taskId && agent) return agent.cancel(taskId);
+      return ensureDirectService().cancel();
+    },
+  };
+}
+
+async function startEmbeddedMcp(config = {}) {
+  if (embeddedMcpTransport || !(config.mcp?.enabled || envConfig.COMFY_AGENT_MCP_ENABLED === 'true')) return;
+  const enabledSkills = config.skills?.system || {};
+  const activeSkills = Object.fromEntries(Object.entries(SKILLS).filter(([id]) => enabledSkills[id] !== false));
+  for (const custom of config.skills?.custom || []) {
+    if (custom?.id && custom.enabled !== false) activeSkills[custom.id] = createCustomSkill(custom);
+  }
+  for (const external of config.skills?.external || []) {
+    if (external?.id && external.enabled !== false) {
+      try { activeSkills[external.id] = normalizeExternalSkill(external, external.source || 'config'); } catch (error) { console.warn(`Skipping external Skill ${external.id}: ${error.message}`); }
+    }
+  }
+  const server = createWebMcpServer({ generation: mcpGenerationBridge(), skills: activeSkills });
+  embeddedMcpTransport = createMcpHttpServer(server, {
+    host: config.mcp?.host || envConfig.COMFY_AGENT_MCP_HOST || '127.0.0.1',
+    port: Number(config.mcp?.port || envConfig.COMFY_AGENT_MCP_PORT || 3333),
+    authToken: config.mcp?.token || envConfig.COMFY_AGENT_MCP_TOKEN || '',
+  });
+  const address = await embeddedMcpTransport.listen();
+  console.error(`Embedded MCP listening on http://${address.address}:${address.port}/mcp`);
+}
+
+async function restartEmbeddedMcp() {
+  try { await embeddedMcpTransport?.close?.(); } catch {}
+  embeddedMcpTransport = undefined;
+  await startEmbeddedMcp(getStoredConfig());
+}
+
 function directTaskId(requestId = '') {
   return `direct_task_${requestId}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -514,6 +680,85 @@ function completeDirectTask(taskId, result = {}, error = null) {
   void persistTaskTrace(taskId, result).catch(() => {});
 }
 
+function animateFloatingBounds(target, finalMinSize = null, duration = 260) {
+  if (!floatingWindow || floatingWindow.isDestroyed()) return;
+  if (floatingResizeTimer) clearInterval(floatingResizeTimer);
+  if (floatingAnimationReleaseTimer) clearTimeout(floatingAnimationReleaseTimer);
+
+  const start = floatingWindow.getBounds();
+  const startedAt = Date.now();
+  const easeOut = progress => 1 - ((1 - progress) ** 3);
+  floatingAnimating = true;
+  floatingBoundsGuard = true;
+  floatingResizeTimer = setInterval(() => {
+    if (!floatingWindow || floatingWindow.isDestroyed()) {
+      clearInterval(floatingResizeTimer);
+      floatingResizeTimer = null;
+      floatingAnimating = false;
+      floatingBoundsGuard = false;
+      return;
+    }
+    const progress = Math.min(1, (Date.now() - startedAt) / duration);
+    const eased = easeOut(progress);
+    const bounds = {
+      x: Math.round(start.x + (target.x - start.x) * eased),
+      y: Math.round(start.y + (target.y - start.y) * eased),
+      width: Math.round(start.width + (target.width - start.width) * eased),
+      height: Math.round(start.height + (target.height - start.height) * eased),
+    };
+    floatingWindow.setBounds(bounds);
+    if (progress < 1) return;
+    clearInterval(floatingResizeTimer);
+    floatingResizeTimer = null;
+    floatingWindow.setBounds(target);
+    if (finalMinSize) floatingWindow.setMinimumSize(finalMinSize.width, finalMinSize.height);
+    // Electron can emit the final resize event on the next turn; keep the guard
+    // active until that event has settled instead of allowing a last edge jump.
+    floatingAnimationReleaseTimer = setTimeout(() => {
+      floatingAnimationReleaseTimer = null;
+      floatingAnimating = false;
+      floatingBoundsGuard = false;
+    }, 50);
+  }, 16);
+}
+
+function floatingDragHit(x, y) {
+  if (!floatingWindow || floatingWindow.isDestroyed() || !floatingWindow.isVisible()) return false;
+  const bounds = floatingWindow.getBounds();
+  return x >= bounds.x && x <= bounds.x + bounds.width && y >= bounds.y && y <= bounds.y + bounds.height;
+}
+
+function sendFloatingDrag(data) {
+  if (floatingWindow && !floatingWindow.isDestroyed() && !floatingWindow.webContents.isLoading()) {
+    floatingWindow.webContents.send('floating:drag', data);
+    return true;
+  }
+  return false;
+}
+
+function flushPendingFloatingDrag() {
+  if (!pendingFloatingDrag) return;
+  if (sendFloatingDrag({ phase: 'start', payload: pendingFloatingDrag })) pendingFloatingDrag = null;
+}
+
+function settleRecoveredTask(taskId, result) {
+  const manager = agent?.taskManager;
+  if (!manager) return null;
+  if (typeof manager.settleComplete === 'function') {
+    return manager.settleComplete(taskId, { result });
+  }
+  // Keep recovery usable with an older worker proxy that lacks settleComplete.
+  manager.complete?.(taskId, { result, error: null });
+  manager.update?.(taskId, {
+    status: 'completed',
+    state: 'completed',
+    error: null,
+    lastError: '',
+    traceError: null,
+  });
+  return manager.get?.(taskId);
+}
+
 async function confirmLegacyExecution(detail) {
   const result = await dialog.showMessageBox(mainWindow, {
     type: 'warning',
@@ -528,8 +773,108 @@ async function confirmLegacyExecution(detail) {
 }
 
 function sendToRenderer(channel, data) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(channel, data);
+  for (const window of [mainWindow, floatingWindow]) {
+    if (window && !window.isDestroyed()) window.webContents.send(channel, data);
+  }
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  else { mainWindow.show(); mainWindow.focus(); }
+}
+
+function showFloatingWindow({ focus = true } = {}) {
+  if (floatingWindow && !floatingWindow.isDestroyed()) {
+    if (focus) floatingWindow.show();
+    else floatingWindow.showInactive();
+    if (focus) floatingWindow.focus();
+    return;
+  }
+  const saved = readFloatingPosition();
+  const display = screen.getPrimaryDisplay();
+  const area = display.workArea;
+  const defaultX = area.x + area.width - FLOATING_WINDOW_SIZE.width - 24;
+  const defaultY = area.y + area.height - FLOATING_WINDOW_SIZE.height - 24;
+  const savedSize = saved?.width > FLOATING_ORB_SIZE.width && saved?.height > FLOATING_ORB_SIZE.height
+    ? { width: Number(saved.width), height: Number(saved.height) }
+    : FLOATING_WINDOW_SIZE;
+  floatingExpandedSize = { ...savedSize };
+  const bounds = clampFloatingBounds(saved?.x ?? defaultX, saved?.y ?? defaultY, savedSize.width, savedSize.height);
+  floatingWindow = new BrowserWindow({
+    ...bounds,
+    maximizable: false,
+    fullscreenable: false,
+    frame: false,
+    transparent: true,
+    hasShadow: false,
+    alwaysOnTop: true,
+    skipTaskbar: false,
+    resizable: true,
+    minWidth: FLOATING_MIN_SIZE.width,
+    minHeight: FLOATING_MIN_SIZE.height,
+    backgroundColor: '#00000000',
+    title: '快速生成',
+    icon: APP_ICON_PATH,
+    show: focus,
+    webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false },
+  });
+  floatingWindow.setBackgroundColor('#00000000');
+  floatingWindow.setAlwaysOnTop(true, 'floating');
+  if (!focus) floatingWindow.showInactive();
+  const keepFloatingInsideWorkArea = () => {
+    if (!floatingWindow || floatingWindow.isDestroyed() || floatingBoundsGuard || floatingAnimating) return;
+    const current = floatingWindow.getBounds();
+    const isOrb = current.width <= FLOATING_ORB_SIZE.width && current.height <= FLOATING_ORB_SIZE.height;
+    floatingWindow.setMinimumSize(
+      isOrb ? FLOATING_ORB_SIZE.width : FLOATING_MIN_SIZE.width,
+      isOrb ? FLOATING_ORB_SIZE.height : FLOATING_MIN_SIZE.height,
+    );
+    const next = isOrb
+      ? { ...clampFloatingPosition(current.x, current.y, current.width, current.height), width: current.width, height: current.height }
+      : clampFloatingBounds(current.x, current.y, current.width, current.height);
+    const changed = current.x !== next.x || current.y !== next.y || current.width !== next.width || current.height !== next.height;
+    floatingBoundsGuard = true;
+    if (changed) floatingWindow.setBounds(next);
+    const finalBounds = floatingWindow.getBounds();
+    floatingBoundsGuard = false;
+    const size = finalBounds.width > FLOATING_ORB_SIZE.width && finalBounds.height > FLOATING_ORB_SIZE.height
+      ? { width: finalBounds.width, height: finalBounds.height }
+      : {};
+    if (size.width) floatingExpandedSize = size;
+    saveFloatingPosition(finalBounds.x, finalBounds.y, size);
+  };
+  floatingWindow.on('move', keepFloatingInsideWorkArea);
+  floatingWindow.on('resize', keepFloatingInsideWorkArea);
+  floatingWindow.webContents.once('did-finish-load', () => {
+    flushPendingFloatingDrag();
+  });
+  floatingWindow.on('closed', () => {
+    if (floatingResizeTimer) clearInterval(floatingResizeTimer);
+    if (floatingAnimationReleaseTimer) clearTimeout(floatingAnimationReleaseTimer);
+    floatingResizeTimer = null;
+    floatingAnimationReleaseTimer = null;
+    floatingAnimating = false;
+    floatingWindow = null;
+  });
+  const distIndex = join(__dirname, '..', 'dist', 'index.html');
+  if (existsSync(distIndex)) floatingWindow.loadFile(distIndex, { query: { floating: '1' } });
+  else if (!app.isPackaged) floatingWindow.loadURL('http://localhost:5173/?floating=1');
+  else floatingWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent('<h1>ComfyUI Agent resources are missing</h1>'));
+}
+
+function showFloatingReceiver() {
+  showFloatingWindow({ focus: false });
+  if (!floatingWindow || floatingWindow.isDestroyed()) return;
+  floatingWindowPointerGrab = null;
+  const current = floatingWindow.getBounds();
+  if (current.width <= FLOATING_ORB_SIZE.width && current.height <= FLOATING_ORB_SIZE.height) {
+    const next = clampFloatingBounds(current.x, current.y, floatingExpandedSize.width, floatingExpandedSize.height);
+    floatingWindow.setMinimumSize(FLOATING_ORB_SIZE.width, FLOATING_ORB_SIZE.height);
+    // Do not animate receiver expansion while another window is sending a drag.
+    // The animation changes screen bounds under the source pointer and can leave
+    // the floating window with a stale move/resize cursor after the drop.
+    floatingWindow.setBounds(next);
+    saveFloatingPosition(next.x, next.y, { width: next.width, height: next.height });
   }
 }
 
@@ -555,6 +900,7 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.on('close', () => {
+    if (!quitRequested && floatingWindow && !floatingWindow.isDestroyed()) floatingWindow.destroy();
     if (process.platform !== 'darwin') comfyManager.stopOwned();
   });
   mainWindow.on('closed', () => {
@@ -592,6 +938,128 @@ ipcMain.handle('window:is-maximized', () => mainWindow?.isMaximized() || false);
 ipcMain.handle('window:close', () => {
   mainWindow?.close();
 });
+ipcMain.handle('window:hide', () => {
+  mainWindow?.hide();
+  return true;
+});
+
+ipcMain.handle('floating:show', () => { showFloatingWindow(); return true; });
+ipcMain.handle('floating:hide', () => { floatingWindow?.hide(); return true; });
+ipcMain.handle('floating:close', () => { floatingWindow?.hide(); return true; });
+ipcMain.handle('floating:show-main', () => { showMainWindow(); return true; });
+ipcMain.handle('floating:resize', (_, { collapsed = false } = {}) => {
+  if (!floatingWindow || floatingWindow.isDestroyed()) return false;
+  const current = floatingWindow.getBounds();
+  if (!collapsed && current.width > FLOATING_ORB_SIZE.width && current.height > FLOATING_ORB_SIZE.height) {
+    floatingExpandedSize = { width: current.width, height: current.height };
+  }
+  const nextSize = collapsed ? FLOATING_ORB_SIZE : floatingExpandedSize;
+  const nextX = current.x + Math.round((current.width - nextSize.width) / 2);
+  const nextY = current.y + Math.round((current.height - nextSize.height) / 2);
+  const next = collapsed
+    ? { ...clampFloatingPosition(nextX, nextY, FLOATING_ORB_SIZE.width, FLOATING_ORB_SIZE.height), ...FLOATING_ORB_SIZE }
+    : clampFloatingBounds(nextX, nextY, nextSize.width, nextSize.height);
+   floatingWindow.setMinimumSize(FLOATING_ORB_SIZE.width, FLOATING_ORB_SIZE.height);
+   animateFloatingBounds(next, collapsed ? FLOATING_ORB_SIZE : FLOATING_MIN_SIZE);
+  saveFloatingPosition(next.x, next.y, collapsed ? {} : { width: next.width, height: next.height });
+  return true;
+});
+
+ipcMain.handle('floating:position', () => {
+  if (!floatingWindow || floatingWindow.isDestroyed()) return { x: 0, y: 0 };
+  const [x, y] = floatingWindow.getPosition();
+  return { x, y };
+});
+
+ipcMain.handle('floating:move', (_, { deltaX = 0, deltaY = 0 } = {}) => {
+  if (!floatingWindow || floatingWindow.isDestroyed()) return false;
+  const [x, y] = floatingWindow.getPosition();
+  const bounds = floatingWindow.getBounds();
+  const next = clampFloatingPosition(x + Number(deltaX), y + Number(deltaY), bounds.width, bounds.height);
+  floatingWindow.setPosition(next.x, next.y);
+  saveFloatingPosition(next.x, next.y);
+  return next;
+});
+ipcMain.handle('app:version', () => app.getVersion());
+ipcMain.handle('app:update-check', () => checkForUpdate());
+ipcMain.handle('app:update-download', (_, manifest) => downloadUpdate(manifest));
+ipcMain.handle('app:update-install', () => installUpdate());
+ipcMain.handle('app:update-state', () => updateState);
+
+ipcMain.handle('floating:move-start', (event, { clientX, clientY, token: requestedToken } = {}) => {
+  const point = screenPointFromEvent(event, clientX, clientY);
+  if (!point || !floatingWindow || floatingWindow.isDestroyed()) return false;
+  const bounds = floatingWindow.getBounds();
+  const token = requestedToken || ++floatingMoveToken;
+  floatingMoveToken += 1;
+  floatingWindowPointerGrab = { token, offsetX: point.x - bounds.x, offsetY: point.y - bounds.y };
+  return token;
+});
+
+ipcMain.handle('floating:move-at', (event, { clientX, clientY, token } = {}) => {
+  const point = screenPointFromEvent(event, clientX, clientY);
+  if (!point || !floatingWindow || floatingWindow.isDestroyed() || !floatingWindowPointerGrab || token !== floatingWindowPointerGrab.token) return false;
+  const bounds = floatingWindow.getBounds();
+  const next = clampFloatingPosition(
+    point.x - floatingWindowPointerGrab.offsetX,
+    point.y - floatingWindowPointerGrab.offsetY,
+    bounds.width,
+    bounds.height,
+  );
+  floatingWindow.setPosition(next.x, next.y);
+  saveFloatingPosition(next.x, next.y);
+  return next;
+});
+
+ipcMain.handle('floating:move-end', (_, { token } = {}) => {
+  if (!token || token === floatingWindowPointerGrab?.token) floatingWindowPointerGrab = null;
+  return true;
+});
+
+ipcMain.handle('floating:drag-start', (event, payload = {}) => {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!sourceWindow || sourceWindow === floatingWindow) return { accepted: false, reason: 'invalid_source' };
+  floatingWindowPointerGrab = null;
+  floatingMoveToken += 1;
+  pendingFloatingDrag = { ...payload, sourceWindow: 'main', dragId: payload.dragId || `drag-${Date.now()}` };
+  showFloatingReceiver();
+  if (floatingWindow && !floatingWindow.webContents.isLoading()) flushPendingFloatingDrag();
+  return { accepted: true, dragId: pendingFloatingDrag?.dragId || payload.dragId || '' };
+});
+
+function screenPointFromEvent(event, clientX, clientY) {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!sourceWindow || !Number.isFinite(Number(clientX)) || !Number.isFinite(Number(clientY))) return null;
+  const bounds = sourceWindow.getBounds();
+  return { x: bounds.x + Number(clientX), y: bounds.y + Number(clientY) };
+}
+
+ipcMain.handle('floating:drag-move', (event, { clientX, clientY } = {}) => {
+  const point = screenPointFromEvent(event, clientX, clientY);
+  if (!point) return { hit: false };
+  const hit = floatingDragHit(point.x, point.y);
+  sendFloatingDrag({ phase: 'move', point, hit });
+  return { hit, point };
+});
+
+ipcMain.handle('floating:drag-end', (event, { clientX, clientY, dragId } = {}) => {
+  if (dragId && pendingFloatingDrag?.dragId && dragId !== pendingFloatingDrag.dragId) return { hit: false, point: null };
+  const point = screenPointFromEvent(event, clientX, clientY);
+  const hit = point ? floatingDragHit(point.x, point.y) : false;
+  sendFloatingDrag({ phase: 'end', point, hit });
+  pendingFloatingDrag = null;
+  floatingWindowPointerGrab = null;
+  return { hit, point };
+});
+
+ipcMain.handle('floating:drag-cancel', (_, { dragId } = {}) => {
+  if (dragId && pendingFloatingDrag?.dragId && dragId !== pendingFloatingDrag.dragId) return false;
+  pendingFloatingDrag = null;
+  floatingWindowPointerGrab = null;
+  floatingMoveToken += 1;
+  sendFloatingDrag({ phase: 'cancel' });
+  return true;
+});
 
 function initAgent(config) {
   const llmConfig = config.llm || {};
@@ -618,7 +1086,8 @@ function initAgent(config) {
   bindAgentEvent(AgentEventTypes.TRACE, (data) => sendToRenderer('agent:trace', data));
   bindAgentEvent(AgentEventTypes.PROGRESS, (data) => sendToRenderer('agent:progress', data));
   bindAgentEvent(AgentEventTypes.FEEDBACK, (data) => sendToRenderer('agent:feedback', data));
-  configureSkills({ systemEnabled: config.skills?.system, custom: config.skills?.custom });
+  bindAgentEvent(AgentEventTypes.CONTEXT_USAGE, (data) => sendToRenderer('agent:context-usage', data));
+  configureSkills({ systemEnabled: config.skills?.system, custom: config.skills?.custom, external: config.skills?.external });
   const started = agent.start({
     llm: llmConfig,
     research: config.research || {},
@@ -626,6 +1095,8 @@ function initAgent(config) {
     comfyRoot: comfyManager.portableRoot ? join(comfyManager.portableRoot, 'ComfyUI') : '',
     userDataPath: app.getPath('userData'),
     comfyBaseUrl: config.comfyui?.baseUrl || 'http://127.0.0.1:8188',
+     projectId: agent?.sessionManager?.activeProjectId || '',
+     sessionId: agent?.sessionManager?.activeSessionId || '',
     skills: config.skills || {},
   });
   return started.then(async result => {
@@ -673,7 +1144,7 @@ async function recoverAgentTasks() {
         projectId: task?.projectId,
         sessionId: task?.sessionId,
       });
-      agent.taskManager.settleComplete(item.taskId, { result: archived });
+      settleRecoveredTask(item.taskId, archived);
       await agent.taskManager.persist();
     } catch (error) {
       const task = agent.taskManager.get(item.taskId);
@@ -858,6 +1329,325 @@ ipcMain.handle('select-media-files', async () => {
   }));
 });
 
+function presetRoot() {
+  if (!globalPresetsRoot) globalPresetsRoot = join(app.getPath('userData'), 'global-presets');
+  return globalPresetsRoot;
+}
+
+async function selectPresetFile(title, filters, properties = ['openFile']) {
+  const dialogMethod = properties.includes('showSaveDialog') ? 'showSaveDialog' : 'showOpenDialog';
+  const normalizedProperties = properties.filter(value => value !== 'showSaveDialog');
+  const result = await dialog[dialogMethod](mainWindow, { properties: normalizedProperties, title, filters });
+  return result.canceled ? '' : result.filePaths[0] || '';
+}
+
+ipcMain.handle('global-presets:list', async () => listGlobalPresets(presetRoot()));
+ipcMain.handle('global-presets:delete', async (_, { id } = {}) => deleteGlobalPreset(presetRoot(), id));
+ipcMain.handle('global-presets:copy', async (_, { id } = {}) => copyGlobalPreset(presetRoot(), id));
+ipcMain.handle('global-presets:mark-used', async (_, { id, generated = false } = {}) => markPresetUsed(presetRoot(), id, generated));
+ipcMain.handle('global-presets:rate', async (_, { id, rating } = {}) => rateGlobalPreset(presetRoot(), id, rating));
+ipcMain.handle('global-presets:replace-model', async (_, { id, from, to } = {}) => replacePresetModel(presetRoot(), id, from, to));
+ipcMain.handle('global-presets:compose', async (_, { ids = [], title = '' } = {}) => composeGlobalPresets(presetRoot(), ids, { title }));
+ipcMain.handle('global-presets:match-workflow', async (_, { workflowName = '' } = {}) => {
+  const dir = getWorkflowDir({ workflowDir: agent?.workflowDir });
+  const files = await Promise.resolve(listWorkflowFiles(dir)).catch(() => []);
+  const names = (files || []).map(item => typeof item === 'string' ? item : item.name).filter(Boolean);
+  if (!workflowName) return { workflowName: '', candidates: names.slice(0, 20) };
+  const exact = names.find(name => name === workflowName);
+  if (exact) return { workflowName: exact, matched: true, candidates: [exact] };
+  const stem = workflowName.replace(/\.json$/i, '').toLowerCase();
+  const candidates = names.filter(name => name.toLowerCase().includes(stem)).slice(0, 10);
+  return { workflowName: candidates[0] || '', matched: Boolean(candidates[0]), candidates };
+});
+function resolvePresetInput(input = {}) {
+  const sourceRefs = Array.isArray(input.sourceRefs) ? input.sourceRefs : [];
+  const resultRefs = Array.isArray(input.resultRefs) ? input.resultRefs : [];
+  const resolveRefs = refs => refs.map(ref => {
+    try { return resolveImagePath(ref); }
+    catch (error) { throw new Error(`无法访问预设资源：${ref?.filename || ref?.name || '未知文件'}（${error.message}）`); }
+  });
+  const resolved = {
+    ...input,
+  };
+  if (input.workflowSourcePath || input.workflow) resolved.workflowSourcePath = input.workflowSourcePath || (agent?.workflowDir ? resolve(agent.workflowDir, input.workflow) : '');
+  if (Array.isArray(input.sourcePaths) || sourceRefs.length) resolved.sourcePaths = [...(Array.isArray(input.sourcePaths) ? input.sourcePaths : []), ...resolveRefs(sourceRefs)];
+  if (Array.isArray(input.resultPaths) || resultRefs.length) resolved.resultPaths = [...(Array.isArray(input.resultPaths) ? input.resultPaths : []), ...resolveRefs(resultRefs)];
+  if (input.coverSourcePath || input.coverRef) resolved.coverSourcePath = input.coverSourcePath || resolveRefs([input.coverRef])[0];
+  return resolved;
+}
+
+function fetchJson(url) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const getter = url.startsWith('https:') ? httpsGet : httpGet;
+    const request = getter(url, { headers: { 'User-Agent': 'ComfyUI-Agent-Updater' } }, response => {
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) return fetchJson(response.headers.location).then(resolvePromise, rejectPromise);
+      if (response.statusCode !== 200) return rejectPromise(new Error(`Update manifest request failed: HTTP ${response.statusCode}`));
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => { body += chunk; });
+      response.on('end', () => { try { resolvePromise(JSON.parse(body)); } catch { rejectPromise(new Error('Update manifest is not valid JSON')); } });
+    });
+    request.on('error', rejectPromise);
+  });
+}
+
+function fetchBytes(url) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const getter = url.startsWith('https:') ? httpsGet : httpGet;
+    const request = getter(url, { headers: { 'User-Agent': 'ComfyMuse-Updater' } }, response => {
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) return fetchBytes(new URL(response.headers.location, url).toString()).then(resolvePromise, rejectPromise);
+      if (response.statusCode !== 200) return rejectPromise(new Error(`Update signature request failed: HTTP ${response.statusCode}`));
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => resolvePromise(Buffer.concat(chunks)));
+    });
+    request.on('error', rejectPromise);
+  });
+}
+
+async function fetchSignedManifest(url) {
+  const [manifestBytes, signatureBytes] = await Promise.all([fetchBytes(url), fetchBytes(`${url}.sig`)]);
+  const signature = signatureBytes.toString('utf8').trim();
+  if (!verifyUpdateManifest(manifestBytes, signature)) throw new Error('Update manifest signature verification failed.');
+  try { return JSON.parse(manifestBytes.toString('utf8')); } catch { throw new Error('Update manifest is not valid JSON'); }
+}
+
+function semverParts(version) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(String(version || ''));
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3]), match[4] || ''] : null;
+}
+function compareVersions(left, right) {
+  const a = semverParts(left); const b = semverParts(right);
+  if (!a || !b) return 0;
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] - b[i];
+  if (!a[3] && b[3]) return 1;
+  if (a[3] && !b[3]) return -1;
+  return String(a[3]).localeCompare(String(b[3]));
+}
+
+async function checkForUpdate() {
+  const channel = envConfig.COMFY_AGENT_UPDATE_CHANNEL === 'preview' ? 'preview' : 'stable';
+  updateState = { status: 'checking', progress: 0, version: '', error: '' };
+  try {
+    let manifest;
+    if (envConfig.COMFY_AGENT_UPDATE_MANIFEST_URL) {
+      manifest = await fetchSignedManifest(envConfig.COMFY_AGENT_UPDATE_MANIFEST_URL);
+    } else {
+      const releases = await fetchJson('https://api.github.com/repos/xueLan-io/comfyui-agent/releases?per_page=20');
+      const release = releases.find(item => channel === 'preview' ? item.prerelease : !item.prerelease);
+      const asset = release?.assets?.find(item => item.name === `manifest-${channel}.json`);
+      if (!asset?.browser_download_url) throw new Error('No release manifest is available for the selected channel.');
+      manifest = await fetchSignedManifest(asset.browser_download_url);
+    }
+    const available = compareVersions(manifest.version, app.getVersion()) > 0;
+    const runtimeCompatible = manifest.runtimeVersion === 'electron-33';
+    updateState = { status: available ? (runtimeCompatible ? 'available' : 'full-required') : 'latest', progress: 0, version: manifest.version || '', error: '', manifest, runtimeCompatible };
+    return updateState;
+  } catch (error) {
+    updateState = { status: 'error', progress: 0, version: '', error: error.message };
+    throw error;
+  }
+}
+
+async function downloadUpdate(manifest = updateState.manifest) {
+  if (manifest.runtimeVersion && manifest.runtimeVersion !== 'electron-33') throw new Error('This release changes the Electron runtime; download the full portable package instead.');
+  if (!manifest?.updatePackage?.url) throw new Error('No compatible application update is available.');
+  const target = join(app.getPath('temp'), `comfy-agent-update-${manifest.version}.zip`);
+  updateState = { ...updateState, status: 'downloading', progress: 0, error: '' };
+  const urls = [manifest.updatePackage.url, ...(manifest.updatePackage.urls || [])].filter(Boolean);
+  let lastError;
+  for (const url of urls) {
+    try {
+      await downloadToFile(url, target, progress => {
+        updateState = { ...updateState, status: 'downloading', progress: Math.round((progress.percent || 0) * 100) };
+        sendToRenderer('app:update-progress', updateState);
+      });
+      lastError = null;
+      break;
+    } catch (error) { lastError = error; }
+  }
+  if (lastError) throw lastError;
+  const digest = createHash('sha256').update(readFileSync(target)).digest('hex');
+  if (digest.toLowerCase() !== String(manifest.updatePackage.sha256).toLowerCase()) {
+    await unlink(target).catch(() => {});
+    throw new Error('Update package integrity check failed.');
+  }
+  downloadedUpdate = { path: target, manifest };
+  updateState = { ...updateState, status: 'ready', progress: 100 };
+  return updateState;
+}
+
+function installUpdate() {
+  if (!downloadedUpdate) throw new Error('Download an update before installing it.');
+  const updater = join(dirname(process.execPath), 'ComfyUI-Agent-Updater.exe');
+  const launcher = join(dirname(process.execPath), 'ComfyMuseLauncher.exe');
+  if (!existsSync(updater) || !existsSync(launcher)) throw new Error('The portable updater is not installed.');
+  spawn(updater, ['--package', downloadedUpdate.path, '--app-dir', appRoot, '--launcher', launcher, '--pid', String(process.pid)], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  updateState = { ...updateState, status: 'installing' };
+  quitRequested = true;
+  app.quit();
+  return updateState;
+}
+ipcMain.handle('global-presets:create', async (_, input = {}) => createGlobalPreset(presetRoot(), resolvePresetInput(input)));
+ipcMain.handle('global-presets:update', async (_, { id, patch = {} } = {}) => updateGlobalPreset(presetRoot(), id, resolvePresetInput(patch)));
+ipcMain.handle('global-presets:select-cover', async () => selectPresetFile('选择预设封面', [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }]));
+ipcMain.handle('global-presets:select-import', async () => selectPresetFile('导入预设', [{ name: '预设文件', extensions: ['json', 'zip'] }]));
+ipcMain.handle('global-presets:copy-cover', async (_, { id, sourcePath } = {}) => copyPresetCover(presetRoot(), id, sourcePath));
+ipcMain.handle('global-presets:image-data', async (_, cover = {}) => {
+  if (!cover.path) return '';
+  const root = resolve(presetRoot());
+  let file;
+  try { file = assertInside(root, resolve(root, cover.path)); } catch { return ''; }
+  try { const data = await readFile(file); const mime = extname(file).toLowerCase() === '.jpg' || extname(file).toLowerCase() === '.jpeg' ? 'image/jpeg' : `image/${extname(file).slice(1)}`; return `data:${mime};base64,${data.toString('base64')}`; } catch { return ''; }
+});
+ipcMain.handle('global-presets:resolve-resources', async (_, { preset = {} } = {}) => {
+  const root = resolve(presetRoot());
+  const resolveStored = ref => {
+    const path = typeof ref === 'string' ? ref : ref?.path;
+    if (!path) return null;
+    try {
+      const file = assertInside(root, resolve(root, path));
+      return { path: file, name: basename(file), kind: 'image' };
+    } catch { return null; }
+  };
+  return {
+    sourceImages: (preset.sourceImages || []).map(resolveStored).filter(Boolean),
+    workflow: preset.workflow || '',
+  };
+});
+ipcMain.handle('global-presets:check-dependencies', async (_, { id } = {}) => {
+  const root = resolve(presetRoot());
+  const presets = await listGlobalPresets(root);
+  const preset = presets.find(item => item.id === id);
+  if (!preset) return { presetId: id || '', valid: false, issues: [{ code: 'preset_not_found', severity: 'error', message: '预设不存在' }] };
+  const issues = [];
+  const checkFile = (ref, code, label, required = true) => {
+    const path = typeof ref === 'string' ? ref : ref?.path;
+    if (!path) {
+      if (required) issues.push({ code, severity: 'error', message: `${label}未配置` });
+      return { path: '', exists: false, required };
+    }
+    try {
+      const file = assertInside(root, resolve(root, path));
+      const exists = existsSync(file) && statSync(file).isFile();
+      if (!exists) issues.push({ code, severity: required ? 'error' : 'warning', message: `${label}不存在：${basename(file)}` });
+      return { path, exists, required };
+    } catch {
+      issues.push({ code: `${code}_invalid`, severity: 'error', message: `${label}路径无效` });
+      return { path, exists: false, required };
+    }
+  };
+  // A preset may intentionally inherit the currently selected workflow.
+  const workflow = checkFile(preset.workflow, 'workflow_missing', '工作流', false);
+  const sourceImages = (preset.sourceImages || []).map(item => checkFile(item, 'source_missing', '参考素材'));
+  const resultImages = (preset.resultImages || []).map(item => checkFile(item, 'result_missing', '结果素材', false));
+  const cover = preset.cover ? checkFile(preset.cover, 'cover_missing', '封面', false) : { path: '', exists: true, required: false };
+  if (workflow.exists) {
+    try { JSON.parse(await readFile(assertInside(root, resolve(root, workflow.path)), 'utf8')); }
+    catch { issues.push({ code: 'workflow_invalid', severity: 'error', message: '工作流不是有效 JSON' }); }
+  }
+  const modelRequirements = Array.isArray(preset.modelRequirements) ? preset.modelRequirements : [];
+  const modelRoot = comfyManager.portableRoot ? join(comfyManager.portableRoot, 'ComfyUI', 'models') : '';
+  const modelFiles = [];
+  async function collectModels(dir, prefix = '') {
+    if (!dir || !existsSync(dir)) return;
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) await collectModels(full, `${prefix}${entry.name}/`);
+      else modelFiles.push(`${prefix}${entry.name}`);
+    }
+  }
+  await collectModels(modelRoot).catch(() => {});
+  const missingModels = modelRequirements.filter(item => item?.available === false || !item?.value).map(item => {
+    const value = item.value || '未命名模型';
+    const needle = basename(value).toLowerCase();
+    const candidates = modelFiles.filter(file => file.toLowerCase().includes(needle) || needle.includes(basename(file).toLowerCase())).slice(0, 5);
+    return { kind: item.kind || 'model', value, candidates };
+  });
+  missingModels.forEach(item => issues.push({ code: 'model_missing', severity: 'error', message: `缺失模型：${item.value}` }));
+  return {
+    presetId: preset.id,
+    valid: !issues.some(issue => issue.severity === 'error'),
+    dependencies: { workflow, sourceImages, resultImages, cover, sourceCount: sourceImages.length, missingSourceCount: sourceImages.filter(item => !item.exists).length, modelRequirements, missingModels },
+    issues,
+  };
+});
+ipcMain.handle('global-presets:import', async (_, { sourcePath } = {}) => {
+  const extractZip = async zipPath => {
+    const temp = await mkdtemp(join(app.getPath('temp'), 'comfy-agent-preset-'));
+    try {
+      const command = `Expand-Archive -LiteralPath '${zipPath.replaceAll("'", "''")}' -DestinationPath '${temp.replaceAll("'", "''")}' -Force`;
+      const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' });
+      if (result.status !== 0) throw new Error('无法解压预设压缩包');
+      const found = [];
+      async function walk(dir) {
+        for (const entry of await readdir(dir, { withFileTypes: true })) {
+          const path = join(dir, entry.name);
+          if (entry.isDirectory()) await walk(path); else found.push(path);
+        }
+      }
+      await walk(temp);
+      return { files: found, cleanup: () => rm(temp, { recursive: true, force: true }) };
+    } finally {
+      // importGlobalPreset owns cleanup after it has copied the resources.
+    }
+  };
+  return importGlobalPreset(presetRoot(), sourcePath, extractZip);
+});
+ipcMain.handle('global-presets:export', async (_, { id } = {}) => {
+  const preset = (await listGlobalPresets(presetRoot())).find(item => item.id === id);
+  if (!preset) throw new Error('预设不存在');
+  const target = await selectPresetFile('导出预设文件到', [{ name: 'ZIP', extensions: ['zip'] }], ['showSaveDialog']);
+  if (!target) return null;
+  const output = target.replace(/\.zip$/i, '') + '.zip';
+  const temp = await mkdtemp(join(app.getPath('temp'), 'comfy-agent-preset-export-'));
+  try {
+    const packageRoot = join(temp, 'preset');
+    await mkdir(packageRoot, { recursive: true });
+    const sourceImages = [];
+    for (const [index, image] of (preset.sourceImages || []).entries()) {
+      const source = typeof image === 'string' ? image : image.path;
+      const sourceFile = resolve(presetRoot(), source);
+      assertInside(presetRoot(), sourceFile);
+      const name = `reference-${String(index + 1).padStart(3, '0')}${extname(sourceFile).toLowerCase()}`;
+      await mkdir(join(packageRoot, 'sources'), { recursive: true });
+      await copyFile(sourceFile, join(packageRoot, 'sources', name));
+      sourceImages.push(`sources/${name}`);
+    }
+    const resultImages = [];
+    for (const [index, image] of (preset.resultImages || []).entries()) {
+      const source = typeof image === 'string' ? image : image.path;
+      const sourceFile = resolve(presetRoot(), source);
+      assertInside(presetRoot(), sourceFile);
+      const name = `image-${String(index + 1).padStart(3, '0')}${extname(sourceFile).toLowerCase()}`;
+      await mkdir(join(packageRoot, 'results'), { recursive: true });
+      await copyFile(sourceFile, join(packageRoot, 'results', name));
+      resultImages.push(`results/${name}`);
+    }
+    let cover = '';
+    if (preset.cover?.path) {
+      const sourceFile = assertInside(presetRoot(), resolve(presetRoot(), preset.cover.path));
+      const name = `cover${extname(sourceFile).toLowerCase()}`;
+      await copyFile(sourceFile, join(packageRoot, name));
+      cover = name;
+    }
+    let workflow = '';
+    if (preset.workflow) {
+      const sourceFile = assertInside(presetRoot(), resolve(presetRoot(), preset.workflow));
+      workflow = 'workflow.json';
+      await copyFile(sourceFile, join(packageRoot, workflow));
+    }
+    const portable = { format: FORMAT, version: VERSION, ...preset, cover, workflow, sourceImages, resultImages };
+    await writeFile(join(packageRoot, 'preset.json'), JSON.stringify(portable, null, 2), 'utf8');
+    const command = `Compress-Archive -Path '${packageRoot.replaceAll("'", "''")}${'\\*'}' -DestinationPath '${output.replaceAll("'", "''")}' -Force`;
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' });
+    if (result.status !== 0) throw new Error('无法导出预设压缩包');
+    return output;
+  } finally {
+    await rm(temp, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 // ===== Agent IPC =====
 
 function generationOptions(clientId, controls = {}) {
@@ -875,6 +1665,9 @@ function generationOptions(clientId, controls = {}) {
     webResearch: controls.webResearch !== false,
     webResearchOptions: controls.webResearchOptions || {},
     allowPolicyOverride: controls.allowPolicyOverride === true,
+    executionPolicy: controls.executionPolicy || undefined,
+    projectId: controls.projectId || '',
+    sessionId: controls.sessionId || '',
   };
 }
 
@@ -964,9 +1757,12 @@ ipcMain.handle('agent:generate', async (_, { message, workflowName, clientId, co
     source: 'ai',
     owner,
     work: async entry => {
-       const preview = await agent.prepareGeneration(message, {
-         ...generationOptions(clientId, controls),
-         requestId,
+        const preview = await agent.prepareGeneration(message, {
+          ...generationOptions(clientId, controls),
+          executionPolicy: controls.executionPolicy,
+          projectId: owner.projectId,
+          sessionId: owner.sessionId,
+          requestId,
         workflowName,
       });
       if (preview?.previewId) {
@@ -986,14 +1782,39 @@ ipcMain.handle('agent:generate', async (_, { message, workflowName, clientId, co
 });
 
 ipcMain.handle('direct:prepare', async (_, { request = {} } = {}) => {
-  const comfyState = await comfyManager.ensureStarted();
-  if (comfyState.status !== 'ready') throw new Error(comfyState.message || 'ComfyUI is not ready');
   const normalized = directGenerationRequest({
     ...request,
     projectId: request.projectId || agent?.sessionManager.activeProjectId,
     sessionId: request.sessionId || agent?.sessionManager.activeSessionId,
   });
+  if (agent && normalized.projectId && normalized.sessionId
+    && (normalized.projectId !== agent.sessionManager.activeProjectId
+      || normalized.sessionId !== agent.sessionManager.activeSessionId)) {
+    await agent.useSession(normalized.projectId, normalized.sessionId);
+    sendToRenderer('project:state', agent.sessionManager.getState());
+  }
   const owner = executionOwner(normalized);
+  sendToRenderer('direct:status', {
+    source: 'direct',
+    requestId: normalized.requestId,
+    ...owner,
+    status: 'preparing',
+    uiStatus: 'preparing',
+    message: '正在检查 ComfyUI 和工作流...',
+  });
+  const comfyState = await comfyManager.ensureStarted();
+  if (comfyState.status !== 'ready') {
+    const message = comfyState.message || 'ComfyUI is not ready';
+    sendToRenderer('direct:status', {
+      source: 'direct',
+      requestId: normalized.requestId,
+      ...owner,
+      status: 'failed',
+      uiStatus: 'error',
+      message,
+    });
+    throw new Error(message);
+  }
   const service = ensureDirectService();
   const fingerprint = JSON.stringify({
     source: 'direct',
@@ -1014,6 +1835,14 @@ ipcMain.handle('direct:prepare', async (_, { request = {} } = {}) => {
     work: async entry => {
       let preview;
       try {
+        sendToRenderer('direct:status', {
+          source: 'direct',
+          requestId: normalized.requestId,
+          ...owner,
+          status: 'preparing',
+          uiStatus: 'preparing',
+          message: '正在读取工作流和检查节点...',
+        });
         preview = await service.prepare(normalized, { sandboxInput: directSandboxInput() });
         preview.taskId = await createDirectTask(preview);
         requestLedger.update(normalized.requestId, { state: 'prepared', taskId: preview.taskId, previewId: preview.previewId, preview });
@@ -1023,18 +1852,37 @@ ipcMain.handle('direct:prepare', async (_, { request = {} } = {}) => {
           turnId: normalized.turnId || '',
           attachments: [...(normalized.media?.images || []), ...(normalized.media?.videos || [])],
         });
+        sendToRenderer('project:state', agent.sessionManager.getState());
         executionCoordinator.registerPreview({
           source: 'direct',
           previewId: preview.previewId,
-          taskId: normalized.requestId,
+          taskId: preview.taskId,
           owner,
           entry,
+        });
+        sendToRenderer('direct:status', {
+          source: 'direct',
+          requestId: normalized.requestId,
+          ...owner,
+          taskId: preview.taskId,
+          status: 'prepared',
+          uiStatus: 'preview',
+          preview: { ...preview, quickGenerate: true },
+          message: '工作流检查完成，请确认生成',
         });
         return preview;
       } catch (error) {
         service.discardPreview('direct_preview_' + normalized.requestId);
         completeDirectTask(preview?.taskId, {}, { message: error.message, stage: 'direct_prepare' });
         requestLedger.fail(normalized.requestId, error);
+        sendToRenderer('direct:status', {
+          source: 'direct',
+          requestId: normalized.requestId,
+          ...owner,
+          status: 'failed',
+          uiStatus: 'error',
+          message: error.message || '工作流检查失败',
+        });
         throw error;
       }
     },
@@ -1051,17 +1899,21 @@ ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options
   if (!preview) throw new Error('Direct generation preview expired; prepare it again');
   const owner = executionOwner(preview);
   const requestId = preview.requestId || '';
-  const taskId = preview.taskId || requestId;
+    const taskId = preview.taskId || requestId;
   const ledgerEntry = requestLedger.get(requestId);
   if (ledgerEntry?.state === 'completed') return ledgerEntry.result;
   if (ledgerEntry?.state === 'executing') return requestLedger.snapshot(requestId);
-  const directContext = { projectId: owner.projectId, sessionId: owner.sessionId, taskId };
+    const directContext = { projectId: owner.projectId, sessionId: owner.sessionId, taskId };
+  const abortController = new AbortController();
   return executionCoordinator.execute({
     source: 'direct',
     taskId,
     owner,
     previewId,
-    cancel: () => service.cancel(),
+    cancel: async () => {
+      abortController.abort();
+      return service.cancel();
+    },
     work: async entry => {
       requestLedger.update(requestId, { state: 'executing', taskId, previewId });
       updateDirectTask(taskId, 'executing', { currentStep: 'comfyui', currentAttempt: 1 });
@@ -1076,12 +1928,33 @@ ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options
       try {
         const result = await service.run(previewId, edits, {
           clientId: options.clientId || '',
+          signal: abortController.signal,
+          isCancelled: () => entry.cancelRequested,
           onProgress: progress => {
-            if (progress.promptId) updateDirectTask(taskId, 'executing', { promptId: progress.promptId });
+            updateDirectTask(taskId, 'executing', {
+              ...(progress.promptId ? { promptId: progress.promptId } : {}),
+              progress: {
+                stage: progress.stage || '',
+                percent: progress.percent,
+                overallPercent: progress.overallPercent,
+                nodePercent: progress.nodePercent,
+                nodeId: progress.nodeId || '',
+                nodeType: progress.nodeType || '',
+                message: progress.message || '',
+                updatedAt: Date.now(),
+              },
+            });
             sendToRenderer('direct:progress', { ...progress, source: 'direct', requestId, ...directContext });
           },
         });
-        const taskResult = { ...result, taskId };
+         const taskResult = {
+           ...result,
+           taskId,
+           workflowName: preview?.workflow?.name || preview?.workflowName || '',
+           positive: edits.positive || preview?.positive || '',
+           negative: edits.negative || preview?.negative || '',
+           settings: result.settings || preview?.settings || {},
+         };
         await agent?.recordArtifact?.(taskResult, {
           taskId,
           workflow: preview?.workflow?.name || '',
@@ -1102,13 +1975,15 @@ ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options
           negative: edits.negative || preview.negative || '',
           turnId: preview.turnId || '',
         });
+        sendToRenderer('project:state', agent.sessionManager.getState());
         sendToRenderer('direct:status', {
           source: 'direct',
           requestId,
           ...directContext,
-          status: 'completed',
-          uiStatus: 'idle',
-          message: '\u76f4\u63a5\u751f\u6210\u5df2\u5b8c\u6210',
+           status: 'completed',
+           uiStatus: 'complete',
+           message: '\u76f4\u63a5\u751f\u6210\u5df2\u5b8c\u6210',
+           result: archived,
         });
         return archived;
       } catch (error) {
@@ -1254,11 +2129,13 @@ ipcMain.handle('agent:turn', async (_, turn = {}) => {
           media: turn.media || null,
           workflowName: turn.workflowName || '',
           workflowManifest: turn.workflowManifest || null,
-          sessionId: turn.sessionId || agent.sessionManager.activeSessionId,
+           sessionId: turn.sessionId || agent.sessionManager.activeSessionId,
+           projectId: turn.projectId || owner.projectId,
           turnId: turn.turnId || '',
           recordConfirmation: turn.recordConfirmation !== false,
-          confirmation: turn.confirmation || {},
-          allowPolicyOverride: turn.allowPolicyOverride === true,
+           confirmation: turn.confirmation || {},
+           allowPolicyOverride: turn.allowPolicyOverride === true,
+           executionPolicy: turn.executionPolicy || undefined,
         });
       } catch (error) {
         const blocked = policyBlockResult(error, turn.turnId || '');
@@ -1373,6 +2250,34 @@ ipcMain.handle('agent:get-trace', async (_, { taskId }) => readTaskTrace(taskId)
 
 ipcMain.handle('agent:recover-tasks', async () => recoverAgentTasks());
 
+ipcMain.handle('agent:monitor-task', async (_, { taskId } = {}) => {
+  const task = agent?.taskManager?.get(taskId);
+  if (!task) throw new Error('Task not found');
+  const promptId = task.promptId || task.attempts?.find(attempt => attempt.promptId)?.promptId;
+  if (!promptId) return { status: 'submit_unknown', taskId, promptId: '', task };
+  const monitored = await ComfyUITool.monitor(promptId);
+  const progress = task.progress || monitored.progress || null;
+  if (monitored.status !== 'completed') {
+    agent.taskManager.update(taskId, { progress, promptId, status: monitored.status === 'running' ? 'executing' : monitored.status });
+    await agent.taskManager.persist();
+    return { ...monitored, taskId, promptId, progress };
+  }
+  const recovered = await ComfyUITool.recoverResult(promptId, monitored.history);
+  try {
+    const archived = await archiveProjectResult({ ...recovered, taskId, promptId }, {
+      projectId: task.projectId,
+      sessionId: task.sessionId,
+    });
+    agent.taskManager.settleComplete(taskId, { result: archived });
+    await agent.taskManager.persist();
+    return { status: 'completed', taskId, promptId, result: archived };
+  } catch (error) {
+    agent.taskManager.update(taskId, { state: 'archive_failed', status: 'archive_failed', lastError: error.message, error: error.message });
+    await agent.taskManager.persist();
+    return { status: 'archive_failed', taskId, promptId, message: error.message };
+  }
+});
+
 ipcMain.handle('agent:retry-recovery', async (_, { taskId } = {}) => {
   const task = agent?.taskManager?.get(taskId);
   if (!task) throw new Error('Task not found');
@@ -1383,12 +2288,18 @@ ipcMain.handle('agent:retry-recovery', async (_, { taskId } = {}) => {
     requiresConfirmation: true,
     message: '提交状态未知，未发现 promptId。请在 ComfyUI 队列/历史中确认后再重试，系统不会自动重复提交。',
   };
+  if (task.result?.executionStatus === 'success' && (task.result.images?.length || task.result.videos?.length || task.result.media?.length)) {
+    const archived = task.result;
+    settleRecoveredTask(taskId, archived);
+    await agent.taskManager.persist();
+    return { status: 'completed', taskId, promptId, result: archived, recoveredFromTask: true };
+  }
   const result = await ComfyUITool.monitor(promptId);
   if (result.status !== 'completed') return result;
   const recovered = await ComfyUITool.recoverResult(promptId, result.history);
   try {
     const archived = await archiveProjectResult({ ...recovered, taskId, promptId }, { projectId: task.projectId, sessionId: task.sessionId });
-    agent.taskManager.settleComplete(taskId, { result: archived });
+    settleRecoveredTask(taskId, archived);
     await agent.taskManager.persist();
     return { status: 'completed', result: archived };
   } catch (error) {
@@ -1409,11 +2320,13 @@ ipcMain.handle('agent:archive-task', async (_, { taskId } = {}) => {
 ipcMain.handle('agent:cancel', async (_, { taskId } = {}) => {
   const entry = executionCoordinator.active;
   if (entry?.source === 'ai') {
-    return executionCoordinator.cancel({
+    const result = await executionCoordinator.cancel({
       source: 'ai',
       taskId: taskId || '',
       cancel: () => agent.cancel(taskId || ''),
     });
+    if (result.reason === 'not_running' && agent) return agent.cancel(taskId || '');
+    return result;
   }
   if (agent) return agent.cancel(taskId || '');
   return { cancelled: false };
@@ -1544,23 +2457,129 @@ ipcMain.handle('sessions:rename', async (_, { sessionId, title, projectId } = {}
 
 ipcMain.handle('session:activate', async (_, { projectId, sessionId }) => {
   if (executionCoordinator.isBusy) throw new Error('当前会话仍有直接生成任务或待确认预览，请先取消后再切换会话');
-  return agent.useSession(projectId, sessionId);
+  const state = await agent.useSession(projectId, sessionId);
+  sendToRenderer('project:state', state);
+  return state;
 });
 
 ipcMain.handle('llm:providers', async () => {
   const llm = prefStore.get('llm');
-  return { ...llm, resolved: resolveLLMRouting(llm) };
+  return publicLLM(llm);
+});
+
+ipcMain.handle('image:generate', async (_, { prompt, size = 'auto', count = 1, quality = 'auto', images = [], projectId, sessionId, requestId = '', allowPolicyOverride = false } = {}) => {
+  await startAgent(getStoredConfig());
+  const normalizedRequestId = requestId || `openai_image_request_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const owner = executionOwner({ projectId, sessionId });
+  const project = agent?.sessionManager.getProject(owner.projectId);
+  if (!project?.dir) {
+    const error = Object.assign(new Error('当前项目目录无效'), { code: 'IMAGE_PROJECT_NOT_FOUND' });
+    throw error;
+  }
+  const fingerprint = JSON.stringify({ prompt, size, count, quality, projectId: owner.projectId, sessionId: owner.sessionId, images: (images || []).map(image => image.path || image.name || '') });
+  const existing = requestLedger.begin(normalizedRequestId, { source: 'openai-image', fingerprint });
+  if (existing.state === 'completed') return existing.result;
+  if (existing.state === 'executing') return requestLedger.snapshot(normalizedRequestId);
+  const llm = prefStore.get('llm');
+  const provider = llm.providers.find(item => item.id === llm.imageProviderId);
+  const model = provider?.models?.find(item => item.id === llm.imageModelId && item.kind === 'image');
+  const config = provider && model ? { ...provider, model: model.id } : null;
+  if (!config) throw new Error('请先在设置中添加并选择 OpenAI Image 提供商');
+  if (model.runtime === 'local') throw new Error('本地生图请使用 ComfyUI，云端 Image API 不会重复发送请求');
+  const referenceInputs = Array.isArray(images) ? images : [];
+  const taskId = `openai_image_${normalizedRequestId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+  await agent?.recordConversationMessage?.('user', String(prompt || ''), {
+    intent: 'generate',
+    action: 'prepare',
+    turnId: normalizedRequestId,
+    messageId: `${normalizedRequestId}:user`,
+  });
+  const policyMessages = [{ role: 'user', content: [{ type: 'text', text: String(prompt || '') }, ...referenceInputs.map(() => ({ type: 'image_url', image_url: { url: 'data:image/png;base64,policy' } }))] }];
+  const policyRouter = new CloudPolicyRouter();
+  policyRouter.setStateHandler(({ state }) => sendToRenderer('agent:progress', {
+    scope: 'llm-policy',
+    stage: state,
+    policyState: state,
+    percent: state === 'reviewing' ? 8 : state === 'cloud_allowed' || state === 'user_override' ? 12 : state === 'blocked' ? 100 : undefined,
+    message: state === 'reviewing' ? '正在审查内容（将发送到云端模型）' : state === 'cloud_allowed' ? '内容审查通过，正在发送到云端模型' : state === 'user_override' ? '已通过手动确认，正在发送到云端模型' : state === 'blocked' ? '内容包含禁止项，已停止发送' : state === 'local_fallback' ? '内容需在本地模型处理，已切换本地模型' : '',
+    taskId,
+    projectId: owner.projectId,
+    sessionId: owner.sessionId,
+  }));
+  const decision = policyRouter.review(policyMessages, { allowMediaToCloud: llm.allowMediaToCloud !== false, forceAllow: allowPolicyOverride === true });
+  if (!decision.allowed && !allowPolicyOverride) {
+    policyRouter.block(decision);
+    const error = new CloudPolicyBlockedError('该请求未发送到云端：图像生成内容需要本地处理或手动确认。', decision);
+    requestLedger.fail(normalizedRequestId, error);
+    policyRouter.complete();
+    throw error;
+  }
+  requestLedger.update(normalizedRequestId, { state: 'executing', taskId });
+  const controller = new AbortController();
+  activeImageRequests.set(normalizedRequestId, controller);
+  try {
+    const referenceImages = await Promise.all(referenceInputs.map(async image => {
+      const dataUrl = await getAuthorizedMediaDataUrl(image);
+      const match = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
+      if (!match) throw Object.assign(new Error('参考图片格式无效'), { code: 'IMAGE_REFERENCE_INVALID' });
+      return { mimeType: match[1], base64: match[2], filename: image.name || basename(image.path) };
+    }));
+    const result = await new OpenAIImageProvider(config).generate({ prompt, size, count, quality, images: referenceImages, signal: controller.signal });
+    const imageDir = join(project.dir, 'images', taskId);
+    await mkdir(imageDir, { recursive: true });
+    const assets = [];
+    for (const [index, image] of result.images.entries()) {
+      const extension = image.mimeType?.includes('jpeg') ? 'jpg' : 'png';
+      const filename = `${taskId}_${index + 1}.${extension}`;
+      await writeFile(join(imageDir, filename), Buffer.from(image.base64, 'base64'));
+      assets.push({ filename, subfolder: join('images', taskId), type: 'project', projectId: project.id, sessionId: owner.sessionId, taskId, source: 'openai-image', createdAt: Date.now() });
+    }
+    await agent.project.set('lastImages', assets);
+    await agent.project.set('lastPrompt', prompt || '');
+    await agent.project.set('lastGenerationSource', 'openai-image');
+    await agent.project.set('assets', [...(agent.project.get('assets') || []), ...assets]);
+    const archived = { images: assets, revisedPrompt: result.revisedPrompt, taskId, requestId: normalizedRequestId, source: 'openai-image' };
+    await agent?.recordConversationMessage?.('agent', 'OpenAI Image 生成完成。', {
+      kind: 'completed',
+      images: assets,
+      media: assets,
+      turnId: normalizedRequestId,
+      messageId: `${normalizedRequestId}:agent`,
+    });
+    requestLedger.complete(normalizedRequestId, archived);
+    return archived;
+  } catch (error) {
+    requestLedger.fail(normalizedRequestId, error);
+    throw error;
+  } finally {
+    activeImageRequests.delete(normalizedRequestId);
+    policyRouter.complete();
+  }
+});
+
+ipcMain.handle('image:cancel', async (_, { requestId = '' } = {}) => {
+  const controller = activeImageRequests.get(requestId);
+  if (!controller) return { cancelled: false };
+  controller.abort('cancelled');
+  requestLedger.update(requestId, { state: 'cancelled' });
+  return { cancelled: true, requestId };
 });
 
 ipcMain.handle('llm:save-provider', async (_, { provider }) => {
   if (!/^[a-z0-9_-]+$/.test(provider?.id || '')) throw new Error('提供商 ID 仅支持小写字母、数字、下划线和连字符');
   const llm = prefStore.get('llm');
-  const { apiKeyError, ...providerConfig } = provider;
+  const { apiKeyError, hasApiKey, apiKeyMasked, ...providerConfig } = provider;
+  const existing = llm.providers.find(item => item.id === provider.id);
+  if (!providerConfig.name || String(providerConfig.name).length > 120) throw new Error('提供商名称不能为空且不能超过 120 个字符');
+  if (!providerConfig.baseUrl) throw new Error('请填写 API 地址');
+  providerConfig.baseUrl = normalizeHttpUrl(providerConfig.baseUrl, 'API 地址');
+  if (providerConfig.apiKey === undefined && existing?.apiKey) providerConfig.apiKey = existing.apiKey;
+  if (providerConfig.apiKey === undefined && existing?._encryptedApiKey) providerConfig.apiKey = existing._encryptedApiKey;
   const normalized = {
     ...providerConfig,
     type: provider.type || 'openai-compatible',
-    headers: provider.headers && typeof provider.headers === 'object' ? provider.headers : {},
-    models: Array.isArray(provider.models) ? provider.models.filter(model => model.id) : [],
+    headers: normalizeHeaders(provider.headers),
+    models: Array.isArray(provider.models) ? provider.models.filter(model => model.id).map(model => ({ ...model, kind: model.kind === 'image' ? 'image' : 'chat', runtime: model.kind === 'image' ? (model.runtime === 'local' ? 'local' : 'cloud') : '' })) : [],
   };
   const index = llm.providers.findIndex(item => item.id === normalized.id);
   if (index >= 0) llm.providers[index] = normalized;
@@ -1569,9 +2588,14 @@ ipcMain.handle('llm:save-provider', async (_, { provider }) => {
     llm.active.providerId = normalized.id;
     llm.active.modelId = normalized.models[0]?.id || '';
   }
+  const imageModel = normalized.models.find(model => model.kind === 'image');
+  if (imageModel && !llm.imageProviderId) {
+    llm.imageProviderId = normalized.id;
+    llm.imageModelId = imageModel.id;
+  }
   prefStore.set('llm', llm);
   await agent?.reconfigureLLM(llm);
-  return llm;
+  return publicLLM(llm);
 });
 
 ipcMain.handle('llm:delete-provider', async (_, { providerId }) => {
@@ -1582,9 +2606,13 @@ ipcMain.handle('llm:delete-provider', async (_, { providerId }) => {
     llm.active.providerId = llm.providers[0].id;
     llm.active.modelId = llm.providers[0].models?.[0]?.id || '';
   }
+  if (llm.imageProviderId === providerId) {
+    llm.imageProviderId = '';
+    llm.imageModelId = '';
+  }
   prefStore.set('llm', llm);
   await agent?.reconfigureLLM(llm);
-  return llm;
+  return publicLLM(llm);
 });
 
 ipcMain.handle('llm:select', async (_, selection = {}) => {
@@ -1597,19 +2625,36 @@ ipcMain.handle('llm:select', async (_, selection = {}) => {
   if (selection.providerId) {
     const provider = llm.providers.find(item => item.id === selection.providerId);
     if (!provider) throw new Error('提供商不存在');
-    const modelId = selection.modelId || provider.models?.[0]?.id || '';
-    if (!provider.models?.some(item => item.id === modelId)) throw new Error('模型不存在');
+    const modelId = selection.modelId || provider.models?.find(item => item.kind !== 'image')?.id || '';
+    if (!provider.models?.some(item => item.id === modelId && item.kind !== 'image')) throw new Error('聊天模型不存在');
     active.providerId = provider.id;
     active.modelId = modelId;
+  }
+  if (selection.modelId && !selection.providerId) {
+    const provider = llm.providers.find(item => item.id === active.providerId);
+    if (!provider?.models?.some(item => item.id === selection.modelId && item.kind !== 'image')) throw new Error('聊天模型不存在');
+    active.modelId = selection.modelId;
   }
   if (selection.reasoningEffort) {
     if (!['low', 'medium', 'high'].includes(selection.reasoningEffort)) throw new Error('无效推理强度');
     active.reasoningEffort = selection.reasoningEffort;
   }
+  if (selection.imageProviderId !== undefined) {
+    const provider = llm.providers.find(item => item.id === selection.imageProviderId);
+    const imageModel = provider?.models?.find(item => item.kind === 'image');
+    if (selection.imageProviderId && !imageModel) throw new Error('该提供商没有生图模型');
+    llm.imageProviderId = selection.imageProviderId;
+    if (selection.imageProviderId && !provider.models.some(item => item.id === llm.imageModelId && item.kind === 'image')) llm.imageModelId = imageModel.id;
+  }
+  if (selection.imageModelId !== undefined) {
+    const provider = llm.providers.find(item => item.id === llm.imageProviderId);
+    if (selection.imageModelId && !provider?.models?.some(item => item.id === selection.imageModelId && item.kind === 'image')) throw new Error('生图模型不存在');
+    llm.imageModelId = selection.imageModelId;
+  }
   llm.active = active;
   prefStore.set('llm', llm);
   await agent?.reconfigureLLM(llm);
-  return llm;
+  return publicLLM(llm);
 });
 
 ipcMain.handle('llm:media-policy', async (_, { allowMediaToCloud }) => {
@@ -1617,11 +2662,16 @@ ipcMain.handle('llm:media-policy', async (_, { allowMediaToCloud }) => {
   llm.allowMediaToCloud = allowMediaToCloud !== false;
   prefStore.set('llm', llm);
   await agent?.reconfigureLLM(llm);
-  return llm;
+  return publicLLM(llm);
 });
 
 ipcMain.handle('llm:test', async (_, { providerId, modelId }) => {
   const llm = prefStore.get('llm');
+  const selected = llm.providers.find(item => item.id === providerId);
+  const imageModel = selected?.models?.find(item => item.id === modelId && item.kind === 'image');
+  if (imageModel) {
+    throw new Error('生图模型测试可能产生费用，请直接使用工具栏进行一次受控生成');
+  }
   const testConfig = { ...llm, active: { providerId, modelId, reasoningEffort: llm.active.reasoningEffort, strategy: 'manual' } };
   const provider = new LLMProvider(testConfig);
   if (!provider.isConfigured) throw new Error('请先填写模型连接信息');
@@ -1629,11 +2679,22 @@ ipcMain.handle('llm:test', async (_, { providerId, modelId }) => {
   return { ok: true, message: result.content || 'OK' };
 });
 
-ipcMain.handle('skills:list', async () => prefStore.get('skills'));
+ipcMain.handle('skills:list', async () => {
+  const skills = prefStore.get('skills') || {};
+  const external = Object.fromEntries((skills.external || []).filter(item => item?.id && item.enabled !== false).map(item => {
+    try { return [item.id, normalizeExternalSkill(item, item.source || 'config')]; } catch { return null; }
+  }).filter(Boolean));
+  const custom = Object.fromEntries((skills.custom || []).filter(item => item?.id && item.enabled !== false).map(item => [item.id, createCustomSkill(item)]));
+  return { ...skills, registry: [...skillManifest(SKILLS, skills.system), ...skillManifest(custom), ...skillManifest(external)] };
+});
 
-ipcMain.handle('skills:set-enabled', async (_, { id, enabled, custom = false }) => {
+ipcMain.handle('skills:set-enabled', async (_, { id, enabled, custom = false, external = false }) => {
   const skills = prefStore.get('skills');
-  if (custom) {
+  if (external) {
+    const skill = skills.external.find(item => item.id === id);
+    if (!skill) throw new Error('外部 Skill 不存在');
+    skill.enabled = Boolean(enabled);
+  } else if (custom) {
     const skill = skills.custom.find(item => item.id === id);
     if (!skill) throw new Error('技能不存在');
     skill.enabled = Boolean(enabled);
@@ -1642,7 +2703,7 @@ ipcMain.handle('skills:set-enabled', async (_, { id, enabled, custom = false }) 
     skills.system[id] = Boolean(enabled);
   }
   prefStore.set('skills', skills);
-  configureSkills({ systemEnabled: skills.system, custom: skills.custom });
+  configureSkills({ systemEnabled: skills.system, custom: skills.custom, external: skills.external });
   return skills;
 });
 
@@ -1652,7 +2713,7 @@ ipcMain.handle('skills:add-custom', async (_, { skill }) => {
   if (skills.custom.some(item => item.id === skill.id) || skill.id in skills.system) throw new Error('技能 ID 已存在');
   skills.custom.push({ ...skill, keywords: Array.isArray(skill.keywords) ? skill.keywords : [], enabled: skill.enabled !== false });
   prefStore.set('skills', skills);
-  configureSkills({ systemEnabled: skills.system, custom: skills.custom });
+  configureSkills({ systemEnabled: skills.system, custom: skills.custom, external: skills.external });
   return skills;
 });
 
@@ -1660,7 +2721,7 @@ ipcMain.handle('skills:delete-custom', async (_, { id }) => {
   const skills = prefStore.get('skills');
   skills.custom = skills.custom.filter(item => item.id !== id);
   prefStore.set('skills', skills);
-  configureSkills({ systemEnabled: skills.system, custom: skills.custom });
+  configureSkills({ systemEnabled: skills.system, custom: skills.custom, external: skills.external });
   return skills;
 });
 
@@ -1671,8 +2732,13 @@ ipcMain.handle('agent:prompt-mode', async (_, { mode }) => {
 
 ipcMain.handle('project:update-state', async (_, patch = {}) => {
   if (!agent) return null;
+  const allowed = new Set(['workflow', 'skillId', 'budgets', 'researchSettings', 'promptMode', 'savedPreferences', 'commonParameters']);
+  const unknown = Object.keys(patch).filter(key => !allowed.has(key));
+  if (unknown.length) throw new Error(`不允许修改项目字段：${unknown.join(', ')}`);
   await agent.call('project.update', [patch]);
-  return agent.sessionManager.getState();
+  const state = agent.sessionManager.getState();
+  sendToRenderer('project:state', state);
+  return state;
 });
 
 ipcMain.handle('ui:preferences', async () => normalizeUIPreferences(prefStore.get('ui')));
@@ -1685,17 +2751,62 @@ ipcMain.handle('ui:save-preferences', async (_, preferences = {}) => {
 
 ipcMain.handle('research:settings', async () => {
   const research = prefStore.get('research') || {};
-  return { baiduApiKey: research.baiduApiKey || '' };
+  return { hasBaiduApiKey: Boolean(research.baiduApiKey || research._encryptedBaiduApiKey), baiduApiKeyError: research.baiduApiKeyError || '' };
 });
 
 ipcMain.handle('research:save-settings', async (_, settings = {}) => {
   const research = prefStore.get('research') || {};
-  prefStore.set('research', {
-    ...research,
-    baiduApiKey: String(settings.baiduApiKey || '').trim(),
-  });
+  const nextResearch = { ...research };
+  if (settings.baiduApiKey !== undefined) nextResearch.baiduApiKey = String(settings.baiduApiKey || '').trim();
+  prefStore.set('research', nextResearch);
   await agent?.reconfigureResearch(prefStore.get('research') || {});
-  return { baiduApiKey: prefStore.get('research')?.baiduApiKey || '' };
+  return { hasBaiduApiKey: Boolean(prefStore.get('research')?.baiduApiKey || prefStore.get('research')?._encryptedBaiduApiKey) };
+});
+
+ipcMain.handle('skills:import-external', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'External Skill manifest', extensions: ['json'] }],
+    title: '导入外部 Skill（声明式 JSON）',
+  });
+  if (result.canceled || result.filePaths.length === 0) return prefStore.get('skills');
+  const skills = prefStore.get('skills');
+  const imported = [];
+  for (const filePath of result.filePaths) {
+    const skill = await loadExternalSkillFile(filePath);
+    if (skills.system[skill.id] || skills.custom.some(item => item.id === skill.id) || skills.external.some(item => item.id === skill.id)) throw new Error(`Skill ID 已存在：${skill.id}`);
+    imported.push(skill);
+  }
+  skills.external.push(...imported.map(externalSkillConfig));
+  prefStore.set('skills', skills);
+  configureSkills({ systemEnabled: skills.system, custom: skills.custom, external: skills.external });
+  return skills;
+});
+
+ipcMain.handle('skills:delete-external', async (_, { id }) => {
+  const skills = prefStore.get('skills');
+  skills.external = skills.external.filter(item => item.id !== id);
+  prefStore.set('skills', skills);
+  configureSkills({ systemEnabled: skills.system, custom: skills.custom, external: skills.external });
+  return skills;
+});
+
+ipcMain.handle('mcp:settings', async () => {
+  const mcp = prefStore.get('mcp') || {};
+  return { enabled: mcp.enabled === true, host: mcp.host || '127.0.0.1', port: mcp.port || 3333, hasToken: Boolean(mcp.token) };
+});
+
+ipcMain.handle('mcp:save-settings', async (_, settings = {}) => {
+  const current = prefStore.get('mcp') || {};
+  const port = Number(settings.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('MCP 端口必须是 1-65535 的整数');
+  const host = String(settings.host || '127.0.0.1').trim();
+  if (!host || /[\s/]/.test(host)) throw new Error('MCP 主机地址无效');
+  const token = settings.token === undefined ? current.token || '' : String(settings.token || '').trim();
+  if (settings.enabled === true && host !== '127.0.0.1' && host !== 'localhost' && !token) throw new Error('MCP 监听局域网地址时必须设置访问令牌');
+  prefStore.set('mcp', { enabled: settings.enabled === true, host, port, token });
+  await restartEmbeddedMcp();
+  return { enabled: settings.enabled === true, host, port, hasToken: Boolean(token) };
 });
 
 ipcMain.handle('agent:artifacts', async (_, { type, limit } = {}) => {
@@ -1714,7 +2825,14 @@ ipcMain.handle('agent:inspect-workflow', async (_, { workflowName }) => {
   if (comfyState.status !== 'ready') throw new Error(comfyState.message || 'ComfyUI 未就绪');
   const workflowDir = getWorkflowDir({ workflowDir: agent.workflowDir });
   if (workflowDir !== agent.workflowDir) await agent.setWorkflowDir(workflowDir);
-  return ComfyUITool.inspectWorkflow(workflowName, workflowDir);
+  const key = `${workflowDir}\u0000${workflowName}`;
+  const existing = workflowInspectionRequests.get(key);
+  if (existing) return existing;
+  const request = ComfyUITool.inspectWorkflow(workflowName, workflowDir).finally(() => {
+    workflowInspectionRequests.delete(key);
+  });
+  workflowInspectionRequests.set(key, request);
+  return request;
 });
 
 ipcMain.handle('agent:status', async () => {
@@ -1757,7 +2875,7 @@ ipcMain.handle('comfyui:select-root', async () => {
 });
 
 ipcMain.handle('comfyui:set-base-url', async (_, { baseUrl = '' } = {}) => {
-  const normalized = comfyManager.setBaseUrl(baseUrl || DEFAULT_BASE_URL);
+  const normalized = comfyManager.setBaseUrl(normalizeHttpUrl(baseUrl || DEFAULT_BASE_URL, 'ComfyUI 地址'));
   ComfyUITool.setClient(new ComfyUIClient({ baseUrl: normalized }));
   prefStore.set('comfyui', { ...prefStore.get('comfyui'), baseUrl: normalized });
   return comfyManager.refreshState();
@@ -1869,8 +2987,24 @@ app.whenReady().then(async () => {
   }
   applyComfyConfig(prefStore.getAll());
   createWindow();
+  tray = new Tray(nativeImage.createFromPath(APP_ICON_PATH));
+  tray.setToolTip(APP_NAME);
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '显示主应用', click: showMainWindow },
+    { label: '隐藏主应用', click: () => mainWindow?.hide() },
+    { label: '显示快速生成', click: showFloatingWindow },
+    { label: '隐藏快速生成', click: () => floatingWindow?.hide() },
+    { type: 'separator' },
+    { label: '退出', click: () => app.quit() },
+  ]));
+  tray.on('double-click', showMainWindow);
+  globalShortcut.register('CommandOrControl+Shift+Space', () => {
+    if (floatingWindow && !floatingWindow.isDestroyed() && floatingWindow.isVisible()) floatingWindow.hide();
+    else showFloatingWindow();
+  });
   void startAgent(prefStore.getAll()).catch(() => {});
   void comfyManager.ensureStarted();
+  void startEmbeddedMcp(config).catch(error => console.error(`MCP initialization failed: ${error.message}`));
 });
 
 let quitRequested = false;
@@ -1881,12 +3015,16 @@ app.on('before-quit', event => {
   event.preventDefault();
   void (async () => {
     try { await agent?.stop?.(); } catch {}
+    try { await embeddedMcpTransport?.close?.(); } catch {}
     comfyManager.stopOwned();
     app.quit();
   })();
 });
 
 app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+  tray?.destroy();
+  if (floatingWindow && !floatingWindow.isDestroyed()) floatingWindow.destroy();
   void agent?.stop?.();
   comfyManager.stopOwned();
 });

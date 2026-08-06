@@ -1,9 +1,15 @@
+import { detectVideoTemplateOptions } from '../tools/prompt/video-template.mjs';
+
 export const VideoSkill = {
   name: 'video',
   description: 'Video generation with explicit motion, timing, and camera direction',
   steps(userIntent, context) {
     const steps = [];
     const mode = context.promptMode || 'cinematic';
+    const templateOptions = detectVideoTemplateOptions(userIntent, {
+      modelType: context.modelType,
+      promptProfile: context.promptProfile,
+    });
 
     if (mode !== 'raw') {
       steps.push({
@@ -16,6 +22,7 @@ export const VideoSkill = {
             preserveMotion: true,
             preserveTiming: true,
             preserveCameraMovement: true,
+            ...(templateOptions || {}),
           },
         },
         description: `Enhance prompt for video (${mode} mode)`,

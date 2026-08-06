@@ -1,9 +1,26 @@
 import { randomUUID } from 'node:crypto';
 
 const SOURCES = new Set(['direct', 'ai']);
+const VIDEO_EXTENSIONS = /\.(?:mp4|webm|mov|mkv|avi|gif)$/i;
 
 function copyObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {};
+}
+
+export function normalizeGenerationResult(result = {}) {
+  const explicitImages = Array.isArray(result.images) ? result.images : [];
+  const explicitVideos = Array.isArray(result.videos) ? result.videos : [];
+  const suppliedMedia = Array.isArray(result.media) ? result.media : [];
+  const media = [...explicitImages, ...explicitVideos, ...suppliedMedia].filter((item, index, items) => {
+    const key = item?.path || item?.filename || item?.url || `${index}`;
+    return items.findIndex(candidate => (candidate?.path || candidate?.filename || candidate?.url || '') === key) === index;
+  });
+  const isVideo = item => item?.mediaType === 'video'
+    || item?.kind === 'video'
+    || VIDEO_EXTENSIONS.test(item?.filename || item?.name || item?.path || '');
+  const images = media.filter(item => !isVideo(item));
+  const videos = media.filter(isVideo);
+  return { ...result, media, images, videos };
 }
 
 export function normalizeGenerationRequest(input = {}) {
@@ -28,7 +45,10 @@ export function normalizeGenerationRequest(input = {}) {
     nodeOverrides: copyObject(input.nodeOverrides),
     outputNodeIds: Array.isArray(input.outputNodeIds) ? [...input.outputNodeIds] : null,
     media: copyObject(input.media),
+    outputType: input.outputType === 'video' ? 'video' : input.outputType === 'image' ? 'image' : 'auto',
     origin: input.origin || source,
+    presetId: input.presetId || '',
+    presetOrigin: input.presetOrigin || '',
     executionPolicy: {
       retry: input.executionPolicy?.retry ?? source !== 'direct',
       evaluate: input.executionPolicy?.evaluate ?? source !== 'direct',

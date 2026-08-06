@@ -80,7 +80,7 @@ export class ExecutionCoordinator {
     entry.promise = workPromise;
     try {
       const result = await workPromise;
-      await onResult?.(result, entry);
+      if (!entry.detached) await onResult?.(result, entry);
       if (previewId) this.preview = null;
       return result;
     } catch (error) {
@@ -107,11 +107,18 @@ export class ExecutionCoordinator {
       entry.phase = 'stopping';
       await (cancel || entry.cancel)?.();
       try {
-        await entry.promise;
+        await Promise.race([
+          entry.promise,
+          new Promise(resolve => setTimeout(resolve, 5000)),
+        ]);
       } catch (error) {
         if (!entry.cancelRequested) throw error;
       }
       entry.phase = 'cancelled';
+      if (this.active === entry) {
+        entry.detached = true;
+        this.active = null;
+      }
       return { cancelled: true, taskId: entry.taskId };
     })();
     return entry.cancelPromise;

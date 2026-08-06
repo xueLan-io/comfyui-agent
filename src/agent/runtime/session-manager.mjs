@@ -38,6 +38,7 @@ function sessionStateDefaults() {
     currentArtifactId: '',
     taskFailure: null,
     retryAction: null,
+    contextArchive: { version: 1, segments: [], archivedMessageIds: [] },
     sessionMemory: createSessionMemory(),
   };
 }
@@ -132,6 +133,7 @@ export class SessionManager {
       this.projects.push({
         id: projectId,
         name: '默认项目',
+        isDefault: true,
         dir: this.defaultProjectDir ? join(this.defaultProjectDir, projectId) : '',
         ...projectState(legacy),
         ...generationStateFromProject(legacy),
@@ -141,6 +143,11 @@ export class SessionManager {
       });
       this.sessionStates[projectId] = { [session.id]: sessionStateDefaults() };
       this.conversations[projectId] = { [session.id]: Array.isArray(conversationData.messages) ? conversationData.messages : [] };
+    }
+
+    // Migrate the legacy single default project once; later display logic uses the stable flag.
+    if (this.projects.length === 1 && this.projects[0].isDefault === undefined && this.projects[0].name === '默认项目') {
+      this.projects[0].isDefault = true;
     }
 
     for (const project of this.projects) {
@@ -294,6 +301,7 @@ export class SessionManager {
     const project = {
       id: projectId,
       name: name.trim() || '新项目',
+      isDefault: false,
       dir: dir || (this.defaultProjectDir ? join(this.defaultProjectDir, projectId) : ''),
       workflow: '',
       promptMode: 'raw',

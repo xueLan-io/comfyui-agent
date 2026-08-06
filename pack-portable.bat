@@ -15,6 +15,7 @@ set "COMFYUI_ROOT=%PARENT_DIR%"
 goto find_comfyui_root
 
 :comfyui_root_found
+echo Using ComfyUI portable root: %COMFYUI_ROOT%
 echo Building frontend...
 call npm.cmd run build
 if %errorlevel% neq 0 (
@@ -23,15 +24,15 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo Compiling launcher...
-"%SystemRoot%\Microsoft.NET\Framework\v4.0.30319\csc.exe" /target:winexe /win32icon:"%~dp0electron\icon.ico" /out:"%~dp0ComfyUI-Agent.exe" "%~dp0launcher.cs" -nologo
+echo Compiling updated portable launcher...
+"%SystemRoot%\Microsoft.NET\Framework\v4.0.30319\csc.exe" /target:winexe /win32icon:"%~dp0electron\icon.ico" /out:"%~dp0ComfyMuseLauncher.exe" "%~dp0launcher.cs" -nologo
 if %errorlevel% neq 0 (
     echo Launcher compile failed
     pause
     exit /b 1
 )
 
-echo Packing portable app...
+echo Packing portable app with the updated launcher...
 if "%~1"=="" (
     set "PUBLISH_DIR=%~dp0"
 ) else (
@@ -42,6 +43,13 @@ if "%~1"=="" (
     set "COMFYUI_ROOT_FROM_APP=..\..\..\.."
 ) else (
     set "COMFYUI_ROOT_FROM_APP=%COMFYUI_ROOT%"
+)
+
+echo Compiling application updater...
+"%SystemRoot%\Microsoft.NET\Framework\v4.0.30319\csc.exe" /target:winexe /out:"%~dp0ComfyUI-Agent-Updater.exe" "%~dp0updater.cs" /r:"%SystemRoot%\Microsoft.NET\Framework\v4.0.30319\System.IO.Compression.dll" /r:"%SystemRoot%\Microsoft.NET\Framework\v4.0.30319\System.IO.Compression.FileSystem.dll" -nologo
+if %errorlevel% neq 0 (
+    echo Updater compile failed
+    exit /b 1
 )
 set "APPDIR=%OUTDIR%\resources\app"
 
@@ -100,6 +108,11 @@ if errorlevel 1 (
     echo Execution coordinator packaging failed
     exit /b 1
 )
+if exist "%OUTDIR%\electron.exe" move /y "%OUTDIR%\electron.exe" "%OUTDIR%\ComfyMuse.exe" >nul
+if errorlevel 1 (
+    echo ComfyMuse runtime rename failed
+    exit /b 1
+)
 copy /y "electron\request-ledger.mjs" "%APPDIR%\electron\" >nul
 if errorlevel 1 (
     echo Request ledger packaging failed
@@ -131,13 +144,13 @@ if errorlevel 1 (
     exit /b 1
 )
 >"%APPDIR%\comfyui-root.txt" echo %COMFYUI_ROOT_FROM_APP%
-copy /y "ComfyUI-Agent.exe" "%OUTDIR%\" >nul
+copy /y "ComfyMuseLauncher.exe" "%OUTDIR%\" >nul
 if errorlevel 1 (
     echo Launcher packaging failed
     exit /b 1
 )
 
-if not "%~1"=="" copy /y "ComfyUI-Agent.exe" "%PUBLISH_DIR%\" >nul
+if not "%~1"=="" copy /y "ComfyMuseLauncher.exe" "%PUBLISH_DIR%\" >nul
 if errorlevel 1 if not "%~1"=="" (
     echo Desktop launcher update failed
     exit /b 1
@@ -173,6 +186,11 @@ if not exist "%APPDIR%\electron\execution-coordinator.mjs" (
     echo Execution coordinator packaging failed
     exit /b 1
 )
+copy /y "ComfyUI-Agent-Updater.exe" "%OUTDIR%\" >nul
+if errorlevel 1 (
+    echo Updater packaging failed
+    exit /b 1
+)
 if not exist "%APPDIR%\electron\request-ledger.mjs" (
     echo Request ledger packaging failed
     exit /b 1
@@ -185,11 +203,11 @@ if not exist "%APPDIR%\dist\index.html" (
     echo Frontend packaging failed
     exit /b 1
 )
-if not exist "%OUTDIR%\electron.exe" (
+if not exist "%OUTDIR%\ComfyMuse.exe" (
     echo Electron runtime packaging failed
     exit /b 1
 )
-if not exist "%OUTDIR%\ComfyUI-Agent.exe" (
+if not exist "%OUTDIR%\ComfyMuseLauncher.exe" (
     echo Portable launcher packaging failed
     exit /b 1
 )
@@ -202,8 +220,18 @@ if errorlevel 1 (
 )
 
 echo Creating distribution zip...
+if defined RELEASE_CERT (
+    echo Signing portable executables with Authenticode...
+    for %%F in ("%OUTDIR%\ComfyMuse.exe" "%OUTDIR%\ComfyMuseLauncher.exe" "%OUTDIR%\ComfyUI-Agent-Updater.exe") do (
+        "%RELEASE_SIGNTOOL%" sign /fd SHA256 /f "%RELEASE_CERT%" /p "%RELEASE_CERT_PASSWORD%" /tr http://timestamp.digicert.com /td SHA256 "%%~F"
+        if errorlevel 1 (
+            echo Authenticode signing failed for %%~nxF
+            exit /b 1
+        )
+    )
+)
 for /f "usebackq delims=" %%V in (`node -p "JSON.parse(require('fs').readFileSync('package.json','utf8')).version"`) do set "APP_VERSION=%%V"
-set "ZIP_NAME=ComfyUI-Agent-portable-v%APP_VERSION%.zip"
+set "ZIP_NAME=ComfyMuse-portable-v%APP_VERSION%.zip"
 if exist "%ZIP_NAME%" del /q "%ZIP_NAME%"
 powershell -NoProfile -Command "Compress-Archive -Path '%OUTDIR%\*' -DestinationPath '%ZIP_NAME%' -Force"
 if errorlevel 1 (
@@ -214,10 +242,14 @@ if errorlevel 1 (
 echo Done!
 echo.
 if "%~1"=="" (
-    echo Launch: %OUTDIR%\ComfyUI-Agent.exe
+    echo Launch: %OUTDIR%\ComfyMuseLauncher.exe
 ) else (
-    echo Launch: %PUBLISH_DIR%\ComfyUI-Agent.exe
+    echo Launch: %PUBLISH_DIR%\ComfyMuseLauncher.exe
+)
+if not exist "%OUTDIR%\ComfyUI-Agent-Updater.exe" (
+    echo Application updater packaging failed
+    exit /b 1
 )
 echo Package: %~dp0%ZIP_NAME%
 echo.
-pause
+if /i not "%CI%"=="true" pause

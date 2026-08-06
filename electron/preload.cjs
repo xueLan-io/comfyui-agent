@@ -5,6 +5,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
   windowToggleMaximize: () => ipcRenderer.invoke('window:toggle-maximize'),
   windowIsMaximized: () => ipcRenderer.invoke('window:is-maximized'),
   windowClose: () => ipcRenderer.invoke('window:close'),
+  windowHide: () => ipcRenderer.invoke('window:hide'),
+  appVersion: () => ipcRenderer.invoke('app:version'),
+  updateCheck: () => ipcRenderer.invoke('app:update-check'),
+  updateDownload: (manifest) => ipcRenderer.invoke('app:update-download', manifest),
+  updateInstall: () => ipcRenderer.invoke('app:update-install'),
+  updateState: () => ipcRenderer.invoke('app:update-state'),
+  floatingShow: () => ipcRenderer.invoke('floating:show'),
+  floatingHide: () => ipcRenderer.invoke('floating:hide'),
+  floatingClose: () => ipcRenderer.invoke('floating:close'),
+  floatingShowMain: () => ipcRenderer.invoke('floating:show-main'),
+  floatingResize: (collapsed) => ipcRenderer.invoke('floating:resize', { collapsed }),
+  floatingPosition: () => ipcRenderer.invoke('floating:position'),
+  floatingMove: (deltaX, deltaY) => ipcRenderer.invoke('floating:move', { deltaX, deltaY }),
+  floatingMoveStart: (clientX, clientY, token) => ipcRenderer.invoke('floating:move-start', { clientX, clientY, token }),
+  floatingMoveAt: (clientX, clientY, token) => ipcRenderer.invoke('floating:move-at', { clientX, clientY, token }),
+  floatingMoveEnd: (token) => ipcRenderer.invoke('floating:move-end', { token }),
+  floatingDragStart: (payload) => ipcRenderer.invoke('floating:drag-start', payload),
+  floatingDragMove: (point) => ipcRenderer.invoke('floating:drag-move', point),
+  floatingDragEnd: (point) => ipcRenderer.invoke('floating:drag-end', point),
+  floatingDragCancel: (dragId) => ipcRenderer.invoke('floating:drag-cancel', { dragId }),
 
   // Legacy ComfyUI workflow API
   listWorkflows: () => ipcRenderer.invoke('list-workflows'),
@@ -52,6 +72,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   agentGetTrace: (taskId) => ipcRenderer.invoke('agent:get-trace', { taskId }),
   agentGetRequestStatus: (requestId) => ipcRenderer.invoke('agent:get-request-status', { requestId }),
   agentRecoverTasks: () => ipcRenderer.invoke('agent:recover-tasks'),
+  agentMonitorTask: (taskId) => ipcRenderer.invoke('agent:monitor-task', { taskId }),
   agentRetryRecovery: (taskId) => ipcRenderer.invoke('agent:retry-recovery', { taskId }),
   agentArchiveTask: (taskId) => ipcRenderer.invoke('agent:archive-task', { taskId }),
   projectsList: () => ipcRenderer.invoke('projects:list'),
@@ -65,20 +86,44 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sessionActivate: (projectId, sessionId) => ipcRenderer.invoke('session:activate', { projectId, sessionId }),
   projectAssets: (projectId) => ipcRenderer.invoke('project:assets', projectId),
   projectDeleteAsset: (image) => ipcRenderer.invoke('project:delete-asset', image),
+  globalPresetsList: () => ipcRenderer.invoke('global-presets:list'),
+  globalPresetCreate: (input) => ipcRenderer.invoke('global-presets:create', input),
+  globalPresetUpdate: (id, patch) => ipcRenderer.invoke('global-presets:update', { id, patch }),
+  globalPresetDelete: (id) => ipcRenderer.invoke('global-presets:delete', { id }),
+  globalPresetCopy: (id) => ipcRenderer.invoke('global-presets:copy', { id }),
+  globalPresetMarkUsed: (id, generated = false) => ipcRenderer.invoke('global-presets:mark-used', { id, generated }),
+  globalPresetRate: (id, rating) => ipcRenderer.invoke('global-presets:rate', { id, rating }),
+  globalPresetReplaceModel: (id, from, to) => ipcRenderer.invoke('global-presets:replace-model', { id, from, to }),
+  globalPresetCompose: (ids, title = '') => ipcRenderer.invoke('global-presets:compose', { ids, title }),
+  globalPresetMatchWorkflow: (workflowName) => ipcRenderer.invoke('global-presets:match-workflow', { workflowName }),
+  globalPresetSelectCover: () => ipcRenderer.invoke('global-presets:select-cover'),
+  globalPresetSelectImport: () => ipcRenderer.invoke('global-presets:select-import'),
+  globalPresetCopyCover: (id, sourcePath) => ipcRenderer.invoke('global-presets:copy-cover', { id, sourcePath }),
+  globalPresetImageData: (cover) => ipcRenderer.invoke('global-presets:image-data', cover),
+  globalPresetImport: (sourcePath) => ipcRenderer.invoke('global-presets:import', { sourcePath }),
+  globalPresetExport: (id) => ipcRenderer.invoke('global-presets:export', { id }),
+  globalPresetResolveResources: (preset) => ipcRenderer.invoke('global-presets:resolve-resources', { preset }),
+  globalPresetCheckDependencies: (id) => ipcRenderer.invoke('global-presets:check-dependencies', { id }),
   uiPreferences: () => ipcRenderer.invoke('ui:preferences'),
   uiSavePreferences: (preferences) => ipcRenderer.invoke('ui:save-preferences', preferences),
   researchSettings: () => ipcRenderer.invoke('research:settings'),
   researchSaveSettings: (settings) => ipcRenderer.invoke('research:save-settings', settings),
+  mcpSettings: () => ipcRenderer.invoke('mcp:settings'),
+  mcpSaveSettings: (settings) => ipcRenderer.invoke('mcp:save-settings', settings),
   llmProviders: () => ipcRenderer.invoke('llm:providers'),
   llmSaveProvider: (provider) => ipcRenderer.invoke('llm:save-provider', { provider }),
   llmDeleteProvider: (providerId) => ipcRenderer.invoke('llm:delete-provider', { providerId }),
   llmSelect: (selection) => ipcRenderer.invoke('llm:select', selection),
   llmMediaPolicy: (allowMediaToCloud) => ipcRenderer.invoke('llm:media-policy', { allowMediaToCloud }),
   llmTest: (providerId, modelId) => ipcRenderer.invoke('llm:test', { providerId, modelId }),
+  imageGenerate: (prompt, options = {}) => ipcRenderer.invoke('image:generate', { prompt, ...options }),
+  imageCancel: (requestId) => ipcRenderer.invoke('image:cancel', { requestId }),
   skillsList: () => ipcRenderer.invoke('skills:list'),
-  skillSetEnabled: (id, enabled, custom = false) => ipcRenderer.invoke('skills:set-enabled', { id, enabled, custom }),
+  skillSetEnabled: (id, enabled, custom = false, external = false) => ipcRenderer.invoke('skills:set-enabled', { id, enabled, custom, external }),
   skillAddCustom: (skill) => ipcRenderer.invoke('skills:add-custom', { skill }),
   skillDeleteCustom: (id) => ipcRenderer.invoke('skills:delete-custom', { id }),
+  skillImportExternal: () => ipcRenderer.invoke('skills:import-external'),
+  skillDeleteExternal: (id) => ipcRenderer.invoke('skills:delete-external', { id }),
   comfyUIStatus: () => ipcRenderer.invoke('comfyui:status'),
   comfyUIStart: () => ipcRenderer.invoke('comfyui:start'),
   comfyUISelectRoot: () => ipcRenderer.invoke('comfyui:select-root'),
@@ -101,12 +146,34 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('comfyui:download-progress', handler);
     return () => ipcRenderer.removeListener('comfyui:download-progress', handler);
   },
+  onUpdateProgress: (cb) => {
+    const handler = (_e, data) => cb(data);
+    ipcRenderer.on('app:update-progress', handler);
+    return () => ipcRenderer.removeListener('app:update-progress', handler);
+  },
+
+  onProjectState: (cb) => {
+    const handler = (_e, data) => cb(data);
+    ipcRenderer.on('project:state', handler);
+    return () => ipcRenderer.removeListener('project:state', handler);
+  },
+
+  onFloatingDrag: (cb) => {
+    const handler = (_e, data) => cb(data);
+    ipcRenderer.on('floating:drag', handler);
+    return () => ipcRenderer.removeListener('floating:drag', handler);
+  },
 
   // Agent event listeners
   onAgentStatus: (cb) => {
     const handler = (_e, data) => cb(data);
     ipcRenderer.on('agent:status', handler);
     return () => ipcRenderer.removeListener('agent:status', handler);
+  },
+  onAgentContextUsage: (cb) => {
+    const handler = (_e, data) => cb(data);
+    ipcRenderer.on('agent:context-usage', handler);
+    return () => ipcRenderer.removeListener('agent:context-usage', handler);
   },
   onAgentStep: (cb) => {
     const handler = (_e, data) => cb(data);

@@ -9,6 +9,7 @@ import {
   checkEditedPrompt,
   checkPromptStructure,
   hasTerm,
+  createGuardContext,
   applyGuard,
 } from '../src/agent/optimizer/prompt-guard.mjs';
 
@@ -135,6 +136,23 @@ test('hasTerm uses word boundaries for latin terms', () => {
   assert.equal(hasTerm('red ready reduce', 'red'), true);
   assert.equal(hasTerm('ready reduce', 'red'), false);
   assert.equal(hasTerm('a girl with a red hat', 'red'), true);
+});
+
+test('createGuardContext caches normalized term hits for both prompt directions', () => {
+  const context = createGuardContext({ positive: 'a girl standing outdoors, red dress', negative: 'blurry' });
+  assert.equal(context.has(context.positive, 'girl'), true);
+  assert.equal(context.has(context.positive, 'red'), true);
+  assert.equal(context.has(context.negative, 'girl'), false);
+  assert.equal(context.has(context.positive, 'girl'), true);
+});
+
+test('fitToBudget preserves the same leading segments with many trailing terms', () => {
+  const text = Array.from({ length: 200 }, (_, i) => `tag${i}`).join(', ');
+  const result = fitToBudget(text, 30);
+  assert.equal(result.truncated, true);
+  assert.ok(result.text.startsWith('tag0, tag1, tag2'));
+  assert.ok(estimateTokens(result.text) <= 30);
+  assert.equal(result.dropped.length, 200 - result.text.split(', ').length);
 });
 
 test('checkConflicts does not flag compounds containing conflict terms', () => {

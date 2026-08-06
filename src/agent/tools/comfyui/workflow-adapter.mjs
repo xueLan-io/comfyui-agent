@@ -12,6 +12,12 @@ function activeNodes(workflow) {
   return active.length > 0 ? active : nodes;
 }
 
+function widgetValues(node) {
+  if (Array.isArray(node.widgets_values)) return node.widgets_values;
+  if (node.widgets_values && typeof node.widgets_values === 'object') return Object.values(node.widgets_values);
+  return [];
+}
+
 function workflowModelRequirements(workflow) {
   return activeNodes(workflow).flatMap(node => {
     const definition = MODEL_INPUTS.get(node.type);
@@ -34,6 +40,9 @@ function workflowCapabilities(workflow, family) {
   if (has(/^loadimage$/i) && has(/vaeencode/i) && !inpaint) modes.push('img2img');
   if (inpaint) modes.push('inpaint');
   if (!has(/ksampler/i) && has(/upscale|imagescale|esrgan/i)) modes.push('upscale');
+  if (has(/video|wan|animatediff|hunyuan|ltx|minimaxh3|referencetovideo/i) && has(/save|combine|output|vhs/i)) {
+    modes.push(has(/^loadimage$/i) || has(/image.?to.?video/i) ? 'img2video' : 'txt2video');
+  }
 
   const labelFamily = family === 'anima' ? 'anime' : family;
   return { family, modes, labels: modes.map(mode => `${labelFamily}_${mode}`) };
@@ -136,11 +145,12 @@ export class WorkflowAdapter {
     const active = nodes.filter(node => node.mode === 0);
     const inspected = active.length > 0 ? active : nodes;
     const signature = inspected
-      .flatMap(node => [node.type, node.title, ...(node.widgets_values || [])])
+      .flatMap(node => [node.type, node.title, ...widgetValues(node), ...(node.properties?.models || []).flatMap(model => [model.name, model.directory])])
       .filter(value => typeof value === 'string')
       .join(' ');
     const types = inspected.map(n => n.type);
 
+    if (/minimaxh3|mini.?max.?h3|qwen3vl.*minimax_h3/i.test(signature)) return 'minimax_h3';
     if (/miaomiao|anima(?!tediff)/i.test(signature)) return 'anima';
     if (types.some(t => t.includes('Flux') || t.includes('flux'))) return 'flux';
     if (/\bwan(?:2|\s|_|-|\.)/i.test(signature)) return 'wan';

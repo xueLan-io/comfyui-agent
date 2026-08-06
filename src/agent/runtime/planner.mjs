@@ -176,7 +176,7 @@ export class Planner {
       'Replan only the remaining steps of a local ComfyUI task.',
       'Return ONLY JSON with goal and steps. Use registered tools. File writes must use filesystem_mutate and require confirmation; never use shell commands, deletion, move, or copy.',
       'Do not repeat completed steps. Keep the current workflow unless the error proves it unusable; never invent workflow names.',
-      'End the plan with a comfyui step whose expected_output is images. If no sensible continuation exists, return that single step and state the blocker in its description.',
+      'End the plan with a comfyui step whose expected_output is images for image workflows or videos for video workflows. If no sensible continuation exists, return that single step and state the blocker in its description.',
       'If the failure is transient (connection/timeout/queue) keep the same workflow and parameters. If the failure is output_mismatch or node_not_found, switch to a different output node or workflow branch. If the failure is a prompt/constraint mismatch, rewrite the prompt instead of changing the workflow.',
       `User goal: ${String(input.userGoal || '').slice(0, 500)}`,
       `Completed steps: ${JSON.stringify(input.completedSteps || [])}`,
@@ -282,7 +282,7 @@ export class Planner {
   _fallback(userMessage, context) {
     const workflowName = context.project?.currentWorkflow || context.availableWorkflows?.[0] || '';
     const promptMode = context.project?.promptMode || 'raw';
-    const skill = matchSkill(userMessage);
+    const skill = matchSkill(userMessage, { skillId: context.project?.skillId || context.skillId || '' });
     if (!skill) throw new Error('没有启用的技能');
     const template = {
       goal: userMessage,

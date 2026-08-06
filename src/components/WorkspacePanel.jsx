@@ -3,34 +3,9 @@ import { useComfyUI } from '../contexts/ComfyUIContext.jsx';
 import { useAgent } from '../contexts/AgentContext.jsx';
 import { countControlChanges } from './node-controls.mjs';
 import Icon from './Icon.jsx';
+import { useI18n } from '../i18n/I18nContext.jsx';
 
-const PROMPT_MODES = [
-  { id: 'anime-character', label: '角色立绘', description: '突出人物与服装' },
-  { id: 'anime-scene', label: '场景插画', description: '突出环境与镜头' },
-  { id: 'anime-polish', label: '画面优化', description: '只补质量与缺陷' },
-  { id: 'raw', label: '原始描述', description: '按原意执行' },
-  { id: 'cinematic', label: '电影质感', description: '补足镜头与氛围' },
-  { id: 'anime', label: '动漫风格', description: '强化动漫标签表达' },
-  { id: 'photorealistic', label: '写实摄影', description: '强化摄影与材质' },
-  { id: 'concept', label: '概念设计', description: '强化设计稿结构' },
-];
-
-function statusLabel(status) {
-  return { running: '运行中', completed: '已完成', error: '失败', cancelled: '已取消' }[status] || '';
-}
-
-const PROMPT_MODE_HELP = {
-  raw: '保留你的原始词序和权重，只注入当前工作流。',
-  anime: '按动漫模型顺序整理角色、外观、姿势和场景。',
-  'anime-character': '优先保护角色身份、年龄、服装、脸部和姿势，不擅自添加场景。',
-  'anime-scene': '补充景别、空间关系、光线和背景，让角色融入场景。',
-  'anime-polish': '补充渲染质量、手部和画面整洁度，不改变主体内容。',
-  cinematic: '补充镜头、光影和氛围，适合有明确叙事的画面。',
-  photorealistic: '补充摄影和材质语言，不适合当前动漫模型。',
-  concept: '补充轮廓、构图和设计意图，适合概念设定。',
-};
-
-const VISIBLE_PROMPT_MODES = PROMPT_MODES.filter(item => ['raw', 'anime', 'anime-character', 'anime-scene', 'anime-polish'].includes(item.id));
+const VISIBLE_PROMPT_MODES = ['raw', 'anime', 'anime-character', 'anime-scene', 'anime-polish'];
 
 function workflowGroups(files) {
   const rootItems = [];
@@ -59,6 +34,7 @@ function workflowDisplayName(file) {
 }
 
 export default function WorkspacePanel({ onOpenPromptLibrary }) {
+  const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [importFeedback, setImportFeedback] = useState(null);
@@ -95,7 +71,9 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
   const promptProfile = workflowManifest?.promptProfile;
   const positiveTargetCount = promptProfile?.positiveTargets?.length || 0;
   const negativeTargetCount = promptProfile?.negativeTargets?.length || 0;
-  const promptModeHelp = PROMPT_MODE_HELP[promptMode] || PROMPT_MODE_HELP.anime;
+  const promptModeHelp = { raw: 'promptHelpRaw', anime: 'promptHelpAnime', 'anime-character': 'promptHelpCharacter', 'anime-scene': 'promptHelpScene', 'anime-polish': 'promptHelpPolish' }[promptMode] || 'promptHelpAnime';
+  const modeText = { raw: ['rawMode', 'rawModeDesc'], anime: ['animeMode', 'animeModeDesc'], 'anime-character': ['characterMode', 'characterModeDesc'], 'anime-scene': ['sceneMode', 'sceneModeDesc'], 'anime-polish': ['polishMode', 'polishModeDesc'] };
+  const statusText = { running: 'workflowRunning', completed: 'workflowCompleted', error: 'workflowFailed', cancelled: 'workflowCancelled' };
 
   useEffect(() => () => clearTimeout(importFeedbackTimer.current), []);
 
@@ -238,24 +216,24 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
       }}
       onDragOver={handleDragOver}
       onDrop={handleDrop}>
-      <div className="panel-right-header">
-        <div><span className="sidebar-eyebrow">CONTROL ROOM</span><strong className="workspace-title">工作流</strong></div>
+       <div className="panel-right-header">
+         <div><span className="sidebar-eyebrow">CONTROL ROOM</span><strong className="workspace-title">{t('workflow')}</strong></div>
         <div className="panel-right-controls">
-          {statusLabel(status) && <span className={`tag tag-${status === 'error' ? 'err' : status === 'running' ? 'processing' : 'ok'}`}>{statusLabel(status)}</span>}
-          <button className="btn btn-icon workspace-collapse" onClick={() => setCollapsed(value => !value)} title={collapsed ? '展开工作区' : '收起工作区'}><Icon name={collapsed ? 'chevronLeft' : 'chevronRight'} /></button>
+           {statusText[status] && <span className={`tag tag-${status === 'error' ? 'err' : status === 'running' ? 'processing' : 'ok'}`}>{t(statusText[status])}</span>}
+          <button className="btn btn-icon workspace-collapse" onClick={() => setCollapsed(value => !value)} title={collapsed ? t('expandSidebar') : t('collapseSidebar')}><Icon name={collapsed ? 'chevronLeft' : 'chevronRight'} /></button>
         </div>
       </div>
 
       {!collapsed && <div className="workspace-scroll">
         <section className="workspace-section workflow-section">
-           <div className="workspace-section-heading"><div><span className="section-kicker">01</span><div><h3>工作流</h3><p>{workflowDir || '选择一个 ComfyUI 工作流'}</p></div></div><span className="workflow-count">{normalizedWorkflowQuery ? `${filteredRootItems.length + filteredGroups.reduce((count, group) => count + group.items.length, 0)} / ` : ''}{workflowFiles.length} 个</span></div>
+           <div className="workspace-section-heading"><div><span className="section-kicker">01</span><div><h3>{t('workflow')}</h3><p>{workflowDir || t('chooseWorkflow')}</p></div></div><span className="workflow-count">{normalizedWorkflowQuery ? `${filteredRootItems.length + filteredGroups.reduce((count, group) => count + group.items.length, 0)} / ` : ''}{workflowFiles.length} {t('items')}</span></div>
            <div className="workflow-picker-row">
-             <div className="workflow-search-wrap"><input ref={workflowSearchRef} className="workflow-search" value={workflowQuery} onChange={event => setWorkflowQuery(event.target.value)} placeholder="搜索工作流..." aria-label="搜索工作流" title="快捷键 Ctrl/Cmd+K" />{workflowQuery && <button className="workflow-search-clear" onClick={() => { setWorkflowQuery(''); workflowSearchRef.current?.focus(); }} aria-label="清空工作流搜索" title="清空搜索"><Icon name="close" size={12} /></button>}</div>
-             <select className="wf-select" value={selectedFile} onChange={event => selectWorkflow(event.target.value)} aria-label="选择工作流">
-               <option value="">选择工作流...</option>
-               {filteredRootItems.length === 0 && filteredGroups.length === 0 && <option value="" disabled>没有匹配的工作流</option>}
-               {favoriteFiles.length > 0 && <optgroup label="收藏"><>{favoriteFiles.map(file => <option key={`favorite-${file}`} value={file}>★ {workflowDisplayName(file)}</option>)}</></optgroup>}
-               {recentFiles.length > 0 && <optgroup label="最近使用"><>{recentFiles.map(file => <option key={`recent-${file}`} value={file}>{workflowDisplayName(file)}</option>)}</></optgroup>}
+             <div className="workflow-search-wrap"><input ref={workflowSearchRef} className="workflow-search" value={workflowQuery} onChange={event => setWorkflowQuery(event.target.value)} placeholder={t('searchWorkflow')} aria-label={t('searchWorkflow')} title="Ctrl/Cmd+K" />{workflowQuery && <button className="workflow-search-clear" onClick={() => { setWorkflowQuery(''); workflowSearchRef.current?.focus(); }} aria-label={t('searchWorkflow')} title={t('close')}><Icon name="close" size={12} /></button>}</div>
+             <select className="wf-select" value={selectedFile} onChange={event => selectWorkflow(event.target.value)} aria-label={t('chooseWorkflow')}>
+                <option value="">{t('chooseWorkflowOption')}</option>
+                {filteredRootItems.length === 0 && filteredGroups.length === 0 && <option value="" disabled>{t('noMatchingWorkflow')}</option>}
+                {favoriteFiles.length > 0 && <optgroup label={t('favorites')}><>{favoriteFiles.map(file => <option key={`favorite-${file}`} value={file}>★ {workflowDisplayName(file)}</option>)}</></optgroup>}
+                {recentFiles.length > 0 && <optgroup label={t('recent')}><>{recentFiles.map(file => <option key={`recent-${file}`} value={file}>{workflowDisplayName(file)}</option>)}</></optgroup>}
                {filteredRootItems.map(file => <option key={file} value={file}>{file}</option>)}
                {filteredGroups.map(group => (
                 <optgroup key={group.name} label={group.name}>
@@ -263,28 +241,28 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
                 </optgroup>
               ))}
              </select>
-             <button className={`btn btn-icon workflow-favorite${favoriteWorkflows.includes(selectedFile) ? ' active' : ''}`} onClick={() => toggleFavoriteWorkflow(selectedFile)} disabled={!selectedFile} title={favoriteWorkflows.includes(selectedFile) ? '取消收藏' : '收藏工作流'} aria-label={favoriteWorkflows.includes(selectedFile) ? '取消收藏' : '收藏工作流'}>★</button>
-            <button className="btn" onClick={handleImportClick} title="从外部导入 ComfyUI 工作流文件（.json）"><Icon name="upload" size={14} /> 导入</button>
-            <button className="btn" onClick={handleShowWorkflowDir} title={selectedFile ? '打开 ' + selectedFile + ' 所在目录' : (workflowDir || '打开工作流目录')}>目录</button>
-            <button className="btn node-controls-trigger" onClick={() => setShowNodeControls(true)} disabled={!workflowManifest} title="编辑工作流参数"><Icon name="sliders" size={14} /> 参数{controlChangeCount > 0 && <span className="node-control-count">{controlChangeCount}</span>}</button>
+             <button className={`btn btn-icon workflow-favorite${favoriteWorkflows.includes(selectedFile) ? ' active' : ''}`} onClick={() => toggleFavoriteWorkflow(selectedFile)} disabled={!selectedFile} title={favoriteWorkflows.includes(selectedFile) ? t('removeFavorite') : t('favoriteWorkflow')} aria-label={favoriteWorkflows.includes(selectedFile) ? t('removeFavorite') : t('favoriteWorkflow')}>★</button>
+             <button className="btn" onClick={handleImportClick} title="Import ComfyUI workflow (.json)"><Icon name="upload" size={14} /> {t('import')}</button>
+             <button className="btn" onClick={handleShowWorkflowDir} title={selectedFile ? `${t('directory')}: ${selectedFile}` : t('directory')}>{t('directory')}</button>
+             <button className="btn node-controls-trigger" onClick={() => setShowNodeControls(true)} disabled={!workflowManifest} title={t('parameters')}><Icon name="sliders" size={14} /> {t('parameters')}{controlChangeCount > 0 && <span className="node-control-count">{controlChangeCount}</span>}</button>
             <div className="workflow-more">
-              <button className="btn btn-icon" onClick={() => { setMenuOpen(value => !value); setConfirmDelete(false); }} disabled={!selectedFile} title="管理工作流"><Icon name="more" size={15} /></button>
+               <button className="btn btn-icon" onClick={() => { setMenuOpen(value => !value); setConfirmDelete(false); }} disabled={!selectedFile} title={t('manageWorkflow')}><Icon name="more" size={15} /></button>
               {menuOpen && (
                 <>
                   <div className="workflow-more-backdrop" onClick={() => setMenuOpen(false)} />
                   <div className="workflow-more-menu">
                     {confirmDelete ? (
                       <div className="workflow-more-delete-confirm">
-                        <span>确定删除 <strong>{workflowDisplayName(selectedFile)}</strong>？</span>
+                         <span>{t('deleteWorkflowConfirm', { name: workflowDisplayName(selectedFile) })}</span>
                         <div className="workflow-more-actions">
-                          <button className="btn btn-danger" onClick={() => void handleDelete()}>删除</button>
-                          <button className="btn" onClick={() => setConfirmDelete(false)}>取消</button>
+                           <button className="btn btn-danger" onClick={() => void handleDelete()}>{t('delete')}</button>
+                           <button className="btn" onClick={() => setConfirmDelete(false)}>{t('cancel')}</button>
                         </div>
                       </div>
                     ) : (
                       <>
-                        <button className="workflow-more-item" onClick={startRename}><Icon name="edit" size={13} /> 重命名</button>
-                        <button className="workflow-more-item danger" onClick={() => void handleDelete()}><Icon name="trash" size={13} /> 删除</button>
+                         <button className="workflow-more-item" onClick={startRename}><Icon name="edit" size={13} /> {t('rename')}</button>
+                         <button className="workflow-more-item danger" onClick={() => void handleDelete()}><Icon name="trash" size={13} /> {t('delete')}</button>
                       </>
                     )}
                   </div>
@@ -300,32 +278,32 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
                   if (event.key === 'Enter') void handleRenameSubmit();
                   if (event.key === 'Escape') setRenameOpen(false);
                 }}
-                placeholder="新文件名（保留 .json）" autoFocus />
-              <button className="btn" onClick={() => void handleRenameSubmit()}>确定</button>
-              <button className="btn" onClick={() => { setRenameOpen(false); setRenameValue(''); }}>取消</button>
+                 placeholder={t('newFileName')} autoFocus />
+               <button className="btn" onClick={() => void handleRenameSubmit()}>{t('confirm')}</button>
+               <button className="btn" onClick={() => { setRenameOpen(false); setRenameValue(''); }}>{t('cancel')}</button>
             </div>
           )}
-           <p className="workflow-import-hint">支持从对话框选择或直接拖拽 .json 文件导入，导入后自动复制到工作流目录并选中。</p>
-           {workflowManifest && <div className="workflow-manifest-summary"><span>{workflowManifest.modelType || workflowManifest.promptProfile?.family || '通用工作流'}</span><span>{workflowManifest.nodeCount || 0} 个节点</span><span>正向 {positiveTargetCount} · 负向 {negativeTargetCount}</span><span>{workflowManifest.capabilities?.modes?.join(' / ') || 'txt2img'}</span></div>}
+            <p className="workflow-import-hint">{t('importHint')}</p>
+           {workflowManifest && <div className="workflow-manifest-summary"><span>{workflowManifest.modelType || workflowManifest.promptProfile?.family || t('genericWorkflow')}</span><span>{workflowManifest.nodeCount || 0} {t('nodes')}</span><span>{t('positive')} {positiveTargetCount} · {t('negative')} {negativeTargetCount}</span><span>{workflowManifest.capabilities?.modes?.join(' / ') || 'txt2img'}</span></div>}
           {importFeedback && <div className={`workflow-import-feedback ${importFeedback.type}`}><Icon name={importFeedback.type === 'ok' ? 'check' : 'circleAlert'} size={13} /><span>{importFeedback.text}</span></div>}
-          {dragOver && <div className="workflow-drop-overlay"><Icon name="upload" size={20} /><span>松开以导入工作流</span></div>}
+           {dragOver && <div className="workflow-drop-overlay"><Icon name="upload" size={20} /><span>{t('releaseToImport')}</span></div>}
         </section>
 
         <section className="workspace-section prompt-section">
-          <div className="workspace-section-heading"><div><span className="section-kicker">02</span><div><h3>提示词模板</h3><p>{promptProfile?.family || '等待工作流识别'}</p></div></div><span className="prompt-target-count">正向 {positiveTargetCount} · 负向 {negativeTargetCount}</span></div>
-          <div className="prompt-mode-grid" role="group" aria-label="提示词模板">
-            {VISIBLE_PROMPT_MODES.map(item => <button key={item.id} type="button" className={`prompt-mode-card${promptMode === item.id ? ' active' : ''}`} onClick={() => setPromptMode(item.id)} aria-pressed={promptMode === item.id}><strong>{item.label}</strong><span>{item.description}</span></button>)}
+           <div className="workspace-section-heading"><div><span className="section-kicker">02</span><div><h3>{t('promptTemplate')}</h3><p>{promptProfile?.family || t('waitingWorkflow')}</p></div></div><span className="prompt-target-count">{t('positive')} {positiveTargetCount} · {t('negative')} {negativeTargetCount}</span></div>
+           <div className="prompt-mode-grid" role="group" aria-label={t('promptTemplate')}>
+             {VISIBLE_PROMPT_MODES.map(id => <button key={id} type="button" className={`prompt-mode-card${promptMode === id ? ' active' : ''}`} onClick={() => setPromptMode(id)} aria-pressed={promptMode === id}><strong>{t(modeText[id][0])}</strong><span>{t(modeText[id][1])}</span></button>)}
           </div>
           <button className="prompt-library-launch" type="button" onClick={onOpenPromptLibrary}>
             <span className="prompt-library-launch-mark"><Icon name="library" size={15} /></span>
-            <span><strong>打开提示词工作台</strong><small>按分类挑选英文片段</small></span>
+             <span><strong>{t('openPromptWorkspace')}</strong><small>{t('chooseEnglishFragments')}</small></span>
             <span className="prompt-library-launch-arrow"><Icon name="chevronRight" size={16} /></span>
           </button>
-          <p className="prompt-mode-help"><strong>当前作用：</strong>{promptModeHelp}</p>
-          {workflowManifest && <p className="prompt-template-summary">{promptProfile?.supportsNegative === false ? '当前工作流只写入正向提示词。' : `当前工作流将写入 ${positiveTargetCount} 个正向目标和 ${negativeTargetCount} 个负向目标。`}</p>}
+           <p className="prompt-mode-help"><strong>{t('currentEffect')}：</strong>{t(promptModeHelp)}</p>
+           {workflowManifest && <p className="prompt-template-summary">{promptProfile?.supportsNegative === false ? t('promptOnlyPositive') : t('promptTargetsSummary', { positive: positiveTargetCount, negative: negativeTargetCount })}</p>}
         </section>
 
-        {(status === 'error' || status === 'cancelled') && <div className={`status-bar ${status}`}><span className="status-indicator" /><span>{statusMsg || statusLabel(status)}</span></div>}
+       {(status === 'error' || status === 'cancelled') && <div className={`status-bar ${status}`}><span className="status-indicator" /><span>{statusMsg || t(statusText[status])}</span></div>}
 
       </div>}
     </section>

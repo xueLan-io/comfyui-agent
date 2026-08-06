@@ -4,6 +4,7 @@ export class ProjectMemory {
     this.current = {
       goal: '',
       workflow: '',
+      skillId: '',
       model: '',
       style: '',
       lastPrompt: '',
@@ -50,6 +51,7 @@ export class ProjectMemory {
     this.current = {
       goal: '',
       workflow: '',
+      skillId: '',
       model: '',
       style: '',
       lastPrompt: '',

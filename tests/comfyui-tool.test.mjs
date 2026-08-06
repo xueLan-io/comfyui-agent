@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { ComfyUITool } from '../src/agent/tools/comfyui/index.mjs';
+import { registerAdapters } from '../src/agent/tools/comfyui/adapters/index.mjs';
+
+registerAdapters();
 
 const minimalObjectInfo = {
   CLIPTextEncode: {
@@ -69,6 +72,28 @@ test('rejects a workflow before queueing when a referenced model is unavailable'
     await assert.rejects(
       ComfyUITool.execute({ workflowName: 'missing-model.json', workflowDir: dir }),
       error => error.failureType === 'model_missing' && error.message.includes('missing.safetensors'),
+    );
+  } finally {
+    ComfyUITool.setClient(original);
+  }
+});
+
+test('adaptation-only workflows fail with a preflight report', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'comfy-agent-wf-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(join(dir, 'adapted.json'), JSON.stringify({
+    nodes: [{ id: 1, type: 'MiniMaxH3ReferenceToVideo', mode: 0, inputs: [{ name: 'prompt' }] }],
+    links: [],
+  }));
+
+  const original = ComfyUITool.client;
+  ComfyUITool.setClient({ objectInfo: async () => ({}) });
+  try {
+    await assert.rejects(
+      ComfyUITool.execute({ workflowName: 'adapted.json', workflowDir: dir }),
+      error => error.failureType === 'adaptation_only'
+        && error.preflight?.valid === false
+        && error.preflight?.adaptationOnly === true,
     );
   } finally {
     ComfyUITool.setClient(original);

@@ -10,13 +10,13 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo Packaging with electron-builder...
-call npx electron-builder --win --config electron-builder.yml
+echo Packaging portable desktop app with the existing Electron runtime...
+call pack-portable.bat
 if %errorlevel% neq 0 (
     echo Packaging failed
     pause
     exit /b 1
 )
 
-echo Done! Check releases\ folder.
+echo Installer done! Check releases\ folder.
 pause

@@ -10,6 +10,7 @@ test('session manager isolates conversations and shares project state', async ()
   try {
     const manager = new SessionManager(dir);
     await manager.init();
+    assert.equal(manager.getProject(manager.activeProjectId).isDefault, true);
     const projectId = manager.activeProjectId;
     const firstSession = manager.activeSessionId;
     manager.conversation.add('user', 'first');

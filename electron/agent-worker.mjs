@@ -121,6 +121,7 @@ async function invoke(method, args = []) {
   if (method === 'task.update') return agent.taskManager.update(args[0], args[1]);
   if (method === 'task.transition') return agent.taskManager.transition(args[0], args[1], args[2] || {});
   if (method === 'task.complete') return agent.taskManager.complete(args[0], args[1] || {});
+  if (method === 'task.settleComplete') return agent.taskManager.settleComplete(args[0], args[1] || {});
   if (method === 'task.persist') return agent.taskManager.persist();
   if (method === 'config.llm') return agent.reconfigureLLM(args[0]);
   if (method === 'config.research') return agent.reconfigureResearch(args[0]);
@@ -138,6 +139,8 @@ async function start(config = {}) {
     workflowDir: config.workflowDir || '',
     comfyRoot: config.comfyRoot || '',
     userDataPath: config.userDataPath || '',
+    projectId: config.projectId || '',
+    sessionId: config.sessionId || '',
   });
   wireEvents();
   await agent.init();

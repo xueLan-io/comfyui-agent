@@ -83,6 +83,23 @@ test('executeStep enriches comfyui input', async () => {
   assert.ok(result.result.images);
 });
 
+test('executeStep propagates video media through the Agent context', async () => {
+  const tool = {
+    ...mockComfyUITool,
+    async execute() { return { videos: [{ filename: 'result.mp4' }], promptId: 'p-video' }; },
+  };
+  const executor = new Executor({ comfyui: tool }, null);
+  const context = {};
+  const result = await executor.executeStep({
+    id: 's-video', tool: 'comfyui', input: { workflowName: 'video.json' },
+    description: 'video test', expected_output: 'videos',
+  }, context);
+
+  assert.equal(result.result.media.length, 1);
+  assert.equal(context.lastVideos[0].filename, 'result.mp4');
+  assert.equal(context.lastMedia[0].filename, 'result.mp4');
+});
+
 test('executeStep prefers the plan workflow over the project workflow', async () => {
   let captured = null;
   const tool = {

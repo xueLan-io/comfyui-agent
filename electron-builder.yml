@@ -1,5 +1,8 @@
 appId: com.comfyui.agent
-productName: "ComfyUI \u667a\u80fd\u521b\u4f5c\u53f0"
+productName: "ComfyMuse"
+executableName: "ComfyMuse"
+artifactName: "ComfyMuse-${version}-Setup.${ext}"
+companyName: "ComfyMuse"
 copyright: Copyright 2026
 icon: electron/icon.ico
 directories:
@@ -13,6 +16,7 @@ files:
   - workflows/**/*
 win:
   icon: electron/icon.ico
+  signAndEditExecutable: true
   target:
     - target: nsis
       arch:

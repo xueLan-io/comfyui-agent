@@ -9,6 +9,7 @@ import {
   setSettingControl,
   toggleOutputControl,
 } from './node-controls.mjs';
+import { buildParameterSchema } from '../runtime/parameter-schema.mjs';
 
 const NODE_SETTING_FIELDS = [
   { key: 'seed', label: '随机种子 Seed', description: '相同种子和参数通常会得到相近结果；留空使用工作流默认值。', type: 'number' },
@@ -73,7 +74,7 @@ function ControlField({ definition, value, changed, onChange, onReset }) {
   const defaultLabel = `默认：${displayValue(definition.value)}`;
   let control;
 
-  if (type === 'select') {
+  if (type === 'select' || (type === 'model' && (definition.options || []).length > 0)) {
     control = (
       <select id={controlId} value={changed ? value : ''} onChange={event => onChange(parseControlValue(definition, event.target.value))}>
         <option value="">{defaultLabel}</option>
@@ -98,10 +99,10 @@ function ControlField({ definition, value, changed, onChange, onReset }) {
     );
   } else {
     const numeric = ['number', 'int', 'float'].includes(type) || typeof definition.value === 'number';
-    control = (
-      <input
-        id={controlId}
-        type={numeric ? 'number' : 'text'}
+    control = numeric && definition.min !== undefined && definition.max !== undefined ? (
+      <div className="parameter-range-control"><input id={controlId} type="range" min={definition.min} max={definition.max} step={definition.step} value={changed ? value : definition.value ?? definition.min} onChange={event => onChange(parseControlValue(definition, event.target.value))} /><output>{displayValue(changed ? value : definition.value)}</output></div>
+    ) : (
+      <input id={controlId} type={numeric ? 'number' : 'text'}
         min={definition.min}
         max={definition.max}
         step={definition.step}
@@ -138,6 +139,7 @@ export default function NodeControlsPanel({ manifest, controls, onChange, onClos
     return [node.id, node.type, node.title, node.group].some(value => String(value || '').toLowerCase().includes(query));
   });
   const changeCount = countControlChanges(draft);
+  const parameterSchema = buildParameterSchema(manifest);
   const selectedOutputIds = Array.isArray(draft.outputNodeIds)
     ? draft.outputNodeIds.map(String)
     : (manifest.preferredOutputNodeIds || outputNodes.map(node => node.id)).map(String);
@@ -171,12 +173,12 @@ export default function NodeControlsPanel({ manifest, controls, onChange, onClos
               <div><h3>生成参数</h3><p>仅覆盖已修改项，其余继续使用工作流当前值。</p></div>
             </div>
             <div className="common-controls-grid">
-              {NODE_SETTING_FIELDS.map(field => {
-                const definition = commonDefinition(field, manifest);
+              {parameterSchema.filter(field => field.source === 'common').map(field => {
+                const definition = commonDefinition({ ...field, inputNames: field.name === 'sampler' ? ['sampler_name', 'sampler'] : field.name === 'scheduler' ? ['scheduler'] : undefined }, manifest);
                 const changed = hasOwn(draft.settings, field.key);
                 return (
                   <ControlField
-                    key={field.key}
+                  key={field.key}
                     definition={{ ...definition, name: field.key }}
                     value={draft.settings[field.key]}
                     changed={changed}
@@ -222,14 +224,16 @@ export default function NodeControlsPanel({ manifest, controls, onChange, onClos
                   </div>
                   <div className="node-inputs">
                     {(node.inputs || []).map(input => {
+                      const schema = parameterSchema.find(field => field.nodeId === String(node.id) && field.name === input.name);
                       const changed = hasOwn(draft.nodeOverrides[node.id], input.name);
                       return (
                         <ControlField
                           key={input.name}
                           definition={{
                             ...input,
-                            label: NODE_INPUT_LABELS[input.name] || input.name,
-                            description: NODE_INPUT_DESCRIPTIONS[input.name] || '',
+                            ...(schema || {}),
+                            label: schema?.label || NODE_INPUT_LABELS[input.name] || input.name,
+                            description: schema?.description || NODE_INPUT_DESCRIPTIONS[input.name] || '',
                           }}
                           value={draft.nodeOverrides[node.id]?.[input.name]}
                           changed={changed}

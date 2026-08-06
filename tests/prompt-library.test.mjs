@@ -4,6 +4,7 @@ import { ANIME_PROMPT_PACKS, ANIME_VISIBLE_PROMPT } from '../src/components/prom
 import { createPhraseItems, createTagItems, parseTagMetadata, parseTagTranslations } from '../src/components/prompt-library-collected.mjs';
 import { buildSearchIndex, matchesSearchText, randomSearchGuideTerms, SEARCH_GUIDE_TERMS, searchLibrary } from '../src/components/prompt-library-search.mjs';
 import { PROMPT_LIBRARY_ITEMS } from '../src/components/prompt-library-data.mjs';
+import { performance } from 'node:perf_hooks';
 import { createCollectedTaxonomyGroups, matchesPromptTaxonomy, PROMPT_LIBRARY_TAXONOMY } from '../src/components/prompt-library-taxonomy.mjs';
 
 test('anime prompt packs expose the sample prompt coverage', () => {
@@ -102,6 +103,22 @@ test('prompt matches rank above descriptive-only matches', () => {
     { title: 'Red hair', description: 'Appearance', prompt: 'red hair', searchText: 'red hair appearance red hair' },
   ];
   assert.equal(searchLibrary(items, 'red hair', buildSearchIndex(items))[0].prompt, 'red hair');
+});
+
+test('large indexed searches stay bounded without scanning unrelated items', () => {
+  const items = Array.from({ length: 12000 }, (_, index) => ({
+    title: `词条 ${index}`,
+    description: '用于描述生成画面的对象、属性或风格',
+    prompt: index % 2 ? 'red hair' : 'blue eyes',
+    searchText: `词条 ${index}\n用于描述生成画面的对象、属性或风格\n${index % 2 ? 'red hair' : 'blue eyes'}`,
+  }));
+  const index = buildSearchIndex(items);
+  const start = performance.now();
+  const results = searchLibrary(items, 'red hair', index);
+  const elapsed = performance.now() - start;
+
+  assert.equal(results.length, 4000);
+  assert.ok(elapsed < 500, `search took ${Math.round(elapsed)}ms`);
 });
 
 test('Chinese search matches translated text and longer category names', () => {

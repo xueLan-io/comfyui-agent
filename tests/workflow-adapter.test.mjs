@@ -2,9 +2,22 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { resolveWorkflowPath, WorkflowAdapter } from '../src/agent/tools/comfyui/workflow-adapter.mjs';
 import { buildPromptProfile } from '../src/agent/tools/comfyui/prompt-profile.mjs';
+import { registerAdapters } from '../src/agent/tools/comfyui/adapters/index.mjs';
+
+registerAdapters();
+
+test('MiniMax H3 reference workflow is identified as adaptation-only video', async () => {
+  const result = await WorkflowAdapter.resolve('MiniMax H3全能参考工作流.json', resolve('.'));
+  assert.equal(result.modelType, 'minimax_h3');
+  assert.equal(result.adapter.name, 'minimax_h3');
+  assert.equal(result.adapter.adaptationOnly, true);
+  assert.ok(result.capabilities.modes.includes('txt2video'));
+  assert.equal(result.info.referenceImageSlots, 4);
+  assert.equal(result.info.referenceVideoSlots, 3);
+});
 
 function makeTempDir() {
   return mkdtempSync(join(tmpdir(), 'comfy-agent-wf-adapter-'));
@@ -73,6 +86,15 @@ test('WorkflowAdapter.detect identifies sdxl', () => {
 test('WorkflowAdapter.detect identifies animatediff', () => {
   const wf = { nodes: [{ type: 'AnimateDiffLoader' }] };
   assert.equal(WorkflowAdapter.detect(wf), 'animatediff');
+});
+
+test('WorkflowAdapter resolves the bundled Wan video workflow', async () => {
+  const dir = resolve('workflows');
+  const result = await WorkflowAdapter.resolve('wan_txt2video.json', dir);
+  assert.equal(result.modelType, 'wan');
+  assert.ok(result.adapter);
+  assert.ok(result.capabilities.modes.includes('txt2video'));
+  assert.equal(result.info.supportsVideoOutput, true);
 });
 
 test('detects Anima from active model artifacts before generic model types', () => {

@@ -108,7 +108,13 @@ export class OpenAICompatibleProvider {
           throw new Error(`LLM API returned a non-JSON response from ${this.baseUrl}`);
         }
         if (!data.choices?.[0]?.message) throw new Error('LLM API response is missing choices[0].message');
-        return data.choices[0].message;
+        const message = data.choices[0].message;
+        const usage = data.usage ? {
+          inputTokens: Number(data.usage.prompt_tokens) || 0,
+          outputTokens: Number(data.usage.completion_tokens) || 0,
+          totalTokens: Number(data.usage.total_tokens) || 0,
+        } : null;
+        return { ...message, ...(usage ? { usage } : {}) };
       }
 
       if (!res.body) throw new Error('LLM API returned an empty streaming response');
@@ -116,13 +122,26 @@ export class OpenAICompatibleProvider {
       const decoder = new TextDecoder();
       let buffer = '';
       let content = '';
+      let usage = null;
+      let sawDone = false;
       const readLine = line => {
         const value = line.trim();
         if (!value || !value.startsWith('data:')) return;
         const payload = value.slice(5).trim();
-        if (!payload || payload === '[DONE]') return;
+        if (!payload) return;
+        if (payload === '[DONE]') {
+          sawDone = true;
+          return;
+        }
         let data;
         try { data = JSON.parse(payload); } catch { return; }
+        if (data.usage) {
+          usage = {
+            inputTokens: Number(data.usage.prompt_tokens) || 0,
+            outputTokens: Number(data.usage.completion_tokens) || 0,
+            totalTokens: Number(data.usage.total_tokens) || 0,
+          };
+        }
         const delta = data.choices?.[0]?.delta?.content || '';
         if (delta) {
           content += delta;
@@ -139,7 +158,8 @@ export class OpenAICompatibleProvider {
         if (done) break;
       }
       readLine(buffer);
-      return { role: 'assistant', content };
+      if (!sawDone && this.local) throw new Error('本地模型流式响应被中断');
+      return { role: 'assistant', content, ...(usage ? { usage } : {}) };
     } finally {
       clearTimeout(timeout);
       if (this._controller === controller) this._controller = null;

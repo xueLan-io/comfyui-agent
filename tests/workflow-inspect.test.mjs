@@ -106,6 +106,9 @@ test('validate passes for a healthy img2img workflow', async t => {
   assert.equal(result.valid, true);
   assert.equal(result.errorCount, 0);
   assert.equal(result.sampler.steps, 28);
+  assert.equal(result.modelReady, true);
+  assert.equal(typeof result.adapterAvailable, 'boolean');
+  assert.ok(Array.isArray(result.issues));
 });
 
 test('validate flags broken links, missing models, and out-of-range denoise', async t => {
@@ -125,6 +128,8 @@ test('validate flags broken links, missing models, and out-of-range denoise', as
   assert.equal(result.valid, false);
   assert.ok(result.issues.some(issue => issue.code === 'broken_link'));
   assert.ok(result.issues.some(issue => issue.code === 'model_missing'));
+  assert.equal(result.modelReady, false);
+  assert.equal(result.errorCount, result.issues.filter(issue => issue.severity === 'error').length);
   assert.ok(result.issues.some(issue => issue.code === 'denoise_range'));
 });
 

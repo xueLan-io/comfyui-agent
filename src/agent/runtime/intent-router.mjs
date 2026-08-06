@@ -80,7 +80,7 @@ export function ruleIntent(message = '', context = {}) {
   if (!generateMode && PROMPT_ONLY.test(text)) return normalizeIntentDecision({ intent: 'prompt_edit', action: 'reply', confidence: 1, target: hasPrevious ? 'last_prompt' : 'none', reason: 'prompt-only request', source: 'rule' });
 
   if (context.sessionState?.pending && !CASUAL_CHAT.test(text) && !/^(?:它|他|她|这个|那个)$/i.test(text)
-    && (generateMode || (!QUESTION.test(text) && !WORKFLOW.test(text) && !RUNTIME.test(text)))) {
+    && (!QUESTION.test(text) && !WORKFLOW.test(text) && !RUNTIME.test(text))) {
     const intent = context.sessionState.pending.intent || 'generate';
     return normalizeIntentDecision({
       intent,

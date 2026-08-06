@@ -59,12 +59,14 @@ export async function scanProjectAssets({ project, readTrace } = {}) {
       const stored = metadata.find(item => matchesAssetMetadata(item, subfolder, entry.name));
       const taskId = relative(join(project.dir, rootName), currentDir).split(/[\\/]/)[0] || '';
       assets.push({
+        ...(stored || {}),
         filename: entry.name,
         subfolder,
         type: 'project',
         projectId: project.id,
         sessionId: stored?.sessionId || await readTraceSession(readTrace, taskId),
         taskId,
+        source: stored?.source || '',
         createdAt: info.mtimeMs,
       });
     }

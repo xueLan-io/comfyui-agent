@@ -14,7 +14,7 @@ export { ProjectMemory } from './memory/project.mjs';
 export { PreferenceMemory } from './memory/preference.mjs';
 export { SessionManager } from './runtime/session-manager.mjs';
 export { TaskManager, TASK_STATES, TASK_TRANSITIONS, canTransition } from './runtime/task-manager.mjs';
-export { configureSkills, matchSkill, SKILLS } from './skills/index.mjs';
+export { configureSkills, matchSkill, SKILLS, createCustomSkill, skillManifest, skillRegistry, SKILL_CONTRACT_VERSION } from './skills/index.mjs';
 
 // Tools
 export { ComfyUITool } from './tools/comfyui/index.mjs';
@@ -24,7 +24,7 @@ export { assessPromptReadiness } from './tools/prompt/readiness.mjs';
 export { FilesystemTool } from './tools/filesystem/index.mjs';
 export { FilesystemMutateTool } from './tools/filesystem/mutate.mjs';
 export { WebTool, createWebTool } from './tools/web/index.mjs';
-export { createWebMcpServer, runMcpStdio } from './mcp/web-server.mjs';
+export { createWebMcpServer, createMcpHttpServer, runMcpStdio, toMcpTool, createSkillMcpTools } from './mcp/web-server.mjs';
 
 // Workflow Adapter
 export { WorkflowAdapter } from './tools/comfyui/workflow-adapter.mjs';

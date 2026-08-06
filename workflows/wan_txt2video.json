@@ -1,0 +1,20 @@
+{
+  "last_node_id": 10,
+  "last_link_id": 9,
+  "nodes": [
+    {"id":1,"type":"UNETLoader","pos":[0,0],"size":[260,80],"order":0,"mode":0,"inputs":[{"name":"unet_name","type":"COMBO","widget":{"name":"unet_name"}},{"name":"weight_dtype","type":"COMBO","widget":{"name":"weight_dtype"}}],"outputs":[{"name":"MODEL","type":"MODEL","links":[1]}],"widgets_values":["wan2.1_t2v_14b_fp16.safetensors","default"]},
+    {"id":2,"type":"CLIPLoader","pos":[0,120],"size":[260,100],"order":1,"mode":0,"inputs":[{"name":"clip_name","type":"COMBO","widget":{"name":"clip_name"}},{"name":"type","type":"COMBO","widget":{"name":"type"}},{"name":"device","type":"COMBO","widget":{"name":"device"}}],"outputs":[{"name":"CLIP","type":"CLIP","links":[2,3]}],"widgets_values":["umt5_xxl_fp8_e4m3fn_scaled.safetensors","wan","default"]},
+    {"id":3,"type":"VAELoader","pos":[0,260],"size":[260,60],"order":2,"mode":0,"inputs":[{"name":"vae_name","type":"COMBO","widget":{"name":"vae_name"}}],"outputs":[{"name":"VAE","type":"VAE","links":[4,5]}],"widgets_values":["wan_2.1_vae.safetensors"]},
+    {"id":4,"type":"CLIPTextEncode","pos":[360,100],"size":[320,120],"order":3,"mode":0,"inputs":[{"name":"clip","type":"CLIP","link":2},{"name":"text","type":"STRING","widget":{"name":"text"}}],"outputs":[{"name":"CONDITIONING","type":"CONDITIONING","links":[6]}],"widgets_values":["cinematic motion, detailed scene"]},
+    {"id":5,"type":"CLIPTextEncode","pos":[360,280],"size":[320,120],"order":4,"mode":0,"inputs":[{"name":"clip","type":"CLIP","link":3},{"name":"text","type":"STRING","widget":{"name":"text"}}],"outputs":[{"name":"CONDITIONING","type":"CONDITIONING","links":[7]}],"widgets_values":["blurry, distorted, flicker, watermark"]},
+    {"id":6,"type":"EmptyWanVideoLatent","pos":[360,460],"size":[300,150],"order":5,"mode":0,"inputs":[{"name":"width","type":"INT","widget":{"name":"width"}},{"name":"height","type":"INT","widget":{"name":"height"}},{"name":"frames","type":"INT","widget":{"name":"frames"}},{"name":"batch_size","type":"INT","widget":{"name":"batch_size"}}],"outputs":[{"name":"LATENT","type":"LATENT","links":[8]}],"widgets_values":[832,480,81,1]},
+    {"id":7,"type":"KSampler","pos":[760,120],"size":[300,480],"order":6,"mode":0,"inputs":[{"name":"model","type":"MODEL","link":1},{"name":"seed","type":"INT","widget":{"name":"seed","control_after_generate":true}},{"name":"steps","type":"INT","widget":{"name":"steps"}},{"name":"cfg","type":"FLOAT","widget":{"name":"cfg"}},{"name":"sampler_name","type":"COMBO","widget":{"name":"sampler_name"}},{"name":"scheduler","type":"COMBO","widget":{"name":"scheduler"}},{"name":"positive","type":"CONDITIONING","link":6},{"name":"negative","type":"CONDITIONING","link":7},{"name":"latent_image","type":"LATENT","link":8}],"outputs":[{"name":"LATENT","type":"LATENT","links":[9]}],"widgets_values":[123456789,"fixed",30,5,"euler","normal"]},
+    {"id":8,"type":"VAEDecode","pos":[1140,180],"size":[200,80],"order":7,"mode":0,"inputs":[{"name":"samples","type":"LATENT","link":9},{"name":"vae","type":"VAE","link":5}],"outputs":[{"name":"VIDEO","type":"VIDEO","links":[10]}],"widgets_values":[]},
+    {"id":9,"type":"VHS_VideoCombine","pos":[1440,180],"size":[300,180],"order":8,"mode":0,"inputs":[{"name":"images","type":"IMAGE","link":10},{"name":"frame_rate","type":"FLOAT","widget":{"name":"frame_rate"}},{"name":"format","type":"COMBO","widget":{"name":"format"}},{"name":"filename_prefix","type":"STRING","widget":{"name":"filename_prefix"}}],"outputs":[{"name":"GIF","type":"VIDEO","links":[]}],"widgets_values":[16,"video/h264-mp4","wan_txt2video"]}
+  ],
+  "links": [[1,1,0,7,0,"MODEL"],[2,2,0,4,0,"CLIP"],[3,2,0,5,0,"CLIP"],[4,3,0,8,1,"VAE"],[5,3,0,8,1,"VAE"],[6,4,0,7,6,"CONDITIONING"],[7,5,0,7,7,"CONDITIONING"],[8,6,0,7,8,"LATENT"],[9,7,0,8,0,"LATENT"],[10,8,0,9,0,"VIDEO"]],
+  "groups": [],
+  "config": {},
+  "extra": {"comfyAgent": {"outputType": "video", "fps": 16}},
+  "version": 0.4
+}

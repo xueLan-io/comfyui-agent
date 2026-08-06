@@ -1,4 +1,5 @@
 export const DEFAULT_UI_PREFERENCES = {
+  language: 'zh-CN',
   theme: 'system',
   accent: '#339CFF',
   sidebarTranslucent: false,
@@ -14,6 +15,7 @@ export function normalizeUIPreferences(value = {}) {
   const next = { ...DEFAULT_UI_PREFERENCES, ...value };
   return {
     ...next,
+    language: ['zh-CN', 'en-US'].includes(next.language) ? next.language : DEFAULT_UI_PREFERENCES.language,
     theme: ['system', 'light', 'dark'].includes(next.theme) ? next.theme : DEFAULT_UI_PREFERENCES.theme,
     accent: /^#[0-9a-f]{6}$/i.test(next.accent) ? next.accent : DEFAULT_UI_PREFERENCES.accent,
     contrast: Math.min(100, Math.max(0, Number.isFinite(Number(next.contrast)) ? Number(next.contrast) : DEFAULT_UI_PREFERENCES.contrast)),

@@ -170,6 +170,7 @@ test('settleComplete settles observing and archive_failed tasks into completed',
   mgr.transition('arch', 'executing');
   mgr.transition('arch', 'observing');
   mgr.transition('arch', 'archive_failed');
+  mgr.update('arch', { error: 'old archive error', lastError: 'old archive error' });
 
   mgr.settleComplete('obs', { result: { recovered: true } });
   mgr.settleComplete('arch', { result: { recovered: true } });
@@ -179,6 +180,8 @@ test('settleComplete settles observing and archive_failed tasks into completed',
   assert.deepEqual(mgr.get('obs').result, { recovered: true });
   assert.ok(mgr.get('obs').completedAt > 0);
   assert.equal(mgr.get('arch').state, 'completed');
+  assert.equal(mgr.get('arch').error, null);
+  assert.equal(mgr.get('arch').lastError, '');
 });
 
 test('settleComplete settles recovery-specific states via direct update', () => {
@@ -199,6 +202,25 @@ test('settleComplete settles recovery-specific states via direct update', () => 
 test('settleComplete returns null for unknown tasks', () => {
   const mgr = new TaskManager(null);
   assert.equal(mgr.settleComplete('missing', { result: {} }), null);
+});
+
+test('recoverInterrupted migrates archive_failed tasks with successful results', () => {
+  const mgr = new TaskManager(null);
+  const task = mgr.create({ id: 'saved-result', kind: 'direct_run' });
+  mgr.update(task.id, {
+    state: 'archive_failed',
+    status: 'archive_failed',
+    error: 'agent.taskManager.settleComplete is not a function',
+    lastError: 'agent.taskManager.settleComplete is not a function',
+    result: { executionStatus: 'success', images: [{ filename: 'result.png' }] },
+  });
+
+  const recoverable = mgr.recoverInterrupted();
+
+  assert.deepEqual(recoverable, []);
+  assert.equal(mgr.get(task.id).state, 'completed');
+  assert.equal(mgr.get(task.id).error, null);
+  assert.equal(mgr.get(task.id).lastError, '');
 });
 
 test('archive marks recoverable task abandoned', () => {

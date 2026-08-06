@@ -90,6 +90,11 @@ export class ConversationMemory {
     return this.getLLMMessages().slice(-recentCount);
   }
 
+  getArchiveCandidate(recentCount = DEFAULT_RECENT_MESSAGES, maxMessages = 12) {
+    const boundary = Math.max(0, this.messages.length - recentCount);
+    return this.messages.slice(0, Math.min(boundary, maxMessages));
+  }
+
   clear() {
     this.messages = [];
     this.onChange?.();

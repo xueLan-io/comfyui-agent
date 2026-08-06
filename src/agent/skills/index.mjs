@@ -6,6 +6,7 @@ import { UpscaleSkill } from './upscale.mjs';
 import { ControlNetSkill } from './controlnet.mjs';
 import { LoraSkill } from './lora.mjs';
 import { BatchSkill } from './batch.mjs';
+import { externalSkillManifest, normalizeExternalSkill } from './external.mjs';
 
 export const SKILLS = {
   txt2img: Txt2ImgSkill,
@@ -17,6 +18,42 @@ export const SKILLS = {
   lora: LoraSkill,
   batch: BatchSkill,
 };
+
+export const SKILL_CONTRACT_VERSION = '1.0';
+
+export function skillManifest(skills = SKILLS, enabled = {}) {
+  return Object.entries(skills).map(([id, skill]) => ({
+    id,
+    name: skill.name || id,
+    description: skill.description || '',
+    version: skill.version || SKILL_CONTRACT_VERSION,
+    enabled: enabled[id] !== false,
+    ...(skill.external ? externalSkillManifest(skill) : {
+      capabilities: ['plan', 'comfyui_generation'],
+      sideEffects: ['comfyui_generation'],
+      requiresConfirmation: true,
+    }),
+  }));
+}
+
+export function skillRegistry(skills = SKILLS, enabled = {}) {
+  return Object.fromEntries(skillManifest(skills, enabled).map(item => [item.id, item]));
+}
+
+export function createCustomSkill(config = {}) {
+  const mode = config.promptMode || 'raw';
+  return {
+    name: config.id || config.name,
+    description: config.description || '',
+    version: config.version || SKILL_CONTRACT_VERSION,
+    steps(userIntent, context = {}) {
+      const steps = [];
+      if (mode !== 'raw') steps.push({ tool: 'prompt_enhance', input: { prompt: userIntent, mode }, description: `Enhance prompt (${mode} mode)`, expected_output: 'prompt' });
+      steps.push({ tool: 'comfyui', input: { workflowName: context.workflowName || '', prompts: [], workflowDir: context.workflowDir || '' }, description: config.description || `Execute ${config.name || config.id}`, expected_output: 'images' });
+      return steps;
+    },
+  };
+}
 
 const ROUTES = {
   character: ['角色', '人物', '立绘', '人设', 'character', 'oc', '表情包'],
@@ -58,39 +95,30 @@ function skillScore(message, name) {
 }
 
 function dynamicSkill(config) {
-  return {
-    name: config.id,
-    description: config.description || config.name,
-    custom: true,
-    steps(userIntent, context) {
-      const mode = config.promptMode || context.promptMode || 'raw';
-      const steps = [];
-      if (mode !== 'raw') {
-        steps.push({
-          tool: 'prompt_enhance',
-          input: { prompt: userIntent, mode },
-          description: `Enhance prompt (${mode} mode)`,
-          expected_output: 'prompt',
-        });
-      }
-      steps.push({
-        tool: 'comfyui',
-        input: { workflowName: context.workflowName || '', prompts: [], workflowDir: context.workflowDir || '' },
-        description: config.description || `Execute ${config.name || config.id}`,
-        expected_output: 'images',
-      });
-      return steps;
-    },
-  };
+  return { ...createCustomSkill(config), custom: true };
 }
 
 export function configureSkills(config = {}) {
   systemEnabled = { ...systemEnabled, ...(config.systemEnabled || {}) };
-  customSkills = Array.isArray(config.custom) ? config.custom.filter(item => item?.enabled !== false) : [];
+  customSkills = [
+    ...(Array.isArray(config.custom) ? config.custom : []),
+    ...(Array.isArray(config.external) ? config.external : []),
+  ].filter(item => item?.enabled !== false).map(item => {
+    if (item?.external && typeof item.steps !== 'function') {
+      try { return normalizeExternalSkill(item, item.source || 'config'); } catch { return null; }
+    }
+    return item;
+  }).filter(Boolean);
 }
 
-export function matchSkill(message = '') {
+export function matchSkill(message = '', options = {}) {
   const normalized = message.toLowerCase();
+
+  const requestedId = String(options.skillId || '').trim().toLowerCase();
+  if (requestedId) {
+    const explicit = customSkills.find(skill => String(skill.id).toLowerCase() === requestedId);
+    if (explicit) return dynamicSkill(explicit);
+  }
 
   const customHits = customSkills
     .map(skill => ({

@@ -19,16 +19,17 @@ ComfyUI 是外部依赖，不包含在本仓库源代码或发布包的模型目
 - 管理项目、会话、生成任务、图片、视频和执行追踪记录
 - 提供安全边界明确的文件、系统、网络和 ComfyUI 工具
 - 提供工作流检查、校验、补丁、生成、队列和诊断命令的 CLI
+- 提供标准 MCP stdio 与受保护的 Streamable HTTP 风格 JSON-RPC 接入
 
 ## 下载使用
 
-从 [v0.2.1 Releases](https://github.com/xueLan-io/comfyui-agent/releases/tag/v0.2.1) 下载最新便携版：
+从 [Releases](https://github.com/xueLan-io/comfyui-agent/releases) 下载最新便携版：
 
 ```text
-ComfyUI-Agent-portable-v0.2.1.zip
+ComfyMuse-portable-v0.3.0.zip
 ```
 
-解压后运行 `ComfyUI-Agent.exe`。便携版不要求另外安装 Node.js 或 Python。
+解压后运行 `ComfyMuseLauncher.exe`。便携版不要求另外安装 Node.js 或 Python。
 
 首次启动时，在设置中选择已有的 ComfyUI portable 根目录，或填写已经运行的 ComfyUI 地址。portable 根目录通常包含：
 
@@ -51,6 +52,44 @@ ComfyUI\main.py
 npm install
 npm run dev
 ```
+
+### MCP 接入
+
+源码环境可直接启动 stdio MCP Server。stdout 只输出 MCP JSON-RPC 消息，日志输出到 stderr：
+
+```powershell
+npm run mcp
+```
+
+典型 MCP Host 配置：
+
+```json
+{
+  "mcpServers": {
+    "comfy-agent": {
+      "command": "node",
+      "args": ["D:/ComfyUI_windows_portable/ComfyUI-Agent/src/mcp-server.mjs"]
+    }
+  }
+}
+```
+
+MCP 工具包含：
+
+- `web_search`、`web_open`、`character_research`
+- `filesystem`、`prompt_library`、`system`
+- `plan_txt2img`、`plan_img2img`、`plan_character`、`plan_video`、`plan_upscale`、`plan_controlnet`、`plan_lora`、`plan_batch`
+- 生成工具由 Electron 嵌入式 MCP 配置显式开启后提供：`generation_prepare`、`generation_run_prepared`、`generation_status`、`generation_cancel`
+
+启用独立 HTTP transport：
+
+```powershell
+$env:COMFY_AGENT_MCP_TRANSPORT = "http"
+$env:COMFY_AGENT_MCP_TOKEN = "replace-with-a-long-random-token"
+npm run mcp
+```
+
+默认监听 `127.0.0.1:3000/mcp`。可通过 `COMFY_AGENT_MCP_HOST`、`COMFY_AGENT_MCP_PORT` 修改绑定地址和端口。Electron 内嵌服务必须在应用配置中设置 `mcp.enabled=true`，默认监听 `127.0.0.1:3333`，建议始终设置 token。生成执行严格采用 prepare、显式确认、run、status/cancel 流程，不接受绕过确认的直接提交。
 
 ## 技术栈
 
@@ -107,7 +146,7 @@ npm run build
 npm run pack
 ```
 
-提交改动前，至少运行 `npm test`、`npm run lint` 和 `npm run build`。`npm run pack` 会生成安装包，可能需要首次下载 Electron Builder 运行时。
+提交改动前，至少运行 `npm test`、`npm run lint` 和 `npm run build`。桌面便携版使用本地已有 Electron 运行时生成，不再调用 electron-builder 或下载 Electron。
 
 ## CLI
 
@@ -145,6 +184,29 @@ COMFYUI_BASE_URL=http://127.0.0.1:8188
 
 - 便携版构建：运行 `pack-portable.bat`。脚本会查找 ComfyUI portable 根目录、构建前端并验证打包运行时。
 - 安装包构建：运行 `build.bat`，输出写入 `releases\`。
+- 发布构建由 `.github/workflows/release.yml` 在推送 `v*` Tag 后自动执行，生成完整便携包、应用层更新包、manifest 和 SHA-256 清单。
+- 便携版应用可在设置的“应用更新”页检查并安装应用层更新。更新器只替换 `resources\app`，不会修改 ComfyUI、模型和用户数据。
+- Stable 使用普通版本 Tag；包含预发布标识的版本（例如 `v0.3.0-preview.1`）会作为 Preview Release。
+- 发布 manifest 使用 Ed25519 detached signature（`.json.sig`）签名，客户端内置公钥并在读取版本信息前验签。更新包中的 Windows 可执行文件由 CI 使用 Authenticode/SHA-256 签名。
+- GitHub Actions 需要配置 `RELEASE_SIGNING_PRIVATE_KEY_B64`、`RELEASE_CERT_BASE64` 和 `RELEASE_CERT_PASSWORD` Secrets。私钥和 PFX 证书不能提交到仓库或写入发布包。
+
+### 发布签名密钥配置
+
+生成一次 Ed25519 发布密钥，并只把私钥保存到 GitHub Actions Secret：
+
+```powershell
+node -e "const c=require('crypto'); const k=c.generateKeyPairSync('ed25519'); console.log('PUBLIC='+k.publicKey.export({type:'spki',format:'der'}).toString('base64')); console.log('PRIVATE='+k.privateKey.export({type:'pkcs8',format:'der'}).toString('base64'));"
+```
+
+`PRIVATE` 放入 `RELEASE_SIGNING_PRIVATE_KEY_B64`。`PUBLIC` 需要替换 `src/runtime/update-signature.mjs` 中的公钥常量后再发布首个启用签名的版本。之后不要重新生成密钥，除非同时发布客户端公钥轮换版本。
+
+Windows Authenticode 使用代码签名证书导出的 PFX：
+
+- `RELEASE_CERT_BASE64`：PFX 文件的 Base64 内容
+- `RELEASE_CERT_PASSWORD`：PFX 密码
+- PFX 私钥必须包含在证书中，且不能提交到仓库
+
+本地运行 `pack-portable.bat` 时不设置 `RELEASE_CERT`，不会执行 Authenticode 签名；GitHub Actions 会强制要求证书 Secret 并在 Release 前签名三个 Windows 可执行文件。
 - 发布产物和压缩包不应提交到源代码仓库；相关目录和文件已加入 `.gitignore`。
 - ComfyUI、模型权重及其第三方节点遵循各自项目和模型的许可证。
 

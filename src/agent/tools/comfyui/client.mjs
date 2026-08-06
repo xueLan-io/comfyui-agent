@@ -221,16 +221,17 @@ export class ComfyUIClient {
     }
   }
 
-  async queuePrompt(prompt, clientId) {
+  async queuePrompt(prompt, clientId, signal) {
     return this.request('/prompt', {
       method: 'POST',
       body: JSON.stringify({ prompt, client_id: clientId }),
+      ...(signal ? { signal } : {}),
     });
   }
 
-  async submit(prompt, clientId) {
+  async submit(prompt, clientId, options = {}) {
     try {
-      const result = await this.queuePrompt(prompt, clientId);
+      const result = await this.queuePrompt(prompt, clientId, options.signal);
       if (!result?.prompt_id) throw new Error('ComfyUI prompt response missing prompt_id');
       return { promptId: result.prompt_id };
     } catch (error) {
@@ -398,12 +399,13 @@ export class ComfyUIClient {
     return history[promptId] || null;
   }
 
-  openProgressSocket(clientId, prompt, onProgress) {
+  openProgressSocket(clientId, prompt, onProgress, signal) {
     if (typeof onProgress !== 'function') return Promise.resolve(null);
 
     return new Promise(resolveSocket => {
       const socketUrl = `ws${this.baseUrl.startsWith('https') ? 's' : ''}://${new URL(this.baseUrl).host}/ws?clientId=${encodeURIComponent(clientId)}`;
       let socket;
+      let promptId = '';
       try {
         socket = createProgressWebSocket(socketUrl);
       } catch {
@@ -413,7 +415,37 @@ export class ComfyUIClient {
       const timeout = setTimeout(() => {
         socket.close();
         resolveSocket(null);
-      }, 3000);
+      }, 10000);
+      const workflowNodeCount = Object.keys(prompt || {}).length;
+      const executedNodes = new Set();
+      let currentNodeId = '';
+      let currentNodePercent = null;
+
+      const emitExecutionProgress = (data = {}) => {
+        const nodeId = data.nodeId ? String(data.nodeId) : '';
+        const nodePercent = Number.isFinite(data.nodePercent) ? data.nodePercent : null;
+        const completedNodes = executedNodes.size;
+        const overallPercent = workflowNodeCount > 0
+          ? Math.round(((completedNodes + (nodePercent === null ? 0 : nodePercent / 100)) / workflowNodeCount) * 100)
+          : null;
+        onProgress({
+          ...data,
+          ...(nodePercent === null ? {} : { nodePercent }),
+          ...(overallPercent === null ? {} : { percent: Math.max(0, Math.min(100, overallPercent)), overallPercent: Math.max(0, Math.min(100, overallPercent)) }),
+          percentScope: overallPercent === null ? 'node' : 'overall',
+          workflowNodeCount,
+          completedNodeCount: completedNodes,
+        });
+      };
+
+      socket.setPromptId = value => { promptId = value || ''; };
+      const abort = () => socket.close();
+      if (signal?.aborted) {
+        abort();
+        resolveSocket(null);
+        return;
+      }
+      signal?.addEventListener('abort', abort, { once: true });
 
       socket.addEventListener('open', () => {
         clearTimeout(timeout);
@@ -428,28 +460,37 @@ export class ComfyUIClient {
         try {
           const message = JSON.parse(event.data);
           const data = message.data || {};
+          const messagePromptId = message.prompt_id || data.prompt_id || '';
+          if (promptId && messagePromptId && messagePromptId !== promptId) return;
           const nodeId = data.node != null ? String(data.node) : '';
           const nodeType = nodeId ? prompt[nodeId]?.class_type || '' : '';
 
           if (message.type === 'execution_start') {
-            onProgress({ stage: 'executing', message: '工作流开始执行', percent: 0 });
+            executedNodes.clear();
+            currentNodeId = '';
+            currentNodePercent = null;
+            emitExecutionProgress({ stage: 'executing', message: '工作流开始执行', percent: 0, overallPercent: 0, percentScope: 'overall' });
           } else if (message.type === 'executing' && nodeId) {
-            onProgress({ stage: 'node', nodeId, nodeType, message: `正在执行 ${nodeType || `节点 ${nodeId}`}` });
+            if (currentNodeId && currentNodeId !== nodeId) executedNodes.add(currentNodeId);
+            currentNodeId = nodeId;
+            currentNodePercent = 0;
+            emitExecutionProgress({ stage: 'node', nodeId, nodeType, nodePercent: 0, message: `正在执行 ${nodeType || `节点 ${nodeId}`}` });
           } else if (message.type === 'progress' && Number.isFinite(data.value) && Number.isFinite(data.max)) {
-            const percent = data.max > 0 ? Math.round((data.value / data.max) * 100) : 0;
-            onProgress({
-              stage: 'sampling',
-              nodeId,
-              nodeType,
-              value: data.value,
-              max: data.max,
-              percent,
-              message: `${nodeType || `节点 ${nodeId}`} ${data.value}/${data.max}`,
-            });
+            currentNodeId = nodeId || currentNodeId;
+            currentNodePercent = data.max > 0 ? Math.round((data.value / data.max) * 100) : 0;
+            emitExecutionProgress({
+               stage: 'sampling',
+               nodeId,
+               nodeType,
+               value: data.value,
+               max: data.max,
+               nodePercent: currentNodePercent,
+               message: `${nodeType || `节点 ${nodeId}`} ${data.value}/${data.max}`,
+             });
           } else if (message.type === 'execution_error') {
-            onProgress({ stage: 'error', nodeId, nodeType, message: data.exception_message || '工作流执行失败' });
+            emitExecutionProgress({ stage: 'error', nodeId, nodeType, message: data.exception_message || '工作流执行失败' });
           } else if (message.type === 'execution_interrupted') {
-            onProgress({ stage: 'cancelled', message: '工作流已取消' });
+            emitExecutionProgress({ stage: 'cancelled', message: '工作流已取消' });
           }
         } catch {}
       });

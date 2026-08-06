@@ -48,6 +48,30 @@ test('agent RPC waits for a concurrently starting worker', async t => {
   assert.equal(client.state, 'idle');
 });
 
+test('agent process forwards settleComplete for recovery tasks', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'comfy-agent-process-recovery-'));
+  const client = new AgentProcessClient({ useJobObject: false, rpcTimeoutMs: 30000 });
+  t.after(async () => {
+    await client.stop();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  await client.start({ workflowDir: dataDir, userDataPath: dataDir, comfyRoot: dataDir, skills: {} });
+  await client.taskManager.create({ id: 'recovery-task', kind: 'direct_run' });
+  await client.taskManager.transition('recovery-task', 'classifying');
+  await client.taskManager.transition('recovery-task', 'planning');
+  await client.taskManager.transition('recovery-task', 'executing');
+  await client.taskManager.transition('recovery-task', 'observing');
+  await client.taskManager.transition('recovery-task', 'archive_failed');
+
+  const settled = await client.taskManager.settleComplete('recovery-task', { result: { recovered: true } });
+
+  assert.equal(settled.state, 'completed');
+  assert.equal(settled.status, 'completed');
+  assert.equal(settled.result.recovered, true);
+  assert.ok(settled.completedAt > 0);
+});
+
 test('agent process forwards events and stops cleanly', async t => {
   const dataDir = await mkdtemp(join(tmpdir(), 'comfy-agent-process-events-'));
   const client = new AgentProcessClient({ useJobObject: false, rpcTimeoutMs: 30000 });

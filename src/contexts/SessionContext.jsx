@@ -26,6 +26,11 @@ export function SessionProvider({ children }) {
       .finally(() => setLoading(false));
   }, [apply]);
 
+  useEffect(() => {
+    if (!window.electronAPI.onProjectState) return undefined;
+    return window.electronAPI.onProjectState(next => apply(next));
+  }, [apply]);
+
   const activate = useCallback((projectId, sessionId) => window.electronAPI.sessionActivate(projectId, sessionId).then(apply), [apply]);
   const createProject = useCallback(input => window.electronAPI.projectCreate(input).then(apply), [apply]);
   const renameProject = useCallback((projectId, name) => window.electronAPI.projectRename(projectId, name).then(apply), [apply]);

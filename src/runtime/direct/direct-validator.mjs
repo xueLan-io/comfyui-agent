@@ -1,3 +1,5 @@
+import { buildPreflightReport, preflightIssue } from '../preflight-contract.mjs';
+
 function addCheck(checks, type, level, message) {
   checks.push({ type, level, message });
 }
@@ -38,8 +40,19 @@ export function validateDirectRequest(request, workflow) {
     addCheck(checks, 'prompt_routing', 'warning', 'The workflow has multiple prompt targets; review which nodes will receive the original text');
   }
 
-  return {
-    valid: !checks.some(check => check.level === 'error'),
-    checks,
-  };
+  const report = buildPreflightReport({
+    issues: [
+      ...(workflow?.preflight?.issues || []),
+      ...checks.map(check => preflightIssue({ code: check.type === 'models' ? 'model_missing' : check.type, severity: check.level === 'error' ? 'error' : 'warning', message: check.message })),
+    ],
+    modelRequirements: workflow?.modelRequirements || workflow?.missingModels || [],
+    capabilities: workflow?.capabilities || null,
+    modelType: workflow?.modelType || 'generic',
+    adapterAvailable: workflow?.preflight?.adapterAvailable ?? true,
+    adaptationOnly: workflow?.preflight?.adaptationOnly === true,
+    adapterCapabilities: workflow?.preflight?.adapterCapabilities || null,
+    runtime: workflow?.preflight?.runtime || null,
+    resourceEstimate: workflow?.preflight?.resourceEstimate || null,
+  });
+  return { ...report, checks };
 }

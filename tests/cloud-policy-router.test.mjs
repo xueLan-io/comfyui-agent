@@ -23,6 +23,44 @@ test('policy state machine reviews locally and returns to idle', () => {
   assert.deepEqual(states, ['reviewing', 'cloud_allowed', 'idle']);
 });
 
+test('repeated reviews reuse only the text classification result', () => {
+  const router = new CloudPolicyRouter();
+  const messages = [{ role: 'user', content: 'nude character' }];
+  const first = router.review(messages);
+  router.complete();
+  const overridden = router.review(messages, { forceAllow: true });
+  router.complete();
+
+  assert.deepEqual(first.categories, ['sexual_content']);
+  assert.deepEqual(overridden.categories, ['sexual_content']);
+  assert.equal(first.allowed, false);
+  assert.equal(overridden.allowed, true);
+  assert.equal(overridden.overridden, true);
+  assert.equal(router._categoryCache.size, 1);
+});
+
+test('different policy cache scopes never share a classification entry', () => {
+  const router = new CloudPolicyRouter();
+  const messages = [{ role: 'user', content: 'nude character' }];
+  const first = router.review(messages, { policyCacheKey: 'resolver:local:model-a' });
+  router.complete();
+  const second = router.review(messages, { policyCacheKey: 'compiler:local:model-a' });
+  router.complete();
+
+  assert.deepEqual(first.categories, ['sexual_content']);
+  assert.deepEqual(second.categories, ['sexual_content']);
+  assert.equal(router._categoryCache.size, 2);
+});
+
+test('policy classification cache is bounded', () => {
+  const router = new CloudPolicyRouter();
+  for (let index = 0; index < 65; index += 1) {
+    router.review([{ role: 'user', content: `safe landscape ${index}` }]);
+    router.complete();
+  }
+  assert.equal(router._categoryCache.size, 64);
+});
+
 test('policy review covers restricted prompt templates', () => {
   const decision = reviewCloudMessages([{ role: 'user', content: 'nude character, erotic pose' }]);
   assert.equal(decision.allowed, false);
@@ -45,6 +83,35 @@ test('two soft sexual signals still route to local', () => {
 test('benign anime prompt passes the review', () => {
   const decision = reviewCloudMessages([{ role: 'user', content: '生成一个穿泳装的可爱女孩，夏日海边' }]);
   assert.equal(decision.allowed, true);
+});
+
+test('candidate filters do not change multi-category policy decisions', () => {
+  const decision = reviewCloudMessages([{
+    role: 'user',
+    content: 'nude child, graphic violence, suicide, how to make a bomb',
+  }]);
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.requiresLocal, true);
+  assert.deepEqual(decision.categories, [
+    'sexual_content',
+    'sexualized_minors',
+    'graphic_violence',
+    'self_harm',
+    'illicit_instructions',
+  ]);
+});
+
+test('candidate filters remain conservative for rule trigger phrases', () => {
+  const prompts = [
+    ['graphic violence and blood splatter', 'graphic_violence'],
+    ['I want to end my life', 'self_harm'],
+    ['how to deploy malware', 'illicit_instructions'],
+    ['14 years old girl, erotic pose', 'sexualized_minors'],
+  ];
+  for (const [content, category] of prompts) {
+    const decision = reviewCloudMessages([{ role: 'user', content }]);
+    assert.ok(decision.categories.includes(category), `${category} should match: ${content}`);
+  }
 });
 
 test('app-authored system instructions never influence the review', () => {

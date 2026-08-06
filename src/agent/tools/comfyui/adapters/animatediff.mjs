@@ -24,11 +24,13 @@ export const AnimateDiffAdapter = {
     const fps = input.fps ?? 8;
 
     for (const node of nodes) {
-      if (node.type === 'EmptyLatentImage' && node.widgets_values) {
-        if (node.widgets_values.length >= 3) {
-          node.widgets_values[2] = frames;
-        }
-      }
+      if (!node.widgets_values) continue;
+      const inputs = node.inputs || [];
+      const frameIndex = inputs.findIndex(item => /^(frames|frame_count|length|video_length)$/i.test(item.name || ''));
+      const fpsIndex = inputs.findIndex(item => /^(fps|frame_rate|framerate)$/i.test(item.name || ''));
+      if (frameIndex >= 0) node.widgets_values[frameIndex] = frames;
+      if (fpsIndex >= 0) node.widgets_values[fpsIndex] = fps;
+      if (frameIndex < 0 && /empty(?:latentimage|advancedlatentimage)/i.test(node.type || '') && node.widgets_values.length >= 3) node.widgets_values[2] = frames;
     }
 
     return wf;

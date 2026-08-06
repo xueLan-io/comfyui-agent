@@ -4,18 +4,61 @@ import Icon from './Icon.jsx';
 
 export default function AssetPreviewModal({ preview, onClose }) {
   const [current, setCurrent] = useState(preview);
-  const [scale, setScale] = useState(1);
+  const [scale, setScale] = useState(.75);
+  const [fitScale, setFitScale] = useState(.75);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [actionState, setActionState] = useState('');
   const panRef = useRef(null);
+  const bodyRef = useRef(null);
+  const imageRef = useRef(null);
+
+  function resetView() {
+    setScale(fitScale);
+    setOffset({ x: 0, y: 0 });
+    panRef.current = null;
+    setIsPanning(false);
+  }
+
+  function setCenteredScale(nextScale) {
+    setScale(nextScale);
+    setOffset({ x: 0, y: 0 });
+  }
+
+  function calculateFitScale() {
+    const body = bodyRef.current;
+    const image = imageRef.current;
+    if (!body || !image?.naturalWidth || !image?.naturalHeight) return;
+    const style = window.getComputedStyle(body);
+    const horizontalPadding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
+    const verticalPadding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+    const availableWidth = Math.max(1, body.clientWidth - horizontalPadding);
+    const availableHeight = Math.max(1, body.clientHeight - verticalPadding);
+    const nextFit = Math.min(1, availableWidth / image.naturalWidth, availableHeight / image.naturalHeight);
+    if (!Number.isFinite(nextFit) || nextFit <= 0) return;
+    setFitScale(nextFit);
+    setScale(nextFit);
+    setOffset({ x: 0, y: 0 });
+    panRef.current = null;
+    setIsPanning(false);
+  }
 
   useEffect(() => {
     setCurrent(preview);
-    setScale(1);
-    setOffset({ x: 0, y: 0 });
+    setFitScale(.75);
+    resetView();
     setActionState('');
   }, [preview]);
+
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (!body || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => {
+      if (scale === fitScale) calculateFitScale();
+    });
+    observer.observe(body);
+    return () => observer.disconnect();
+  }, [current.src, fitScale, scale]);
 
   useEffect(() => {
     function handleKeyDown(event) {
@@ -83,8 +126,7 @@ export default function AssetPreviewModal({ preview, onClose }) {
     try {
       const src = await window.electronAPI.comfyUIImageData(image);
       setCurrent({ ...current, image, src, index: nextIndex });
-      setScale(1);
-      setOffset({ x: 0, y: 0 });
+      resetView();
     } catch {
       setActionState('error');
     }
@@ -119,16 +161,17 @@ export default function AssetPreviewModal({ preview, onClose }) {
             {items.length > 1 && <span className="preview-position">{index + 1} / {items.length}</span>}
             {actionState === 'saved' && <span>已保存</span>}
             {actionState === 'error' && <span className="error">操作失败</span>}
-            {!video && <button className="btn btn-icon" onClick={() => setScale(value => Math.max(.5, value - .25))} title="缩小"><Icon name="minus" /></button>}
-            {!video && <button className="btn preview-zoom-value" onClick={() => setScale(1)} title="恢复 100%">{Math.round(scale * 100)}%</button>}
-            {!video && <button className="btn btn-icon" onClick={() => setScale(value => Math.min(3, value + .25))} title="放大"><Icon name="plus" /></button>}
+             {!video && <button className="btn btn-icon" onClick={() => setCenteredScale(Math.max(.5, scale - .25))} title="缩小"><Icon name="minus" /></button>}
+             {!video && <button className="btn preview-zoom-value" onClick={resetView} title="恢复适应窗口并居中">{Math.round(scale * 100)}%</button>}
+             {!video && <button className="btn btn-icon" onClick={() => setCenteredScale(Math.min(3, scale + .25))} title="放大"><Icon name="plus" /></button>}
             <button className="btn" onClick={showImage} disabled={actionState === 'showing'}>打开位置</button>
             <button className="btn btn-primary" onClick={saveImage} disabled={actionState === 'saving'}>{actionState === 'saving' ? '保存中...' : '另存为'}</button>
             <button className="btn btn-icon" onClick={onClose} title="关闭"><Icon name="close" /></button>
           </div>
         </div>
-        <div
-          className={'image-preview-body' + (isPanning ? ' is-panning' : '')}
+       <div
+         className={'image-preview-body' + (isPanning ? ' is-panning' : '')}
+          ref={bodyRef}
           style={{ '--image-pan-x': offset.x + 'px', '--image-pan-y': offset.y + 'px' }}
           onWheel={handleWheel}
           onPointerDown={handlePointerDown}
@@ -137,7 +180,7 @@ export default function AssetPreviewModal({ preview, onClose }) {
           onPointerCancel={stopPanning}
         >
           {items.length > 1 && <button className="preview-nav preview-nav-prev" onClick={() => void move(-1)} title="上一张"><Icon name="chevronLeft" size={20} /></button>}
-          <div className="image-preview-canvas">{video ? <video src={current.src} controls /> : <img src={current.src} alt={current.image?.filename || '预览图片'} style={{ transform: `scale(${scale})` }} />}</div>
+           <div className="image-preview-canvas" style={{ transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})` }}>{video ? <video src={current.src} controls /> : <img ref={imageRef} src={current.src} onLoad={calculateFitScale} alt={current.image?.filename || '预览图片'} />}</div>
           {items.length > 1 && <button className="preview-nav preview-nav-next" onClick={() => void move(1)} title="下一张"><Icon name="chevronRight" size={20} /></button>}
         </div>
       </section>

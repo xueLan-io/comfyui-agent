@@ -187,7 +187,7 @@ async function fetchText(fetchImpl, rawUrl, signal, redirects = 0, lookupImpl = 
   const { url } = resolved;
   const headers = {
     accept: 'text/html, application/xhtml+xml, application/json, text/plain;q=0.9, */*;q=0.1',
-    'user-agent': 'ComfyUI-Agent/0.2',
+    'user-agent': 'ComfyMuse/0.2',
   };
   const response = fetchImpl === globalThis.fetch
     ? await requestPinned(url, resolved, signal, headers, proxy)
@@ -523,7 +523,7 @@ async function fetchBaiduApi(fetchImpl, lookupImpl, signal, proxy, apiKey, query
   const headers = {
     accept: 'application/json',
     'content-type': 'application/json',
-    'user-agent': 'ComfyUI-Agent/0.2',
+    'user-agent': 'ComfyMuse/0.2',
     'X-Appbuilder-Authorization': `Bearer ${apiKey}`,
   };
   const resolved = await validateAndResolve(BAIDU_AI_SEARCH_ENDPOINT, lookupImpl);

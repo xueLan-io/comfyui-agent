@@ -119,6 +119,11 @@ test('openProgressSocket forwards ComfyUI sampling progress', async () => {
       value: 4,
       max: 20,
       percent: 20,
+      nodePercent: 20,
+      overallPercent: 20,
+      percentScope: 'overall',
+      workflowNodeCount: 1,
+      completedNodeCount: 0,
       message: 'KSampler 4/20',
     });
   } finally {

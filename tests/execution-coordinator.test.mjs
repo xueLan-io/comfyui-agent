@@ -74,3 +74,24 @@ test('preview is consumed only after successful execution', async () => {
 
   assert.equal(coordinator.getPreview('preview-2'), null);
 });
+
+test('coordinator detaches a stuck execution after cancellation timeout', async () => {
+  const coordinator = new ExecutionCoordinator();
+  const execution = coordinator.execute({
+    source: 'direct',
+    taskId: 'stuck-task',
+    owner: {},
+    work: async () => new Promise(() => {}),
+    cancel: async () => {},
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  const started = Date.now();
+  const result = await coordinator.cancel({ source: 'direct', taskId: 'stuck-task' });
+
+  assert.equal(result.cancelled, true);
+  assert.ok(Date.now() - started >= 4900);
+  assert.equal(coordinator.isBusy, false);
+  await coordinator.execute({ source: 'direct', owner: {}, work: async () => ({ recovered: true }) });
+  void execution;
+});

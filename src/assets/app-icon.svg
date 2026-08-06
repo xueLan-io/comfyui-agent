@@ -1,6 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
-  <rect width="256" height="256" rx="48" fill="#101820"/>
-  <path d="M166 72c-13-10-29-16-46-16-44 0-80 36-80 80s36 80 80 80c17 0 33-6 46-16" fill="none" stroke="#59a8ff" stroke-linecap="round" stroke-width="28"/>
-  <path d="M142 136h66" fill="none" stroke="#eaf4ff" stroke-linecap="round" stroke-width="20"/>
-  <circle cx="178" cy="136" r="10" fill="#45c68b"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">ComfyMuse 缪斯</title>
+  <desc id="desc">黑底上，一条扁椭圆轨道微微倾斜，左上角真断开并带两个节点圆点，内侧有细虚线环暗示嵌套流程，白色四角星中心有核心环。</desc>
+
+  <rect width="512" height="512" rx="72" fill="#111111"/>
+
+  <g transform="rotate(-18 256 256)">
+    <path d="M 424 256 A 168 72 0 1 1 88 256 A 168 72 0 1 1 424 256"
+          fill="none" stroke="#FFFFFF" stroke-width="3"
+          stroke-dasharray="12 20" opacity="0.3" stroke-linecap="round"/>
+
+    <path d="M 220.6 169.3 A 204 88 0 1 1 55.1 240.7"
+          fill="none" stroke="#FFFFFF" stroke-width="26" stroke-linecap="round"/>
+
+    <circle cx="64.3" cy="225.9" r="20" fill="none" stroke="#FFFFFF" stroke-width="2" opacity="0.25"/>
+    <circle cx="64.3" cy="225.9" r="14" fill="#FFFFFF"/>
+    <circle cx="186.2" cy="173.3" r="20" fill="none" stroke="#FFFFFF" stroke-width="2" opacity="0.25"/>
+    <circle cx="186.2" cy="173.3" r="14" fill="#FFFFFF"/>
+  </g>
+
+  <path d="M 256 112 C 268 168 276 204 296 225 C 318 241 354 247 404 256 C 354 265 318 271 296 287 C 276 308 268 344 256 400 C 244 344 236 308 216 287 C 194 271 158 265 108 256 C 158 247 194 241 216 225 C 236 204 244 168 256 112 Z"
+        fill="#FFFFFF"/>
+  <circle cx="256" cy="256" r="20" fill="none" stroke="#FFFFFF" stroke-width="5"/>
+  <circle cx="256" cy="256" r="8" fill="#FFFFFF" opacity="0.9"/>
 </svg>

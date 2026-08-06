@@ -52,6 +52,8 @@ function evaluateTechnical(result) {
   }
 
   const images = Array.isArray(result.images) ? result.images : [];
+  const videos = Array.isArray(result.videos) ? result.videos : [];
+  const media = Array.isArray(result.media) ? result.media : [...images, ...videos];
   const failures = [];
   if (result.timedOut === true || result.executionStatus === 'timeout') failures.push('ComfyUI generation timeout');
   const executionStatus = result.executionStatus || result.status || '';
@@ -60,7 +62,7 @@ function evaluateTechnical(result) {
   }
   const nodeErrors = result.nodeErrors || result.executionErrors || [];
   if (Array.isArray(nodeErrors) && nodeErrors.length > 0) failures.push('Node execution error');
-  if (images.length === 0) failures.push('No images in output');
+  if (media.length === 0) failures.push('No media in output');
 
   const targetIds = new Set((result.outputNodeIds || []).map(String));
   const imageNodeIds = new Set((result.imageNodeIds || []).map(String));
@@ -69,8 +71,9 @@ function evaluateTechnical(result) {
   }
 
   const expectedBatch = Number(result.expectedBatch ?? result.batch);
-  if (Number.isInteger(expectedBatch) && expectedBatch > 0 && images.length !== expectedBatch) {
-    failures.push(`Expected ${expectedBatch} image(s), received ${images.length}`);
+  if (Number.isInteger(expectedBatch) && expectedBatch > 0 && media.length !== expectedBatch) {
+    const outputLabel = videos.length > 0 ? 'media item' : 'image';
+    failures.push(`Expected ${expectedBatch} ${outputLabel}(s), received ${media.length}`);
   }
 
   const imageChecks = result.imageChecks || result.outputFiles || [];
@@ -85,11 +88,13 @@ function evaluateTechnical(result) {
     status: passed ? 'passed' : 'failed',
     passed,
     score: passed ? 1 : 0,
-    detail: passed ? `${images.length} image(s) passed technical checks` : failures.join('; '),
+    detail: passed ? `${media.length} media item(s) passed technical checks` : failures.join('; '),
     checks: {
       comfyui: result.executionStatus || result.status || 'unknown',
       outputFiles: imageChecks,
       imageCount: images.length,
+      videoCount: videos.length,
+      mediaCount: media.length,
       expectedBatch: Number.isInteger(expectedBatch) ? expectedBatch : null,
       outputNodeIds: [...targetIds],
       imageNodeIds: [...imageNodeIds],

@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { useSession } from './SessionContext.jsx';
 
 const ComfyUIContext = createContext(null);
 
@@ -19,7 +20,8 @@ export function useComfyUI() {
   return useContext(ComfyUIContext);
 }
 
-export function ComfyUIProvider({ children }) {
+export function ComfyUIProvider({ children, floating = false }) {
+  const { project } = useSession();
   const [comfyState, setComfyState] = useState({ status: 'checking', message: '正在检测 ComfyUI...' });
   const [workflowDir, setWorkflowDir] = useState('');
   const [workflowFiles, setWorkflowFiles] = useState([]);
@@ -27,6 +29,7 @@ export function ComfyUIProvider({ children }) {
   const [workflowManifest, setWorkflowManifest] = useState(null);
   const [generationControls, setGenerationControls] = useState({ settings: {}, nodeOverrides: {}, outputNodeIds: null });
   const [showNodeControls, setShowNodeControls] = useState(false);
+  const inspectedWorkflowRef = useRef('');
   const [favoriteWorkflows, setFavoriteWorkflows] = useState(() => {
     try { return JSON.parse(window.localStorage.getItem('comfyui-agent.favorite-workflows') || '[]'); } catch { return []; }
   });
@@ -59,9 +62,20 @@ export function ComfyUIProvider({ children }) {
       if (!result) return;
       setWorkflowDir(result.displayDir || result.dir);
       setWorkflowFiles(result.files);
-      setSelectedFile(previous => previous || defaultWorkflow(result.files));
-    });
-  }, []);
+      setSelectedFile(previous => {
+        if (previous && result.files.includes(previous)) return previous;
+        if (project?.workflow && result.files.includes(project.workflow)) return project.workflow;
+        return defaultWorkflow(result.files);
+      });
+    }).catch(() => {});
+  }, [project?.workflow]);
+
+  useEffect(() => {
+    const workflow = project?.workflow || '';
+    if (!workflow || !workflowFiles.includes(workflow)) return;
+    setSelectedFile(previous => previous === workflow ? previous : workflow);
+  }, [project?.workflow, workflowFiles]);
+
 
   useEffect(() => {
     let active = true;
@@ -93,19 +107,30 @@ export function ComfyUIProvider({ children }) {
     let active = true;
     setWorkflowManifest(null);
     setGenerationControls({ settings: {}, nodeOverrides: {}, outputNodeIds: null });
-    if (!connected || !selectedFile) return () => { active = false; };
+    if (floating || !connected || !selectedFile) return () => { active = false; };
+
+    const inspectKey = `${workflowDir}\u0000${selectedFile}`;
+    if (inspectedWorkflowRef.current === inspectKey) return () => { active = false; };
+    inspectedWorkflowRef.current = inspectKey;
+
+    if (workflowFiles.length > 0 && !workflowFiles.includes(selectedFile)) {
+      setWorkflowManifest({ workflowName: selectedFile, missing: true, error: '工作流不存在' });
+      return () => { active = false; };
+    }
 
     window.electronAPI.agentInspectWorkflow(selectedFile)
       .then(manifest => {
-        if (active) setWorkflowManifest(manifest);
+        if (active) setWorkflowManifest(manifest || { workflowName: selectedFile, error: '工作流检查失败' });
       })
-      .catch(() => {});
+      .catch(error => {
+        if (active) setWorkflowManifest({ workflowName: selectedFile, error: error.message || '工作流检查失败' });
+      });
     return () => { active = false; };
-  }, [connected, selectedFile, workflowDir]);
+  }, [connected, floating, selectedFile, workflowDir]);
 
   useEffect(() => {
-    if (selectedFile) void window.electronAPI.projectUpdateState({ workflow: selectedFile });
-  }, [selectedFile]);
+    if (selectedFile && !floating) void window.electronAPI.projectUpdateState({ workflow: selectedFile });
+  }, [floating, selectedFile]);
 
   const handleShowWorkflowDir = useCallback(async () => {
     await window.electronAPI.showWorkflowDir(selectedFile);

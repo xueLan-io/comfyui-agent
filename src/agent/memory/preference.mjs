@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
 import { dirname } from 'path';
 import electron from 'electron';
 
@@ -16,10 +16,13 @@ export const DEFAULTS = {
       models: [{ id: 'gpt-4o', name: 'GPT-4o' }],
     }],
     active: { providerId: 'openai', modelId: 'gpt-4o', reasoningEffort: 'medium', strategy: 'auto' },
+    imageProviderId: '',
+    imageModelId: '',
   },
   skills: {
     system: { txt2img: true, img2img: true, character: true, video: true },
     custom: [],
+    external: [],
   },
   projects: {},
   research: { baiduApiKey: '' },
@@ -37,6 +40,7 @@ export const DEFAULTS = {
     diffMarkers: true,
     panelWidth: 320,
   },
+  mcp: { enabled: false, host: '127.0.0.1', port: 3333, token: '' },
 };
 
 function encrypt(text) {
@@ -73,7 +77,11 @@ function migrateLLM(llm = {}) {
       ...provider,
       type: provider.type || (provider.id === 'ollama' ? 'ollama' : 'openai-compatible'),
       headers: provider.headers && typeof provider.headers === 'object' ? provider.headers : {},
-      models: Array.isArray(provider.models) ? provider.models : [],
+      models: Array.isArray(provider.models) ? provider.models.map(model => ({
+        ...model,
+        kind: model.kind || (provider.type === 'openai-image' ? 'image' : 'chat'),
+        runtime: model.runtime || (model.kind === 'image' ? 'cloud' : ''),
+      })) : [],
     }));
     const first = providers[0] || clone(DEFAULTS.llm.providers[0]);
     return {
@@ -86,6 +94,8 @@ function migrateLLM(llm = {}) {
           : 'medium',
         strategy: ['auto', 'local', 'cloud', 'manual'].includes(llm.active?.strategy) ? llm.active.strategy : 'auto',
       },
+      imageProviderId: llm.imageProviderId || providers.find(provider => provider.type === 'openai-image')?.id || '',
+      imageModelId: llm.imageModelId || providers.flatMap(provider => provider.models).find(model => model.kind === 'image')?.id || '',
     };
   }
 
@@ -103,6 +113,8 @@ function migrateLLM(llm = {}) {
       models: [{ id: modelId, name: modelId }],
     }],
     active: { providerId: id, modelId, reasoningEffort: 'medium' },
+    imageProviderId: '',
+    imageModelId: '',
   };
 }
 
@@ -130,6 +142,16 @@ function decryptResearch(research) {
   }
 }
 
+function normalizeMcp(value = {}) {
+  const port = Number(value.port);
+  return {
+    enabled: value.enabled === true,
+    host: typeof value.host === 'string' && value.host.trim() ? value.host.trim() : '127.0.0.1',
+    port: Number.isInteger(port) && port > 0 && port < 65536 ? port : 3333,
+    token: typeof value.token === 'string' ? value.token.trim() : '',
+  };
+}
+
 export class PreferenceMemory {
   constructor(configPath) {
     this.configPath = configPath;
@@ -150,9 +172,11 @@ export class PreferenceMemory {
           ...(raw.skills || {}),
           system: { ...DEFAULTS.skills.system, ...(raw.skills?.system || {}) },
           custom: Array.isArray(raw.skills?.custom) ? raw.skills.custom : [],
+          external: Array.isArray(raw.skills?.external) ? raw.skills.external : [],
         },
         projects: raw.projects && typeof raw.projects === 'object' ? raw.projects : {},
         research: { ...clone(DEFAULTS.research), ...(raw.research || {}) },
+        mcp: normalizeMcp(raw.mcp),
       };
       decryptProviders(this.data.llm);
       decryptResearch(this.data.research);
@@ -181,7 +205,9 @@ export class PreferenceMemory {
       } else if (toStore.research.baiduApiKey && !toStore.research.baiduApiKey.startsWith('enc:')) {
         toStore.research.baiduApiKey = `enc:${encrypt(toStore.research.baiduApiKey)}`;
       }
-      writeFileSync(this.configPath, JSON.stringify(toStore, null, 2));
+      const temporaryPath = `${this.configPath}.tmp-${process.pid}`;
+      writeFileSync(temporaryPath, JSON.stringify(toStore, null, 2), { mode: 0o600 });
+      renameSync(temporaryPath, this.configPath);
     } catch (error) {
       console.error('Failed to save preferences:', error);
     }

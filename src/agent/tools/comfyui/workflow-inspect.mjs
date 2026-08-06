@@ -2,6 +2,8 @@ import { WorkflowAdapter } from './workflow-adapter.mjs';
 import { ComfyUITool } from './index.mjs';
 import { workflowToPrompt, findNodeGroup, checkModelRequirements, describeInput, getInputDefinition } from './prompt-builder.mjs';
 import { isEditableValue } from './node-overrides.mjs';
+import { buildPreflightReport } from '../../../runtime/preflight-contract.mjs';
+import { inspectRuntimeCapabilities } from '../../../runtime/runtime-capabilities.mjs';
 
 function resolveMediaRef(value = '') {
   const parts = String(value).split('/');
@@ -135,7 +137,8 @@ function validateLinks(workflow, issues) {
 
 function validatePromptStructure(prompt, issues) {
   const samplers = Object.entries(prompt).filter(([, node]) => /ksampler/i.test(node.class_type || ''));
-  if (samplers.length === 0) {
+  const hasVideoOutput = Object.values(prompt).some(node => /(?:save|combine|output).*(?:video|gif|webp)|(?:video|gif|webp).*(?:save|combine|output)/i.test(node.class_type || ''));
+  if (samplers.length === 0 && !hasVideoOutput) {
     issues.push({ severity: 'error', code: 'sampler_missing', message: '工作流中没有任何 KSampler 采样节点' });
     return;
   }
@@ -161,6 +164,9 @@ function validatePromptStructure(prompt, issues) {
   const hasSaveImage = Object.values(prompt).some(node => /saveimage/i.test(node.class_type || ''));
   if (hasSaveImage && !hasVaeDecode) {
     issues.push({ severity: 'warning', code: 'vae_missing', message: '工作流有保存图片节点但缺少 VAEDecode，输出可能不完整' });
+  }
+  if (hasVideoOutput && !Object.values(prompt).some(node => /video|animatediff|wan|hunyuan|ltx/i.test(node.class_type || ''))) {
+    issues.push({ severity: 'warning', code: 'video_node_missing', message: '工作流包含视频输出节点但没有识别到视频生成节点' });
   }
 }
 
@@ -314,15 +320,29 @@ export const WorkflowInspectTool = {
         }
       }
       await validateMedia(prompt, client, issues);
-      const errors = issues.filter(item => item.severity === 'error');
+      const preflight = buildPreflightReport({
+        issues,
+        modelRequirements: requirements,
+        capabilities: resolved.capabilities,
+        modelType: resolved.modelType,
+        adapterAvailable: resolved.adapter !== null,
+        adaptationOnly: resolved.adapter?.adaptationOnly === true,
+        adapterCapabilities: resolved.info,
+      });
+      const runtimeCheck = await inspectRuntimeCapabilities({
+        client,
+        requireConnection: false,
+        requireFfmpeg: resolved.capabilities?.modes?.some(mode => /video/.test(mode)),
+      });
+      preflight.issues.push(...runtimeCheck.issues);
+      preflight.runtime = runtimeCheck.runtime;
+      preflight.issueCount = preflight.issues.length;
+      preflight.errorCount = preflight.issues.filter(issue => issue.severity === 'error').length;
+      preflight.valid = preflight.errorCount === 0;
       return {
         workflowName,
         modelType: resolved.modelType,
-        valid: errors.length === 0,
-        issueCount: issues.length,
-        errorCount: errors.length,
-        issues,
-        missingModels: requirements.filter(item => item.available === false),
+        ...preflight,
         sampler: extractSampler(prompt),
       };
     }

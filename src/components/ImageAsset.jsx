@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
 export function isVideoImage(image = {}) {
-  return /\.(mp4|webm|mov)$/i.test(image.filename || '');
+  return image.mediaType === 'video' || /\.(mp4|webm|mov|mkv|avi)$/i.test(image.filename || '');
 }
 
 export default function ImageAsset({ image, compact = false, onOpen, onError }) {
@@ -25,11 +25,11 @@ export default function ImageAsset({ image, compact = false, onOpen, onError }) 
   }
 
   return (
-    <button className={`image-preview-trigger${compact ? ' compact' : ''}`} onClick={() => onOpen?.({ image, src: state.src })} title="查看大图">
+      <button className={`image-preview-trigger${compact ? ' compact' : ''}`} onClick={() => onOpen?.({ image, src: state.src })} onDragStart={event => event.preventDefault()} title="查看大图" draggable="false">
       {isVideoImage(image) ? (
-        <video src={state.src} muted preload="metadata" aria-label={image.filename} />
+         <video src={state.src} muted preload="metadata" aria-label={image.filename} draggable="false" onDragStart={event => event.preventDefault()} />
       ) : (
-        <img src={state.src} alt={image.filename} loading="lazy" />
+         <img src={state.src} alt={image.filename} loading="lazy" draggable="false" onDragStart={event => event.preventDefault()} />
       )}
     </button>
   );

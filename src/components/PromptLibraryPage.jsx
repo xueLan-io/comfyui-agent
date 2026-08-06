@@ -9,6 +9,7 @@ import { createCollectedTaxonomyGroups, matchesPromptTaxonomy, PROMPT_LIBRARY_TA
 import { checkPromptStructure, STRUCTURE_LABELS } from '../agent/optimizer/prompt-guard.mjs';
 import { formatWeight, normalizePromptPart, removePromptPart, reorderPromptPart, splitPromptParts, updatePromptWeight } from './prompt-parser.mjs';
 import Icon from './Icon.jsx';
+import { DragGhost, useFloatingCardDrag } from './useFloatingCardDrag.jsx';
 
 const PAGE_SIZE = 120;
 const WEIGHT_STEP = 0.1;
@@ -126,6 +127,37 @@ function workflowPromptExamples(manifest) {
         prompt: input.value.trim(),
         source: manifest.workflowName,
       })));
+}
+
+function DraggablePromptCard({ item, path, related, added, favorite, onToggleFavorite, onAdd, onReplace, onDelete, onDragLabel, target }) {
+  const drag = useFloatingCardDrag({
+    kind: 'prompt-card',
+    title: item.title || item.prompt || '',
+    positive: item.prompt || '',
+    content: item.prompt || '',
+    negative: '',
+    target,
+    mode: item.kind === 'phrase' ? 'replace' : 'append',
+    promptId: item.id || '',
+  });
+
+  return (
+    <article className={`prompt-workbench-card${drag.dragging ? ' is-dragging' : ''}`} aria-hidden={drag.dragging || undefined}>
+      <div className={`prompt-workbench-card-art prompt-workbench-card-art-${item.category} prompt-workbench-card-drag-handle`} {...drag.dragHandlers}><span>{item.tagGroup || categoryLabel(item.category)}</span><Icon name="spark" size={16} /></div>
+      <div className="prompt-workbench-card-body">
+        <div className="prompt-workbench-card-meta"><span>{item.kind === 'phrase' ? '完整短语' : (stageForCategory(item.category)?.label || '提示词')}</span>{item.sourceCount > 0 && <small>{item.sourceCount.toLocaleString()} 次使用</small>}<button type="button" className={`prompt-library-favorite${favorite ? ' active' : ''}`} onClick={() => onToggleFavorite(item)} title={favorite ? '取消收藏' : '收藏'} aria-label={favorite ? '取消收藏' : '收藏'}><Icon name="star" size={13} /></button></div>
+        <h3>{item.title}</h3>
+        <div className="prompt-workbench-card-path">{path.join(' > ')}</div>
+        <p>{item.description}</p>
+        {item.usage && <div className="prompt-workbench-card-related"><span>用途</span>{item.usage}</div>}
+        {item.aliases?.length > 0 && <div className="prompt-workbench-card-related"><span>别名</span>{item.aliases.slice(0, 3).join('、')}</div>}
+        {related.length > 0 && <div className="prompt-workbench-card-related"><span>相关</span>{related.join('、')}</div>}
+        <div className="prompt-workbench-card-prompt" title={item.prompt}>{item.prompt}</div>
+        <div className="prompt-workbench-card-actions"><button type="button" className={`prompt-library-add${added ? ' added' : ''}`} onClick={() => onAdd(item)}><Icon name={added ? 'check' : 'plus'} size={13} />{added ? '已加入' : '加入'}</button><button type="button" className="prompt-workbench-card-replace" onClick={() => onReplace(item)} title="替换当前编辑内容">替换</button>{item.category === 'custom' && <button type="button" className="prompt-library-delete" onClick={() => onDelete(item)} title="删除自定义词条" aria-label={`删除${item.title}`}><Icon name="trash" size={12} /></button>}</div>
+      </div>
+      <DragGhost dragging={drag.dragging} dragPoint={drag.dragPoint} label="PROMPT" />
+    </article>
+  );
 }
 
 export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }) {
@@ -522,22 +554,7 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   function renderPromptCard(item) {
     const path = promptPathForItem(item, taxonomyGroups);
     const related = item.related?.slice(0, 4) || [];
-    return (
-      <article className="prompt-workbench-card" key={item.id}>
-        <div className={`prompt-workbench-card-art prompt-workbench-card-art-${item.category}`}><span>{item.tagGroup || categoryLabel(item.category)}</span><Icon name="spark" size={16} /></div>
-        <div className="prompt-workbench-card-body">
-          <div className="prompt-workbench-card-meta"><span>{item.kind === 'phrase' ? '完整短语' : (stageForCategory(item.category)?.label || '提示词')}</span>{item.sourceCount > 0 && <small>{item.sourceCount.toLocaleString()} 次使用</small>}<button type="button" className={`prompt-library-favorite${favorites.has(item.id) ? ' active' : ''}`} onClick={() => toggleFavorite(item)} title={favorites.has(item.id) ? '取消收藏' : '收藏'} aria-label={favorites.has(item.id) ? '取消收藏' : '收藏'}><Icon name="star" size={13} /></button></div>
-          <h3>{item.title}</h3>
-          <div className="prompt-workbench-card-path">{path.join(' > ')}</div>
-          <p>{item.description}</p>
-          {item.usage && <div className="prompt-workbench-card-related"><span>用途</span>{item.usage}</div>}
-          {item.aliases?.length > 0 && <div className="prompt-workbench-card-related"><span>别名</span>{item.aliases.slice(0, 3).join('、')}</div>}
-          {related.length > 0 && <div className="prompt-workbench-card-related"><span>相关</span>{related.join('、')}</div>}
-          <div className="prompt-workbench-card-prompt" title={item.prompt}>{item.prompt}</div>
-          <div className="prompt-workbench-card-actions"><button type="button" className={`prompt-library-add${addedId === item.id ? ' added' : ''}`} onClick={() => addPrompt(item)}><Icon name={addedId === item.id ? 'check' : 'plus'} size={13} />{addedId === item.id ? '已加入' : '加入'}</button><button type="button" className="prompt-workbench-card-replace" onClick={() => replacePrompt(item)} title="替换当前编辑内容">替换</button>{activeGroup === 'custom' && <button type="button" className="prompt-library-delete" onClick={() => deleteCustomItem(item)} title="删除自定义词条" aria-label={`删除${item.title}`}><Icon name="trash" size={12} /></button>}</div>
-        </div>
-      </article>
-    );
+    return <DraggablePromptCard key={item.id} item={item} path={path} related={related} added={addedId === item.id} favorite={favorites.has(item.id)} onToggleFavorite={toggleFavorite} onAdd={addPrompt} onReplace={replacePrompt} onDelete={deleteCustomItem} onDragLabel="长按拖入悬浮窗" target={composerTarget} />;
   }
 
   return (

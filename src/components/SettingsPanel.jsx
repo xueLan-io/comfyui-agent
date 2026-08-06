@@ -4,9 +4,11 @@ import { useComfyUI } from '../contexts/ComfyUIContext.jsx';
 import AppearanceSettings from './AppearanceSettings.jsx';
 import ResearchSettings from './ResearchSettings.jsx';
 import Icon from './Icon.jsx';
+import { useI18n } from '../i18n/I18nContext.jsx';
 
 const TEMPLATES = {
   openai: { id: 'openai', name: 'OpenAI', type: 'openai-compatible', baseUrl: 'https://api.openai.com/v1', models: [{ id: 'gpt-4o', name: 'GPT-4o' }] },
+  openaiImage: { id: 'openai-image', name: 'OpenAI Image', type: 'openai-compatible', baseUrl: 'https://api.openai.com/v1', models: [{ id: 'gpt-image-2', name: 'GPT Image 2', kind: 'image', runtime: 'cloud' }] },
   lmstudio: { id: 'lmstudio', name: 'LM Studio', type: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', models: [{ id: 'local-model', name: '本地模型（请替换 ID）' }] },
   ollama: { id: 'ollama', name: 'Ollama', type: 'ollama', baseUrl: 'http://127.0.0.1:11434', models: [{ id: 'llama3.2', name: 'Llama 3.2' }] },
   deepseek: { id: 'deepseek', name: 'DeepSeek', type: 'openai-compatible', baseUrl: 'https://api.deepseek.com/v1', models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }] },
@@ -15,10 +17,11 @@ const TEMPLATES = {
   dashscope: { id: 'dashscope', name: 'DashScope', type: 'openai-compatible', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: [{ id: 'qwen-plus', name: 'Qwen Plus' }] },
 };
 
-const EMPTY_PROVIDER = { id: '', name: '', type: 'openai-compatible', baseUrl: '', apiKey: '', headers: {}, models: [{ id: '', name: '' }] };
+const EMPTY_PROVIDER = { id: '', name: '', type: 'openai-compatible', baseUrl: '', apiKey: '', headers: {}, models: [{ id: '', name: '', kind: 'chat' }] };
 const EMPTY_SKILL = { id: '', name: '', description: '', keywords: '', promptMode: 'raw', enabled: true };
 
 function ProviderForm({ value, onChange, onSave, onTest, testState, saveState }) {
+  const { t } = useI18n();
   const headerRows = Object.entries(value.headers || {});
   const validId = /^[a-z0-9_-]+$/.test(value.id || '');
   const template = TEMPLATES[value.id] ? value.id : '';
@@ -42,56 +45,64 @@ function ProviderForm({ value, onChange, onSave, onTest, testState, saveState })
 
   return <div className="provider-form">
     <div className="provider-intro span-2">
-      <div><span className="provider-kicker">模型连接</span><h3>添加一个模型提供商</h3></div>
-      <p>先选择预设，再确认地址和模型 ID。保存后即可在聊天中使用。</p>
+       <div><span className="provider-kicker">{t('providerIntro')}</span><h3>{t('addProvider')}</h3></div>
+       <p>{t('providerIntroDescription')}</p>
     </div>
     <div className="template-picker span-2">
       <div className="settings-field">
-        <label>快速配置</label>
+         <label>{t('quickSetup')}</label>
         <select value={template} onChange={event => applyTemplate(event.target.value)}>
-          <option value="">选择提供商预设...</option>
-          <optgroup label="本地模型">
-            <option value="lmstudio">LM Studio · OpenAI 兼容</option>
-            <option value="ollama">Ollama · 原生接口</option>
+           <option value="">{t('chooseProvider')}</option>
+           <optgroup label={t('localModels')}>
+             <option value="lmstudio">LM Studio · OpenAI compatible</option>
+             <option value="ollama">Ollama · Native API</option>
           </optgroup>
-          <optgroup label="云端服务">
-            {['openai', 'deepseek', 'glm', 'moonshot', 'dashscope'].map(id => <option key={id} value={id}>{TEMPLATES[id].name}</option>)}
+           <optgroup label={t('cloudServices')}>
+            {['openai', 'openaiImage', 'deepseek', 'glm', 'moonshot', 'dashscope'].map(id => <option key={id} value={id}>{TEMPLATES[id].name}</option>)}
           </optgroup>
         </select>
       </div>
       <div className="template-note">
-        <strong>{template === 'lmstudio' ? 'LM Studio 使用 OpenAI 兼容接口' : value.type === 'ollama' ? 'Ollama 使用原生聊天接口' : 'OpenAI 兼容接口'}</strong>
-        <span>{template === 'lmstudio' ? '地址通常是 http://127.0.0.1:1234/v1；模型 ID 需填写 LM Studio 当前加载的名称。' : value.type === 'ollama' ? '地址通常是 http://127.0.0.1:11434，不需要 API Key。' : '请求会发送到 /chat/completions，地址一般需要包含 /v1。'}</span>
+         <strong>{template === 'lmstudio' ? t('providerLocalOpenai') : value.type === 'ollama' ? t('providerOllama') : t('providerOpenaiCompatible')}</strong>
+         <span>{template === 'lmstudio' ? t('providerLocalOpenaiHint') : value.type === 'ollama' ? t('providerOllamaHint') : t('providerOpenaiHint')}</span>
       </div>
     </div>
-    <div className="settings-field"><label>ID</label><input value={value.id} onChange={event => update({ id: event.target.value })} placeholder="provider_id" />{value.id && !validId && <small className="field-error">仅支持 a-z、0-9、_、-</small>}</div>
-    <div className="settings-field"><label>显示名称</label><input value={value.name} onChange={event => update({ name: event.target.value })} /></div>
-    <div className="settings-field span-2"><label>API 地址</label><input value={value.baseUrl} onChange={event => update({ baseUrl: event.target.value })} placeholder="https://api.example.com/v1" /></div>
-    <div className="settings-field span-2"><label>API Key</label><input type="password" value={value.apiKey || ''} onChange={event => update({ apiKey: event.target.value, apiKeyError: '' })} placeholder={value.type === 'ollama' || template === 'lmstudio' ? '本地服务通常无需填写' : 'sk-...'} />{value.apiKeyError && <small className="field-error">已保存的 API Key 无法解密，请重新输入并保存。</small>}</div>
+    <div className="settings-field"><label>{t('id')}</label><input value={value.id} onChange={event => update({ id: event.target.value })} placeholder="provider_id" />{value.id && !validId && <small className="field-error">Only a-z, 0-9, _, and - are supported</small>}</div>
+    <div className="settings-field"><label>{t('displayName')}</label><input value={value.name} onChange={event => update({ name: event.target.value })} /></div>
+    <div className="settings-field span-2"><label>{t('apiAddress')}</label><input value={value.baseUrl} onChange={event => update({ baseUrl: event.target.value })} placeholder="https://api.example.com/v1" /></div>
+    <div className="settings-field span-2"><label>{t('apiKey')}</label><input type="password" value={value.apiKey || ''} onChange={event => update({ apiKey: event.target.value, apiKeyError: '' })} placeholder={value.hasApiKey ? t('apiKeySaved') : value.type === 'ollama' || template === 'lmstudio' ? t('localNoApiKey') : 'sk-...'} />{value.apiKeyError && <small className="field-error">{t('apiKeyDecryptFailed')}</small>}</div>
 
     <div className="settings-subsection span-2">
-      <div className="settings-subsection-title"><span>模型</span><button className="btn btn-icon" onClick={() => update({ models: [...value.models, { id: '', name: '' }] })} title="添加模型"><Icon name="plus" /></button></div>
-      {value.models.map((model, index) => <div className="settings-row" key={index}>
-        <input value={model.id} onChange={event => updateModel(index, { id: event.target.value })} placeholder="模型 ID" />
-        <input value={model.name} onChange={event => updateModel(index, { name: event.target.value })} placeholder="显示名称" />
-        <button className="btn btn-icon" onClick={() => update({ models: value.models.filter((_, i) => i !== index) })} disabled={value.models.length === 1} title="删除模型"><Icon name="trash" size={14} /></button>
+      <div className="settings-subsection-title"><span>{t('modelsTitle')}</span><button className="btn btn-icon" onClick={() => update({ models: [...value.models, { id: '', name: '' }] })} title={t('addModel')}><Icon name="plus" /></button></div>
+       {value.models.map((model, index) => <div className="settings-row" key={index}>
+        <input value={model.id} onChange={event => updateModel(index, { id: event.target.value })} placeholder={t('modelIdPlaceholder')} />
+        <input value={model.name} onChange={event => updateModel(index, { name: event.target.value })} placeholder={t('displayNamePlaceholder')} />
+        <select value={model.kind || 'chat'} onChange={event => updateModel(index, { kind: event.target.value })} aria-label={t('modelCapability')}>
+          <option value="chat">{t('chatCapability')}</option>
+          <option value="image">{t('imageCapability')}</option>
+        </select>
+        {model.kind === 'image' && <select value={model.runtime || 'cloud'} onChange={event => updateModel(index, { runtime: event.target.value })} aria-label={t('runtimeLocation')}>
+          <option value="cloud">{t('cloud')}</option>
+          <option value="local">{t('local')}</option>
+        </select>}
+        <button className="btn btn-icon" onClick={() => update({ models: value.models.filter((_, i) => i !== index) })} disabled={value.models.length === 1} title={t('deleteModel')}><Icon name="trash" size={14} /></button>
       </div>)}
     </div>
 
     <div className="settings-subsection span-2">
-      <div className="settings-subsection-title"><span>请求头</span><button className="btn btn-icon" onClick={() => update({ headers: { ...value.headers, [`X-Header-${headerRows.length + 1}`]: '' } })} title="添加请求头"><Icon name="plus" /></button></div>
-      {headerRows.length === 0 && <div className="settings-muted">未配置自定义请求头</div>}
+      <div className="settings-subsection-title"><span>{t('headers')}</span><button className="btn btn-icon" onClick={() => update({ headers: { ...value.headers, [`X-Header-${headerRows.length + 1}`]: '' } })} title={t('addHeader')}><Icon name="plus" /></button></div>
+      {headerRows.length === 0 && <div className="settings-muted">{t('noHeaders')}</div>}
       {headerRows.map(([key, headerValue], index) => <div className="settings-row" key={`${key}-${index}`}>
-        <input value={key} onChange={event => updateHeader(index, event.target.value, headerValue)} placeholder="Header" />
-        <input value={headerValue} onChange={event => updateHeader(index, key, event.target.value)} placeholder="Value" />
-        <button className="btn btn-icon" onClick={() => update({ headers: Object.fromEntries(headerRows.filter((_, i) => i !== index)) })} title="删除请求头"><Icon name="trash" size={14} /></button>
+         <input value={key} onChange={event => updateHeader(index, event.target.value, headerValue)} placeholder={t('headerPlaceholder')} />
+         <input value={headerValue} onChange={event => updateHeader(index, key, event.target.value)} placeholder={t('valuePlaceholder')} />
+        <button className="btn btn-icon" onClick={() => update({ headers: Object.fromEntries(headerRows.filter((_, i) => i !== index)) })} title={t('deleteHeader')}><Icon name="trash" size={14} /></button>
       </div>)}
     </div>
 
     <div className="provider-actions span-2">
       <div className="provider-action-buttons">
-        <button className="btn" onClick={onTest} disabled={!validId || isBusy}>{testState.status === 'testing' ? '测试中...' : '测试连接'}</button>
-        <button className="btn btn-primary" onClick={onSave} disabled={!validId || !value.name || !value.models.some(model => model.id) || isBusy}>{saveState.status === 'saving' ? '保存中...' : '保存提供商'}</button>
+        <button className="btn" onClick={onTest} disabled={!validId || isBusy}>{testState.status === 'testing' ? t('testing') : t('testConnection')}</button>
+        <button className="btn btn-primary" onClick={onSave} disabled={!validId || !value.name || !value.models.some(model => model.id) || isBusy}>{saveState.status === 'saving' ? t('saving') : t('saveProvider')}</button>
       </div>
       <div className="provider-statuses">
         {saveState.message && <span className={`provider-status ${saveState.status}`}><Icon name={saveState.status === 'ok' ? 'check' : saveState.status === 'error' ? 'circleAlert' : 'refresh'} size={13} />{saveState.message}</span>}
@@ -100,7 +111,51 @@ function ProviderForm({ value, onChange, onSave, onTest, testState, saveState })
     </div>
   </div>;
 }
+
+function ModelManagement({ llm, activeProvider, onStrategy, onChatProvider, onChatModel, onImageProvider, onImageModel, onEditProvider }) {
+  const { t } = useI18n();
+  const models = llm.providers.flatMap(provider => (provider.models || []).map(model => ({ provider, model })));
+  return <div className="model-management">
+    <section className="model-selection-section">
+      <div className="settings-section-heading"><div><h3>{t('modelSelection')}</h3><p>{t('modelSelectionDescription')}</p></div><Icon name="spark" size={16} /></div>
+      <div className="model-strategy-control">
+        <div><strong>{t('modelStrategy')}</strong><small>{llm.active.providerId ? `${t('current')}: ${activeProvider?.name || llm.active.providerId}` : t('noModelSelected')}</small></div>
+        <div role="group" aria-label={t('modelStrategy')}>
+          {[{ id: 'auto', label: t('auto') }, { id: 'local', label: t('local') }, { id: 'cloud', label: t('cloud') }].map(item => <button key={item.id} className={llm.active.strategy === item.id ? 'active' : ''} onClick={() => onStrategy(item.id)}>{item.label}</button>)}
+        </div>
+      </div>
+      <div className="settings-grid model-current-grid">
+         <label className="settings-field"><span>{t('chatProvider')}</span><select value={llm.active.providerId || ''} onChange={event => onChatProvider(event.target.value)}>
+          <option value="">{t('noModelSelected')}</option>
+          {llm.providers.filter(item => item.models?.some(model => model.kind !== 'image')).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+        </select></label>
+         <label className="settings-field"><span>{t('chatModel')}</span><select value={llm.active.modelId || ''} onChange={event => onChatModel(event.target.value)}>
+           <option value="">{t('noModelSelected')}</option>
+           {(activeProvider?.models || []).filter(model => model.kind !== 'image').map(model => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
+         </select></label>
+         <label className="settings-field"><span>{t('imageProvider')}</span><select value={llm.imageProviderId || ''} onChange={event => onImageProvider(event.target.value)}>
+          <option value="">{t('disabled')}</option>
+          {llm.providers.filter(item => item.models?.some(model => model.kind === 'image')).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+        </select></label>
+        <label className="settings-field span-2"><span>{t('imageModel')}</span><select value={llm.imageModelId || ''} onChange={event => onImageModel(event.target.value)}>
+          <option value="">{t('selectImageModel')}</option>
+          {llm.providers.find(item => item.id === llm.imageProviderId)?.models?.filter(model => model.kind === 'image').map(model => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
+        </select></label>
+      </div>
+    </section>
+    <section className="model-catalog-section">
+      <div className="settings-section-heading"><div><h3>{t('modelCatalog')}</h3><p>{t('modelCatalogDescription')}</p></div><span className="catalog-count">{models.length} {t('modelCount')}</span></div>
+      {models.length === 0 ? <div className="settings-empty-state">{t('noModelsConfigured')}</div> : <div className="model-catalog" role="table">
+        <div className="model-catalog-header" role="row"><span>{t('modelId')}</span><span>{t('displayName')}</span><span>{t('provider')}</span><span>{t('modelCapability')}</span><span>{t('runtimeLocation')}</span><span>{t('actions')}</span></div>
+        {models.map(({ provider, model }) => <div className="model-catalog-row" role="row" key={`${provider.id}:${model.id}`}>
+           <code>{model.id || t('notConfigured')}</code><span>{model.name || model.id || t('notConfigured')}</span><span>{provider.name}</span><span>{model.kind === 'image' ? t('imageCapability') : t('chatCapability')}</span><span>{model.kind === 'image' ? (model.runtime === 'local' ? t('local') : t('cloud')) : '-'}</span><button className="btn btn-small" onClick={() => onEditProvider(provider)}>{t('editProvider')}</button>
+        </div>)}
+      </div>}
+    </section>
+  </div>;
+}
 export default function SettingsPanel({ onClose }) {
+  const { t } = useI18n();
   const session = useSession();
   const { comfyState, refreshWorkflows } = useComfyUI();
   const [tab, setTab] = useState(() => window.localStorage.getItem('comfyui-agent.settings-tab') || 'appearance');
@@ -115,6 +170,10 @@ export default function SettingsPanel({ onClose }) {
   const [comfyBaseUrl, setComfyBaseUrl] = useState(comfyState.baseUrl || 'http://127.0.0.1:8188');
   const [comfyStateMsg, setComfyStateMsg] = useState({ status: '', text: '' });
   const [comfyBusy, setComfyBusy] = useState(false);
+  const [mcp, setMcp] = useState({ enabled: false, host: '127.0.0.1', port: 3333, token: '' });
+  const [mcpStatus, setMcpStatus] = useState('');
+  const [appVersion, setAppVersion] = useState('');
+  const [update, setUpdate] = useState({ status: 'idle', progress: 0, version: '', error: '', manifest: null });
 
   useEffect(() => {
     window.localStorage.setItem('comfyui-agent.settings-tab', tab);
@@ -136,8 +195,35 @@ export default function SettingsPanel({ onClose }) {
     window.electronAPI.llmProviders().then(data => {
       setLLM(data);
       setEditing(data.providers[0] || EMPTY_PROVIDER);
+    }).catch(error => setSaveState({ status: 'error', message: error.message || t('providerLoadFailed') }));
+    window.electronAPI.skillsList().then(setSkills).catch(error => setSaveState({ status: 'error', message: error.message || t('skillsLoadFailed') }));
+    window.electronAPI.mcpSettings().then(value => setMcp({ ...value, token: '' })).catch(() => setMcpStatus(t('mcpLoadFailed')));
+    setBudgets({
+      positiveTokens: session.project?.budgets?.positiveTokens ?? '',
+      negativeTokens: session.project?.budgets?.negativeTokens ?? '',
     });
-    window.electronAPI.skillsList().then(setSkills);
+  }, []);
+
+  useEffect(() => {
+    window.electronAPI.appVersion().then(setAppVersion).catch(() => {});
+    window.electronAPI.updateState().then(setUpdate).catch(() => {});
+    return window.electronAPI.onUpdateProgress?.(setUpdate);
+  }, []);
+
+  async function checkUpdate() {
+    setUpdate(current => ({ ...current, status: 'checking', error: '' }));
+    try { setUpdate(await window.electronAPI.updateCheck()); } catch (error) { setUpdate(current => ({ ...current, status: 'error', error: error.message || '检查更新失败' })); }
+  }
+
+  async function downloadUpdate() {
+    try { setUpdate(await window.electronAPI.updateDownload(update.manifest)); } catch (error) { setUpdate(current => ({ ...current, status: 'error', error: error.message || '下载更新失败' })); }
+  }
+
+  async function installUpdate() {
+    try { setUpdate(await window.electronAPI.updateInstall()); } catch (error) { setUpdate(current => ({ ...current, status: 'error', error: error.message || '安装更新失败' })); }
+  }
+
+  useEffect(() => {
     setBudgets({
       positiveTokens: session.project?.budgets?.positiveTokens ?? '',
       negativeTokens: session.project?.budgets?.negativeTokens ?? '',
@@ -147,21 +233,24 @@ export default function SettingsPanel({ onClose }) {
   const activeProvider = useMemo(() => llm.providers.find(item => item.id === llm.active.providerId), [llm]);
 
   async function saveProvider() {
-    setSaveState({ status: 'saving', message: '保存中...' });
+    setSaveState({ status: 'saving', message: t('saving') });
     try {
-      const updated = await window.electronAPI.llmSaveProvider(editing);
+      const payload = editing.hasApiKey && !editing.apiKey
+        ? Object.fromEntries(Object.entries(editing).filter(([key]) => key !== 'apiKey'))
+        : editing;
+      const updated = await window.electronAPI.llmSaveProvider(payload);
       setLLM(updated);
       setEditing(updated.providers.find(item => item.id === editing.id) || editing);
-      setSaveState({ status: 'ok', message: '已保存' });
+      setSaveState({ status: 'ok', message: t('saved') });
       window.dispatchEvent(new Event('llm-config-changed'));
       return updated;
     } catch (error) {
-      setSaveState({ status: 'error', message: error.message || '保存失败' });
+      setSaveState({ status: 'error', message: error.message || t('saveFailed') });
       throw error;
     }
   }
   async function deleteProvider(id) {
-    if (!window.confirm('删除这个提供商？')) return;
+    if (!window.confirm(t('providerDeleteConfirm'))) return;
     const updated = await window.electronAPI.llmDeleteProvider(id);
     setLLM(updated);
     setEditing(updated.providers[0]);
@@ -181,17 +270,17 @@ export default function SettingsPanel({ onClose }) {
   }
 
   async function testProvider() {
-    setTestState({ status: 'testing', message: '正在连接...' });
+    setTestState({ status: 'testing', message: t('connecting') });
     try {
       await saveProvider();
       const result = await window.electronAPI.llmTest(editing.id, editing.models.find(model => model.id)?.id);
-      setTestState({ status: 'ok', message: result.message || '连接成功' });
+      setTestState({ status: 'ok', message: result.message || t('connectionSucceeded') });
     } catch (error) {
-      setTestState({ status: 'error', message: error.message || '连接失败' });
+      setTestState({ status: 'error', message: error.message || t('connectionFailed') });
     }
   }
-  async function toggleSkill(id, enabled, isCustom) {
-    setSkills(await window.electronAPI.skillSetEnabled(id, enabled, isCustom));
+  async function toggleSkill(id, enabled, isCustom, isExternal = false) {
+    setSkills(await window.electronAPI.skillSetEnabled(id, enabled, isCustom, isExternal));
   }
 
   async function addCustom() {
@@ -206,19 +295,19 @@ export default function SettingsPanel({ onClose }) {
       const nextBudgets = {};
       if (budgets.positiveTokens !== '') {
         const value = Number(budgets.positiveTokens);
-        if (!Number.isInteger(value) || value <= 0) throw new Error('正向预算必须是正整数');
+        if (!Number.isInteger(value) || value <= 0) throw new Error(t('positiveBudgetInteger'));
         nextBudgets.positiveTokens = value;
       }
       if (budgets.negativeTokens !== '') {
         const value = Number(budgets.negativeTokens);
-        if (!Number.isInteger(value) || value <= 0) throw new Error('负向预算必须是正整数');
+        if (!Number.isInteger(value) || value <= 0) throw new Error(t('negativeBudgetInteger'));
         nextBudgets.negativeTokens = value;
       }
       const state = await window.electronAPI.projectUpdateState({ budgets: Object.keys(nextBudgets).length > 0 ? nextBudgets : null });
       session.applyState(state);
-      setBudgetState({ status: 'ok', message: '已保存' });
+      setBudgetState({ status: 'ok', message: t('saved') });
     } catch (error) {
-      setBudgetState({ status: 'error', message: error.message || '保存失败' });
+      setBudgetState({ status: 'error', message: error.message || t('saveFailed') });
     }
   }
 
@@ -242,7 +331,7 @@ export default function SettingsPanel({ onClose }) {
       const state = await window.electronAPI.comfyUISelectRoot();
       if (state.portableRoot) {
         await refreshWorkflows();
-        setComfyStateMsg({ status: 'ok', text: '已指定目录' });
+        setComfyStateMsg({ status: 'ok', text: t('selectedDirectory') });
       }
     } catch (error) {
       setComfyStateMsg({ status: 'error', text: error.message });
@@ -257,99 +346,120 @@ export default function SettingsPanel({ onClose }) {
     try {
       const state = await window.electronAPI.comfyUIReset();
       await refreshWorkflows();
-      setComfyStateMsg({ status: 'warn', text: state.message || '已重置为自动检测' });
+      setComfyStateMsg({ status: 'warn', text: state.message || t('resetAutoDetected') });
     } finally {
       setComfyBusy(false);
     }
   }
 
   return <div className="modal-overlay" onClick={onClose}>
-    <section className="settings-panel" onClick={event => event.stopPropagation()} aria-label="设置">
-      <div className="modal-header"><div><h2>设置</h2><p className="settings-header-note">调整界面、模型和生成工作流的默认行为</p></div><button className="btn btn-icon" onClick={onClose} title="关闭"><Icon name="close" /></button></div>
-      <div className="settings-tabs" role="tablist" aria-label="设置分类">
-        {[['appearance', '外观', '界面显示'], ['models', '模型', `${llm.providers.length} 个提供商`], ['skills', '技能', '意图路由'], ['generation', '生成', '提示词与研究'], ['comfyui', '连接', comfyState.status === 'ready' ? '已连接' : '未连接']].map(([id, label, note]) => (
+    <section className="settings-panel" onClick={event => event.stopPropagation()} aria-label={t('settings')}>
+      <div className="modal-header"><div><h2>{t('settings')}</h2><p className="settings-header-note">{t('settingsDescription')}</p></div><button className="btn btn-icon" onClick={onClose} title={t('close')}><Icon name="close" /></button></div>
+      <div className="settings-body">
+         <div className="settings-tabs" role="tablist" aria-label={t('settings')}>
+           {[['appearance', t('appearance'), t('appearanceNote')], ['models', t('models'), `${llm.providers.reduce((total, provider) => total + (provider.models?.length || 0), 0)} ${t('modelCount')}`], ['providers', t('providers'), `${llm.providers.length} ${t('providerCount')}`], ['skills', t('skills'), t('skillsNote')], ['generation', t('generation'), t('generationNote')], ['comfyui', t('connection'), comfyState.status === 'ready' ? t('connected') : t('offline')], ['mcp', t('mcp'), mcp.enabled ? t('enabled') : t('disabledStatus')], ['updates', '应用更新', appVersion ? `当前 v${appVersion}` : '版本信息']].map(([id, label, note]) => (
           <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)} role="tab" aria-selected={tab === id} title={note}><strong>{label}</strong><small>{note}</small></button>
         ))}
       </div>
       <div className="settings-content">
-        {tab === 'appearance' ? <AppearanceSettings /> : tab === 'models' ? <div className="models-settings">
-          <div className="strategy-control">
-             <div className="strategy-label"><strong>模型策略</strong><small>{llm.active.providerId ? `当前：${activeProvider?.name || llm.active.providerId}` : '尚未选择模型'}</small></div>
-            <div role="group" aria-label="模型策略">
-              {[{ id: 'auto', label: '自动' }, { id: 'local', label: '本地' }, { id: 'cloud', label: '云端' }].map(item => (
-                <button key={item.id} className={llm.active.strategy === item.id ? 'active' : ''} onClick={() => selectStrategy(item.id)} title={item.id === 'auto' ? '智能：使用当前选择的模型；所选模型不可用或未配置时才切换' : item.id === 'local' ? '固定使用本地模型' : '固定使用云端模型'}>{item.label}</button>
-              ))}
-            </div>
-          </div>
-          <label className="media-policy-toggle">
-            <input type="checkbox" checked={llm.allowMediaToCloud !== false} onChange={event => toggleMediaPolicy(event.target.checked)} />
-            <span><strong>允许图片直发云端</strong><small>开启后图生图等带参考图的消息可直接发送云端模型；关闭后带图消息一律视为未审查媒体，强制走本地模型</small></span>
-          </label>
-          <aside className="provider-list">
+         {tab === 'appearance' ? <AppearanceSettings /> : tab === 'models' ? <ModelManagement llm={llm} activeProvider={activeProvider} onStrategy={async patch => { const updated = await window.electronAPI.llmSelect(typeof patch === 'string' ? { strategy: patch } : patch); setLLM(updated); window.dispatchEvent(new Event('llm-config-changed')); }} onChatProvider={async providerId => { const updated = await window.electronAPI.llmSelect({ providerId }); setLLM(updated); window.dispatchEvent(new Event('llm-config-changed')); }} onChatModel={async modelId => { const updated = await window.electronAPI.llmSelect({ modelId }); setLLM(updated); window.dispatchEvent(new Event('llm-config-changed')); }} onImageProvider={async imageProviderId => { const updated = await window.electronAPI.llmSelect({ imageProviderId }); setLLM(updated); }} onImageModel={async imageModelId => { const updated = await window.electronAPI.llmSelect({ imageModelId }); setLLM(updated); }} onEditProvider={provider => { setEditing(provider); setTab('providers'); setTestState({ status: '', message: '' }); setSaveState({ status: '', message: '' }); }} /> : tab === 'providers' ? <div className="provider-management">
+            <div className="provider-management-heading"><div><h3>{t('providerCatalog')}</h3><p>{t('providerCatalogDescription')}</p></div><span className="catalog-count">{llm.providers.length} {t('providerCount')}</span></div>
+            <aside className="provider-list">
             {llm.providers.map(provider => <div key={provider.id} className={`provider-card${editing.id === provider.id ? ' active' : ''}`}>
-              <button onClick={() => { setEditing(provider); setTestState({ status: '', message: '' }); setSaveState({ status: '', message: '' }); }}><strong>{provider.name}</strong><span>{provider.models?.length || 0} 个模型{activeProvider?.id === provider.id ? ' · 当前' : ''}</span></button>
-              {llm.providers.length > 1 && <button className="provider-delete" onClick={() => deleteProvider(provider.id)} title="删除"><Icon name="trash" size={14} /></button>}
+               <button onClick={() => { setEditing(provider); setTestState({ status: '', message: '' }); setSaveState({ status: '', message: '' }); }}><strong>{provider.name}</strong><span>{provider.models?.length || 0} {t('modelCount')}{activeProvider?.id === provider.id ? ` · ${t('current')}` : ''}</span></button>
+               {llm.providers.length > 1 && <button className="provider-delete" onClick={() => deleteProvider(provider.id)} title={t('delete')}><Icon name="trash" size={14} /></button>}
             </div>)}
-            <button className="sidebar-command" onClick={() => { setEditing({ ...EMPTY_PROVIDER, models: [{ id: '', name: '' }] }); setTestState({ status: '', message: '' }); setSaveState({ status: '', message: '' }); }}><Icon name="plus" size={14} /> 新建提供商</button>
+              <button className="sidebar-command" onClick={() => { setEditing({ ...EMPTY_PROVIDER, models: [{ id: '', name: '', kind: 'chat' }] }); setTestState({ status: '', message: '' }); setSaveState({ status: '', message: '' }); }}><Icon name="plus" size={14} /> {t('newProvider')}</button>
           </aside>
           <ProviderForm value={editing} onChange={next => { setEditing(next); setSaveState({ status: '', message: '' }); }} onSave={saveProvider} onTest={testProvider} testState={testState} saveState={saveState} />
-        </div> : tab === 'generation' || tab === 'comfyui' ? null : <div className="skills-settings">
-          <section><h3>系统技能</h3>{Object.entries(skills.system).map(([id, enabled]) => <label className="skill-item" key={id}><span><strong>{id}</strong><small>内置技能</small></span><input type="checkbox" checked={enabled} onChange={event => toggleSkill(id, event.target.checked, false)} /></label>)}</section>
-          <section><h3>自定义技能</h3>{skills.custom.map(skill => <div className="skill-item" key={skill.id}><span><strong>{skill.name}</strong><small>{skill.description || skill.keywords?.join('、')}</small></span><input type="checkbox" checked={skill.enabled !== false} onChange={event => toggleSkill(skill.id, event.target.checked, true)} /><button className="btn btn-icon" onClick={async () => setSkills(await window.electronAPI.skillDeleteCustom(skill.id))} title="删除"><Icon name="trash" size={14} /></button></div>)}</section>
-          <section className="custom-skill-form"><h3>新增自定义技能</h3>
-            <div className="settings-grid"><div className="settings-field"><label>ID</label><input value={custom.id} onChange={event => setCustom({ ...custom, id: event.target.value })} /></div><div className="settings-field"><label>名称</label><input value={custom.name} onChange={event => setCustom({ ...custom, name: event.target.value })} /></div><div className="settings-field span-2"><label>描述</label><input value={custom.description} onChange={event => setCustom({ ...custom, description: event.target.value })} /></div><div className="settings-field"><label>关键词（逗号分隔）</label><input value={custom.keywords} onChange={event => setCustom({ ...custom, keywords: event.target.value })} /></div><div className="settings-field"><label>提示词模式</label><select value={custom.promptMode} onChange={event => setCustom({ ...custom, promptMode: event.target.value })}><option value="raw">保留原文</option><option value="cinematic">电影质感</option><option value="anime">动漫风格</option><option value="photorealistic">写实摄影</option><option value="concept">概念设计</option></select></div></div>
-            <button className="btn btn-primary" onClick={addCustom} disabled={!/^[a-z0-9_-]+$/.test(custom.id) || !custom.name || !custom.keywords.trim()}>添加技能</button>
+          </div> : tab === 'generation' || tab === 'comfyui' || tab === 'mcp' || tab === 'updates' ? null : <div className="skills-settings">
+           <section><h3>{t('systemSkills')}</h3>{Object.entries(skills.system).map(([id, enabled]) => <label className="skill-item" key={id}><span><strong>{id}</strong><small>{t('builtinSkill')}</small></span><input type="checkbox" checked={enabled} onChange={event => toggleSkill(id, event.target.checked, false)} /></label>)}</section>
+            <section><h3>{t('customSkills')}</h3>{skills.custom.map(skill => <div className="skill-item" key={skill.id}><span><strong>{skill.name}</strong><small>{skill.description || skill.keywords?.join(', ')}</small></span><input type="checkbox" checked={skill.enabled !== false} onChange={event => toggleSkill(skill.id, event.target.checked, true)} /><button className="btn btn-icon" onClick={async () => setSkills(await window.electronAPI.skillDeleteCustom(skill.id))} title={t('delete')}><Icon name="trash" size={14} /></button></div>)}</section>
+            <section><div className="settings-section-heading"><div><h3>{t('externalSkill')}</h3><p>{t('externalSkillDescription')}</p></div><button className="btn" onClick={async () => setSkills(await window.electronAPI.skillImportExternal())}>{t('importJson')}</button></div>{(skills.external || []).map(skill => <div className="skill-item" key={skill.id}><span><strong>{skill.name} <small>v{skill.version || '1.0'}</small></strong><small>{skill.description} · {skill.source}</small></span><input type="checkbox" checked={skill.enabled !== false} onChange={event => toggleSkill(skill.id, event.target.checked, true, true)} /><button className="btn btn-icon" onClick={async () => setSkills(await window.electronAPI.skillDeleteExternal(skill.id))} title={t('delete')}><Icon name="trash" size={14} /></button></div>)}</section>
+           <section className="custom-skill-form"><h3>{t('addCustomSkill')}</h3>
+             <div className="settings-grid"><div className="settings-field"><label>{t('customId')}</label><input value={custom.id} onChange={event => setCustom({ ...custom, id: event.target.value })} /></div><div className="settings-field"><label>{t('customName')}</label><input value={custom.name} onChange={event => setCustom({ ...custom, name: event.target.value })} /></div><div className="settings-field span-2"><label>{t('customDescription')}</label><input value={custom.description} onChange={event => setCustom({ ...custom, description: event.target.value })} /></div><div className="settings-field"><label>{t('customKeywords')}</label><input value={custom.keywords} onChange={event => setCustom({ ...custom, keywords: event.target.value })} /></div><div className="settings-field"><label>{t('promptMode')}</label><select value={custom.promptMode} onChange={event => setCustom({ ...custom, promptMode: event.target.value })}><option value="raw">{t('rawPromptMode')}</option><option value="cinematic">{t('cinematicPromptMode')}</option><option value="anime">{t('animePromptMode')}</option><option value="photorealistic">{t('photoPromptMode')}</option><option value="concept">{t('conceptPromptMode')}</option></select></div></div>
+             <button className="btn btn-primary" onClick={addCustom} disabled={!/^[a-z0-9_-]+$/.test(custom.id) || !custom.name || !custom.keywords.trim()}>{t('addSkill')}</button>
           </section>
         </div>}
         {tab === 'generation' && <div className="generation-settings">
           <ResearchSettings />
           <section>
-             <div className="settings-section-heading"><div><h3>提示词长度预算</h3><p>限制发送给模型的提示词规模，避免超出上下文窗口。</p></div><Icon name="sliders" size={16} /></div>
-            <p className="settings-muted">仅在提示词优化模式（非保留原文）下生效。超出预算时从尾部压缩，并丢弃整条标签词/整句叙述。留空表示不限制。</p>
+              <div className="settings-section-heading"><div><h3>{t('promptBudget')}</h3><p>{t('promptBudgetDescription')}</p></div><Icon name="sliders" size={16} /></div>
+             <p className="settings-muted">{t('saveInOriginalModeHint')}</p>
             <div className="settings-grid">
               <div className="settings-field">
-                <label>正向提示词预算（tokens）</label>
-                <input type="number" min="1" value={budgets.positiveTokens} onChange={event => setBudgets(current => ({ ...current, positiveTokens: event.target.value }))} placeholder="留空不限制" />
+                 <label>{t('positiveBudget')}</label>
+                 <input type="number" min="1" value={budgets.positiveTokens} onChange={event => setBudgets(current => ({ ...current, positiveTokens: event.target.value }))} placeholder={t('noLimit')} />
               </div>
               <div className="settings-field">
-                <label>负向提示词预算（tokens）</label>
-                <input type="number" min="1" value={budgets.negativeTokens} onChange={event => setBudgets(current => ({ ...current, negativeTokens: event.target.value }))} placeholder="留空不限制" />
+                 <label>{t('negativeBudget')}</label>
+                 <input type="number" min="1" value={budgets.negativeTokens} onChange={event => setBudgets(current => ({ ...current, negativeTokens: event.target.value }))} placeholder={t('noLimit')} />
               </div>
             </div>
             <div className="settings-actions">
-              <button className="btn btn-primary" onClick={saveBudgets} disabled={budgetState.status === 'saving'}>{budgetState.status === 'saving' ? '保存中...' : '保存预算'}</button>
+               <button className="btn btn-primary" onClick={saveBudgets} disabled={budgetState.status === 'saving'}>{budgetState.status === 'saving' ? t('saving') : t('saveBudget')}</button>
               {budgetState.message && <span className={budgetState.status}>{budgetState.message}</span>}
             </div>
           </section>
         </div>}
         {tab === 'comfyui' && <div className="comfyui-settings">
           <section>
-             <div className="settings-section-heading"><div><h3>ComfyUI 连接</h3><p>选择本机运行时，或连接到已有的 ComfyUI 服务。</p></div><Icon name="workflow" size={16} /></div>
-            <p className="settings-muted">选择本机 ComfyUI portable 根目录（含 python_embeded 和 ComfyUI 文件夹）由本程序代为启动，或连接已在运行的实例。未指定目录时自动向上级目录探测。</p>
+             <div className="settings-section-heading"><div><h3>{t('comfyConnectionTitle')}</h3><p>{t('comfyConnectionDescription')}</p></div><Icon name="workflow" size={16} /></div>
+             <p className="settings-muted">{t('comfyRootHint')}</p>
             <div className="settings-field">
-              <label>当前目录</label>
-              <code className="comfyui-settings-root">{comfyState.portableRoot || '未指定（自动探测）'}</code>
+               <label>{t('currentDirectory')}</label>
+               <code className="comfyui-settings-root">{comfyState.portableRoot || t('autoDetected')}</code>
             </div>
             <div className="settings-actions">
-              <button className="btn" onClick={selectComfyRoot} disabled={comfyBusy}>选择 ComfyUI 目录</button>
-              <button className="btn" onClick={resetComfy} disabled={comfyBusy}>恢复自动探测</button>
+               <button className="btn" onClick={selectComfyRoot} disabled={comfyBusy}>{t('chooseComfyDirectory')}</button>
+               <button className="btn" onClick={resetComfy} disabled={comfyBusy}>{t('resetAutoDetect')}</button>
             </div>
           </section>
           <section>
-             <div className="settings-section-heading"><div><h3>连接地址</h3><p>适用于本机其他端口或局域网中的 ComfyUI 实例。</p></div><Icon name="workflow" size={16} /></div>
-            <p className="settings-muted">ComfyUI 已在其他位置运行（本机其他端口或局域网其他机器）时，填写其地址。</p>
+             <div className="settings-section-heading"><div><h3>{t('connectionAddress')}</h3><p>{t('connectionAddressDescription')}</p></div><Icon name="workflow" size={16} /></div>
+             <p className="settings-muted">{t('comfyRunningHint')}</p>
             <div className="settings-grid">
               <div className="settings-field span-2">
-                <label>ComfyUI 地址</label>
+                 <label>{t('comfyAddressLabel')}</label>
                 <input value={comfyBaseUrl} onChange={event => setComfyBaseUrl(event.target.value)} placeholder="http://127.0.0.1:8188" disabled={comfyBusy} />
               </div>
             </div>
             <div className="settings-actions">
-              <button className="btn btn-primary" onClick={saveComfyBaseUrl} disabled={comfyBusy}>保存并连接</button>
+               <button className="btn btn-primary" onClick={saveComfyBaseUrl} disabled={comfyBusy}>{t('saveAndConnect')}</button>
               {comfyStateMsg.text && <span className={`provider-status ${comfyStateMsg.status}`}>{comfyStateMsg.text}</span>}
             </div>
           </section>
         </div>}
+         {tab === 'updates' && <div className="comfyui-settings">
+           <section>
+             <div className="settings-section-heading"><div><h3>应用更新</h3><p>检查并安装便携版应用更新，不会修改 ComfyUI、模型或用户数据。</p></div><Icon name="refresh" size={16} /></div>
+             <div className="update-summary"><span>当前版本</span><code>v{appVersion || '未知'}</code>{update.version && <><span>可用版本</span><code>v{update.version}</code></>}</div>
+             {update.manifest?.releaseNotesUrl && <p className="settings-muted"><a href={update.manifest.releaseNotesUrl} target="_blank" rel="noreferrer">查看更新说明</a></p>}
+             {update.status === 'downloading' && <progress className="update-progress" max="100" value={update.progress} />}
+             {update.error && <p className="provider-status error">{update.error}</p>}
+             {update.status === 'latest' && <p className="provider-status ok">当前已是最新版本。</p>}
+             {update.status === 'full-required' && <p className="provider-status warn">此版本包含运行时升级，请从 Release 页面下载完整便携包。</p>}
+             <div className="settings-actions">
+               <button className="btn" onClick={checkUpdate} disabled={['checking', 'downloading', 'installing'].includes(update.status)}>{update.status === 'checking' ? '检查中...' : '检查更新'}</button>
+               {update.status === 'available' && <button className="btn btn-primary" onClick={downloadUpdate}>下载更新</button>}
+               {update.status === 'ready' && <button className="btn btn-primary" onClick={installUpdate}>重启并安装</button>}
+             </div>
+           </section>
+         </div>}
+         {tab === 'mcp' && <div className="comfyui-settings">
+          <section>
+             <div className="settings-section-heading"><div><h3>{t('mcpServiceTitle')}</h3><p>{t('mcpDescription')}</p></div><Icon name="settings" size={16} /></div>
+             <p className="settings-muted">{t('mcpSafetyHint')}</p>
+             <label className="settings-toggle"><span><strong>{t('enableEmbeddedMcp')}</strong><small>{t('mcpDefaultHost')}</small></span><input type="checkbox" checked={mcp.enabled} onChange={event => setMcp(current => ({ ...current, enabled: event.target.checked }))} /></label>
+             <div className="settings-grid">
+               <label className="settings-field"><span>{t('listenAddress')}</span><input value={mcp.host} onChange={event => setMcp(current => ({ ...current, host: event.target.value }))} placeholder="127.0.0.1" /></label>
+               <label className="settings-field"><span>{t('port')}</span><input type="number" min="1" max="65535" value={mcp.port} onChange={event => setMcp(current => ({ ...current, port: event.target.value }))} /></label>
+               <label className="settings-field span-2"><span>{t('accessToken')}</span><input type="password" value={mcp.token} onChange={event => setMcp(current => ({ ...current, token: event.target.value }))} placeholder={mcp.hasToken ? t('tokenSetKeep') : t('lanTokenRequired')} /></label>
+            </div>
+             <div className="settings-actions"><button className="btn btn-primary" onClick={async () => { try { const payload = mcp.hasToken && !mcp.token ? { ...mcp, token: undefined } : mcp; const saved = await window.electronAPI.mcpSaveSettings(payload); setMcp(current => ({ ...current, ...saved, token: '' })); setMcpStatus(t('mcpSaved')); } catch (error) { setMcpStatus(error.message || t('saveFailed')); } }}>{t('saveMcpSettings')}</button>{mcpStatus && <span className="settings-save-state">{mcpStatus}</span>}</div>
+          </section>
+        </div>}
+      </div>
       </div>
     </section>
   </div>;

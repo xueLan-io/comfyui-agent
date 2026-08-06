@@ -11,9 +11,9 @@ const files = {
 };
 
 test('chat actions expose explicit Answer, AI Generate, and Direct Generate choices', () => {
-  assert.match(files.panel, /option value="answer">回答/);
-  assert.match(files.panel, /option value="generate">AI 生成/);
-  assert.match(files.panel, /option value="direct">直接生成/);
+  assert.match(files.panel, /option value="answer">\{t\('answer'\)\}/);
+  assert.match(files.panel, /option value="generate">\{t\('aiGenerate'\)\}/);
+  assert.match(files.panel, /option value="direct">\{t\('directGenerate'\)\}/);
   assert.match(files.library, /这里写的内容会原样用于生成/);
   assert.match(files.library, /直接生成/);
   assert.match(files.panel, /output-source/);
@@ -49,6 +49,14 @@ test('preload keeps chat, AI generation, and direct generation IPC separate', ()
   assert.match(files.preload, /agentGenerate: .*ipcRenderer\.invoke\('agent:generate'/);
   assert.match(files.preload, /directPrepare: .*ipcRenderer\.invoke\('direct:prepare'/);
   assert.match(files.preload, /directRunPrepared: .*ipcRenderer\.invoke\('direct:run-prepared'/);
+  assert.match(files.preload, /agentMonitorTask: .*ipcRenderer\.invoke\('agent:monitor-task'/);
+});
+
+test('task recovery monitors the remote prompt before archiving completed output', () => {
+  assert.match(files.main, /ipcMain\.handle\('agent:monitor-task'/);
+  assert.match(files.main, /ComfyUITool\.monitor\(promptId\)/);
+  assert.match(files.main, /ComfyUITool\.recoverResult\(promptId, monitored\.history\)/);
+  assert.match(files.context, /monitorRecoveryTask/);
 });
 
 test('chat IPC forwards attached media and intent to the Agent', () => {

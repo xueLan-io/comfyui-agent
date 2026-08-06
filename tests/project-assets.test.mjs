@@ -36,6 +36,35 @@ test('scans legacy image and video folders with normalized metadata', async () =
   }
 });
 
+test('preserves saved generation recipe metadata when scanning assets', async () => {
+  const dir = await mkdtemp(join(process.env.TEMP || process.env.TMP || '.', 'comfy-assets-recipe-'));
+  try {
+    await mkdir(join(dir, 'images', 'task-recipe'), { recursive: true });
+    await writeFile(join(dir, 'images', 'task-recipe', 'recipe.png'), 'image');
+    const assets = await scanProjectAssets({
+      project: {
+        id: 'project-recipe',
+        dir,
+        assets: [{
+          filename: 'recipe.png',
+          subfolder: 'images/task-recipe',
+          taskId: 'task-recipe',
+          positive: 'a saved prompt',
+          negative: 'blurry',
+          workflowName: 'workflow.json',
+          parameters: { seed: 12 },
+        }],
+      },
+    });
+    assert.equal(assets[0].positive, 'a saved prompt');
+    assert.equal(assets[0].negative, 'blurry');
+    assert.equal(assets[0].workflowName, 'workflow.json');
+    assert.deepEqual(assets[0].parameters, { seed: 12 });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('removes empty asset folders without removing the asset root', async () => {
   const dir = await mkdtemp(join(process.env.TEMP || process.env.TMP || '.', 'comfy-assets-delete-'));
   try {

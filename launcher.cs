@@ -9,7 +9,7 @@ class Program
         string exeDir = AppDomain.CurrentDomain.BaseDirectory;
         string logPath = Path.Combine(exeDir, "launcher.log");
         string runtimeDir = exeDir;
-        string electronPath = Path.Combine(runtimeDir, "electron.exe");
+        string electronPath = Path.Combine(runtimeDir, "ComfyMuse.exe");
         string appPath = Path.Combine(runtimeDir, "resources", "app");
 
         try
@@ -22,7 +22,7 @@ class Program
             if (!File.Exists(electronPath))
             {
                 runtimeDir = Path.Combine(exeDir, "dist-portable");
-                electronPath = Path.Combine(runtimeDir, "electron.exe");
+                electronPath = Path.Combine(runtimeDir, "ComfyMuse.exe");
                 appPath = Path.Combine(runtimeDir, "resources", "app");
             }
 

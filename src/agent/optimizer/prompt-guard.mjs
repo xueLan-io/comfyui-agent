@@ -3,11 +3,15 @@ export const DEFAULT_BUDGETS = { positiveTokens: 250, negativeTokens: 100 };
 const CJK_RANGE = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/;
 const CJK_RANGE_G = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g;
 
-export function estimateTokens(text = '') {
+function estimateTokenUnits(text = '') {
   const value = String(text);
   const cjk = (value.match(CJK_RANGE_G) || []).length;
   const words = value.replace(CJK_RANGE_G, ' ').trim().split(/\s+/).filter(Boolean).length;
-  return cjk + Math.ceil(words * 1.3);
+  return cjk + words * 1.3;
+}
+
+export function estimateTokens(text = '') {
+  return Math.ceil(estimateTokenUnits(text));
 }
 
 function splitTerms(text) {
@@ -59,12 +63,16 @@ export function fitToBudget(text, budget) {
   if (estimateTokens(text) <= budget) return { text: String(text), truncated: false, dropped: [] };
   const { segments, separator } = splitSegments(text);
   const dropped = [];
-  let remaining = segments;
-  while (remaining.length > 1 && estimateTokens(remaining.join(separator)) > budget) {
-    dropped.unshift(remaining.pop());
+  const segmentTokens = segments.map(segment => estimateTokenUnits(segment));
+  let remainingCount = segments.length;
+  let remainingTokens = segmentTokens.reduce((total, tokens) => total + tokens, 0);
+  while (remainingCount > 1 && Math.ceil(remainingTokens) > budget) {
+    remainingCount -= 1;
+    remainingTokens -= segmentTokens[remainingCount];
+    dropped.unshift(segments[remainingCount]);
   }
-  let joined = remaining.join(separator);
-  if (estimateTokens(joined) > budget) {
+  let joined = segments.slice(0, remainingCount).join(separator);
+  if (Math.ceil(remainingTokens) > budget) {
     joined = trimByTokens(joined, budget);
     dropped.unshift('(truncated tail)');
   }
@@ -77,19 +85,34 @@ const TERM_BLOCKLIST = {
 
 const CJK_BOUNDARY = '\\u4e00-\\u9fff\\u3040-\\u30ff\\uac00-\\ud7af';
 
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const TERM_MATCHERS = new Map();
+
+function getTermMatcher(term) {
+  if (TERM_MATCHERS.has(term)) return TERM_MATCHERS.get(term);
+
+  let matcher = null;
+  const escaped = escapeRegex(term);
+  if (/^[a-z][a-z ]*$/i.test(term)) {
+    matcher = new RegExp(`\\b${escaped}\\b`, 'i');
+  } else if ([...term].length === 1) {
+    matcher = new RegExp(`(?<![${CJK_BOUNDARY}])${escaped}`);
+  }
+  TERM_MATCHERS.set(term, matcher);
+  return matcher;
+}
+
 export function hasTerm(text, term) {
   const value = String(text || '');
   if (!term) return false;
-  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  if (/^[a-z][a-z ]*$/i.test(term)) {
-    return new RegExp(`\\b${escaped}\\b`, 'i').test(value);
-  }
-  if ([...term].length === 1) {
-    return new RegExp(`(?<![${CJK_BOUNDARY}])${escaped}`).test(value);
-  }
   for (const compound of TERM_BLOCKLIST[term] || []) {
     if (value.includes(compound)) return false;
   }
+  const matcher = getTermMatcher(term);
+  if (matcher) return matcher.test(value);
   return value.includes(term);
 }
 
@@ -100,17 +123,17 @@ const CONFLICT_PAIRS = [
   ['欢乐', '悲伤'], ['热闹', '空旷'], ['干净', '肮脏'], ['甜美', '阴沉'],
 ];
 
-export function checkConflicts(compiled) {
+export function checkConflicts(compiled, context = null) {
   const issues = [];
   const positive = String(compiled?.positive || '');
   const negative = String(compiled?.negative || '');
   if (!positive) return issues;
 
   for (const [a, b] of CONFLICT_PAIRS) {
-    if (hasTerm(positive, a) && hasTerm(positive, b)) {
+    if (hasContextTerm(context, positive, a) && hasContextTerm(context, positive, b)) {
       issues.push({ type: 'conflict', severity: 'medium', detail: `正向提示词同时包含冲突词："${a}"与"${b}"` });
     }
-    if (negative && hasTerm(positive, a) && hasTerm(negative, b)) {
+    if (negative && hasContextTerm(context, positive, a) && hasContextTerm(context, negative, b)) {
       issues.push({ type: 'conflict', severity: 'medium', detail: `正向提示词包含"${a}"，负向提示词却包含"${b}"` });
     }
   }
@@ -157,10 +180,10 @@ const COLORS = [
   { term: 'silver', char: '', aliases: ['银'] },
 ];
 
-function hasColor(positive, color) {
-  if (hasTerm(positive, color.term)) return true;
-  if (color.char && hasTerm(positive, color.char)) return true;
-  return (color.aliases || []).some(alias => hasTerm(positive, alias));
+function hasColor(positive, color, context = null) {
+  if (hasContextTerm(context, positive, color.term)) return true;
+  if (color.char && hasContextTerm(context, positive, color.char)) return true;
+  return (color.aliases || []).some(alias => hasContextTerm(context, positive, alias));
 }
 
 const COUNT_PATTERNS = [
@@ -175,7 +198,7 @@ const COUNT_PATTERNS = [
   { user: /three\s+(?:people|persons|men|women|girls|boys)/i, positive: /three\s+(?:people|persons|men|women|girls|boys)|(?:三|3)(?:个|位|名|人)/i },
 ];
 
-export function checkConstraintPreservation(userPrompt, compiled) {
+export function checkConstraintPreservation(userPrompt, compiled, context = null) {
   const issues = [];
   const user = String(userPrompt || '');
   const positive = String(compiled?.positive || '');
@@ -183,7 +206,7 @@ export function checkConstraintPreservation(userPrompt, compiled) {
 
   for (const color of COLORS) {
     if (!user.toLowerCase().includes(color.term)) continue;
-    if (!hasColor(positive, color)) {
+    if (!hasColor(positive, color, context)) {
       issues.push({ type: 'constraint', severity: 'medium', detail: `用户指定的颜色未保留：${color.term}` });
     }
   }
@@ -211,13 +234,40 @@ const STRUCTURE_TERMS = {
   style: ['anime', 'manga', 'illustration', 'painting', 'photograph', 'photographic', 'cinematic', 'render', 'oil painting', 'watercolor', '画风', '风格', '动漫', '插画', '油画', '水彩', '摄影', '渲染'],
 };
 
-export function checkPromptStructure(compiled) {
+export function createGuardContext(compiled = {}) {
+  const positive = String(compiled?.positive || '');
+  const negative = String(compiled?.negative || '');
+  const hits = new Map([[positive, new Set()], [negative, new Set()]]);
+  const tested = new Map([[positive, new Set()], [negative, new Set()]]);
+  const has = (value, term) => {
+    const valueHits = hits.get(value) || new Set();
+    const valueTested = tested.get(value) || new Set();
+    if (!valueTested.has(term)) {
+      if (hasTerm(value, term)) valueHits.add(term);
+      valueTested.add(term);
+      hits.set(value, valueHits);
+      tested.set(value, valueTested);
+    }
+    return valueHits.has(term);
+  };
+  return {
+    positive,
+    negative,
+    has,
+  };
+}
+
+function hasContextTerm(context, value, term) {
+  return context ? context.has(value, term) : hasTerm(value, term);
+}
+
+export function checkPromptStructure(compiled, context = null) {
   const issues = [];
   const positive = String(compiled?.positive || '');
   if (!positive) return issues;
   const value = positive.toLowerCase();
   for (const [dimension, terms] of Object.entries(STRUCTURE_TERMS)) {
-    if (!terms.some(term => hasTerm(value, term))) {
+    if (!terms.some(term => hasContextTerm(context, positive, term))) {
       issues.push({
         type: 'structure',
         severity: 'low',
@@ -239,8 +289,9 @@ export function applyGuard(compiled, options = {}) {
   const dedupedNegative = dedupeTerms(compiled.negative);
   if (dedupedNegative.text !== compiled.negative) result.negative = dedupedNegative.text;
 
-  result.issues.push(...checkConflicts(result));
-  result.issues.push(...checkConstraintPreservation(userPrompt, result));
+  const context = createGuardContext(result);
+  result.issues.push(...checkConflicts(result, context));
+  result.issues.push(...checkConstraintPreservation(userPrompt, result, context));
 
   if (budgets) {
     const positiveBudget = budgets.positiveTokens ?? DEFAULT_BUDGETS.positiveTokens;
@@ -262,7 +313,8 @@ export function applyGuard(compiled, options = {}) {
 }
 
 export function checkEditedPrompt(compiled, options = {}) {
-  const issues = [...checkConflicts(compiled)];
+  const context = createGuardContext(compiled);
+  const issues = [...checkConflicts(compiled, context)];
   const budgets = options.budgets;
   if (!budgets) return issues;
   const positiveTokens = budgets.positiveTokens ?? DEFAULT_BUDGETS.positiveTokens;

@@ -9,9 +9,11 @@ const portable = join(root, 'dist-portable');
 const app = join(portable, 'resources', 'app');
 const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 const staging = join(root, '.release-update-staging');
-const output = join(root, `ComfyUI-Agent-update-v${packageJson.version}.zip`);
+const output = join(root, `ComfyMuse-update-v${packageJson.version}.zip`);
 
 if (!existsSync(app)) throw new Error(`Missing built app directory: ${app}`);
+const appPackage = JSON.parse(readFileSync(join(app, 'package.json'), 'utf8'));
+if (appPackage.version !== packageJson.version) throw new Error('Packaged app version does not match package.json');
 
 rmSync(staging, { recursive: true, force: true });
 mkdirSync(join(staging, 'resources'), { recursive: true });

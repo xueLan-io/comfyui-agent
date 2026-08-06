@@ -73,7 +73,12 @@ export class OllamaProvider {
 
       if (!streaming) {
         const data = await res.json();
-        return data.message;
+        const usage = {
+          inputTokens: Number(data.prompt_eval_count) || 0,
+          outputTokens: Number(data.eval_count) || 0,
+          totalTokens: (Number(data.prompt_eval_count) || 0) + (Number(data.eval_count) || 0),
+        };
+        return { ...data.message, ...(usage.inputTokens || usage.outputTokens ? { usage } : {}) };
       }
 
       if (!res.body) throw new Error('Ollama returned an empty streaming response');
@@ -81,11 +86,21 @@ export class OllamaProvider {
       const decoder = new TextDecoder();
       let buffer = '';
       let content = '';
+      let usage = null;
+      let sawDone = false;
       const readLine = line => {
         const value = line.trim();
         if (!value) return;
         let data;
         try { data = JSON.parse(value); } catch { return; }
+        if (data.done === true) sawDone = true;
+        if (data.prompt_eval_count != null || data.eval_count != null) {
+          usage = {
+            inputTokens: Number(data.prompt_eval_count) || 0,
+            outputTokens: Number(data.eval_count) || 0,
+            totalTokens: (Number(data.prompt_eval_count) || 0) + (Number(data.eval_count) || 0),
+          };
+        }
         const delta = data.message?.content || '';
         if (delta) {
           content += delta;
@@ -102,7 +117,8 @@ export class OllamaProvider {
         if (done) break;
       }
       readLine(buffer);
-      return { role: 'assistant', content };
+      if (!sawDone) throw new Error('本地模型流式响应被中断');
+      return { role: 'assistant', content, ...(usage ? { usage } : {}) };
     } finally {
       clearTimeout(timeout);
       if (this._controller === controller) this._controller = null;

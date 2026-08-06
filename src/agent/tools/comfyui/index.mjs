@@ -8,6 +8,10 @@ import { artifactFromComfyUIImage, createArtifact } from '../../schemas/artifact
 import { ComfyUIClient, queueContains } from './client.mjs';
 import { workflowToPrompt, findNodeGroup, checkModelRequirements, getInputDefinition, describeInput } from './prompt-builder.mjs';
 import { assertSandboxMedia, resolveSandboxFile } from '../../security/sandbox.mjs';
+import { normalizeGenerationResult } from '../../../runtime/generation-contract.mjs';
+import { buildPreflightReport, preflightError } from '../../../runtime/preflight-contract.mjs';
+import { inspectRuntimeCapabilities } from '../../../runtime/runtime-capabilities.mjs';
+import { estimateGenerationResources } from '../../../runtime/resource-estimator.mjs';
 
 let client = new ComfyUIClient();
 
@@ -83,7 +87,9 @@ export const ComfyUITool = {
       workflowDir: { type: 'string', description: 'Directory containing workflow files' },
       size: { type: 'string', description: 'Resolution hint (e.g. 1024x1024)' },
       guidance: { type: 'number', description: 'Guidance scale (Flux)' },
-      frames: { type: 'number', description: 'Frame count (AnimateDiff)' },
+      frames: { type: 'number', description: 'Frame count (video workflows)' },
+      fps: { type: 'number', description: 'Frames per second (video workflows)' },
+      guidance: { type: 'number', description: 'Guidance scale for compatible video workflows' },
       settings: { type: 'object', description: 'Common runtime controls such as seed, steps, cfg, size, and batch' },
       nodeOverrides: { type: 'object', description: 'Exact node input overrides keyed by node id' },
       outputNodeIds: { type: 'array', items: { type: 'string' }, description: 'Output node ids to execute; omitted selects one preferred direct image output' },
@@ -103,7 +109,7 @@ export const ComfyUITool = {
   },
 
   async execute(input) {
-    const { workflowName, workflowDir } = input;
+    const { workflowName, workflowDir, signal } = input;
     const filePath = resolveWorkflowPath(workflowDir, workflowName);
 
     assertSandboxMedia(input);
@@ -115,15 +121,34 @@ export const ComfyUITool = {
     const resolved = await WorkflowAdapter.resolve(workflowName, workflowDir);
     const adaptedWf = await WorkflowAdapter.prepareInput(workflowName, workflowDir, input);
 
+    const adaptationOnly = resolved.adapter?.adaptationOnly === true;
+
     const objectInfo = await client.objectInfo();
     const prompt = workflowToPrompt(adaptedWf, objectInfo);
     const modelRequirements = checkModelRequirements(resolved.modelRequirements || [], objectInfo);
-    const missingModels = modelRequirements.filter(item => item.available === false);
-    if (missingModels.length > 0) {
-      const error = new Error(`Workflow model files are missing: ${missingModels.map(item => item.value).join(', ')}`);
-      error.failureType = 'model_missing';
-      error.retryable = false;
-      throw error;
+    const runtimeCheck = await inspectRuntimeCapabilities({
+      client,
+      requireConnection: true,
+      requireFfmpeg: resolved.capabilities?.modes?.some(mode => /video/.test(mode)),
+    });
+    const resourceEstimate = estimateGenerationResources({
+      modelType: resolved.modelType,
+      capabilities: resolved.capabilities,
+      resolution: resolved.workflowProfile?.resolution || {},
+      settings: input.settings,
+      frames: input.frames,
+      runtime: runtimeCheck.runtime,
+      strict: true,
+    });
+    const preflight = buildPreflightReport({ modelRequirements, capabilities: resolved.capabilities, modelType: resolved.modelType, adapterAvailable: resolved.adapter !== null, adaptationOnly, adapterCapabilities: resolved.info, runtime: runtimeCheck.runtime, resourceEstimate });
+    preflight.issues.push(...resourceEstimate.issues);
+    preflight.issues.push(...runtimeCheck.issues);
+    preflight.issueCount = preflight.issues.length;
+    preflight.errorCount = preflight.issues.filter(issue => issue.severity === 'error').length;
+    preflight.valid = preflight.errorCount === 0;
+    if (!preflight.valid) {
+      const issue = preflight.issues.find(item => item.severity === 'error');
+      throw preflightError(preflight, issue?.message, issue?.code === 'model_missing' ? 'model_missing' : issue?.code || 'preflight_failed');
     }
     const knownOutputIds = Object.entries(prompt)
       .filter(([, node]) => objectInfo[node.class_type]?.output_node === true)
@@ -203,7 +228,12 @@ export const ComfyUITool = {
       }
     }
     const clientId = input.clientId || randomUUID();
-    const progressSocket = await client.openProgressSocket(clientId, prompt, input.onProgress);
+    let progressSocket = null;
+    for (let attempt = 0; attempt < 3 && !progressSocket; attempt++) {
+      if (input.signal?.aborted) throw new Error('Generation cancelled');
+      progressSocket = await client.openProgressSocket(clientId, prompt, input.onProgress, input.signal);
+      if (!progressSocket && attempt < 2) await new Promise(resolve => setTimeout(resolve, 500));
+    }
     let promptId;
     let rawImages;
     let rawVideos;
@@ -211,22 +241,24 @@ export const ComfyUITool = {
     try {
       input.onProgress?.({ stage: 'submit_started', message: '正在提交工作流' });
       const result = typeof client.submit === 'function'
-        ? await client.submit(prompt, clientId)
-        : { promptId: (await client.queuePrompt(prompt, clientId)).prompt_id };
+        ? await client.submit(prompt, clientId, signal ? { signal } : undefined)
+        : { promptId: (await client.queuePrompt(prompt, clientId, signal)).prompt_id };
 
       promptId = result.promptId;
+      progressSocket?.setPromptId?.(promptId);
       input.onProgress?.({ stage: 'queued', promptId, message: '工作流已进入队列', percent: 0 });
       const history = typeof client.observe === 'function'
         ? await client.observe(promptId, 1000, input.signal)
         : await client.waitForCompletion(promptId, 1000, input.signal);
       const imageNodeIds = this._imageNodeIds(history);
-      if (selectedOutputIds.length > 0 && !selectedOutputIds.some(id => imageNodeIds.has(String(id)))) {
-        const error = new Error('Selected output node did not produce an image');
+      const mediaItems = this._extractMedia(history, selectedOutputIds);
+      const videoNodeIds = new Set(mediaItems.filter(isVideoRef).map(item => String(item.nodeId || '')));
+      if (selectedOutputIds.length > 0 && !selectedOutputIds.some(id => imageNodeIds.has(String(id)) || videoNodeIds.has(String(id)))) {
+        const error = new Error('Selected output node did not produce media');
         error.failureType = 'output_mismatch';
         error.replan = true;
         throw error;
       }
-      const mediaItems = this._extractMedia(history, selectedOutputIds);
       rawImages = mediaItems.filter(item => !isVideoRef(item));
       rawVideos = mediaItems.filter(isVideoRef);
       const imageChecks = typeof client.inspectImage === 'function'
@@ -258,6 +290,7 @@ export const ComfyUITool = {
         promptOverrides: promptOverrides.length,
         removedOutputs,
         status: 'completed',
+        preflight,
       };
       const artifactSource = { taskId: '', tool: 'comfyui', workflowName, modelType: resolved?.modelType || 'generic' };
       executionResult.artifacts = rawImages.map(img => artifactFromComfyUIImage(img, artifactSource, { promptId }));
@@ -266,7 +299,7 @@ export const ComfyUITool = {
         operation: 'txt2img',
         promptId,
       });
-      return executionResult;
+      return normalizeGenerationResult(executionResult);
     } finally {
       progressSocket?.close();
     }
@@ -341,6 +374,30 @@ export const ComfyUITool = {
       });
     }
 
+      const runtimeCheck = await inspectRuntimeCapabilities({
+      client,
+      requireConnection: false,
+      requireFfmpeg: resolved.capabilities?.modes?.some(mode => /video/.test(mode)),
+      });
+      const resourceEstimate = estimateGenerationResources({
+        modelType: resolved.modelType,
+        capabilities: resolved.capabilities,
+        resolution: { ...resolved.workflowProfile?.resolution, ...extractCommonSettings(prompt) },
+        settings: {},
+        runtime: runtimeCheck.runtime,
+      });
+      const preflight = buildPreflightReport({
+      issues: runtimeCheck.issues,
+      modelRequirements,
+      capabilities: resolved.capabilities,
+      modelType: resolved.modelType,
+      adapterAvailable: resolved.adapter !== null,
+      adaptationOnly: resolved.adapter?.adaptationOnly === true,
+      adapterCapabilities: resolved.info,
+        runtime: runtimeCheck.runtime,
+        resourceEstimate,
+      });
+      preflight.issues.push(...resourceEstimate.issues);
     return {
       workflowName,
       modelType: resolved.modelType,
@@ -363,6 +420,7 @@ export const ComfyUITool = {
       commonSettings: extractCommonSettings(prompt),
       inputMedia: extractInputMedia(prompt, objectInfo),
       editableNodes,
+      preflight,
     };
   },
 
@@ -424,8 +482,8 @@ export const ComfyUITool = {
     const pending = queueContains(queue.queue_pending, promptId);
 
     if (history[promptId]) return { status: 'completed', history: history[promptId] };
-    if (running) return { status: 'running' };
-    if (pending) return { status: 'queued' };
+    if (running) return { status: 'running', progress: { stage: 'executing', message: '工作流正在执行', indeterminate: true } };
+    if (pending) return { status: 'queued', progress: { stage: 'queued', message: '工作流正在排队', indeterminate: true } };
     return { status: 'unknown' };
   },
 
@@ -434,14 +492,14 @@ export const ComfyUITool = {
     if (!entry) throw new Error(`ComfyUI history is unavailable for prompt ${promptId}`);
     const imageNodeIds = this._imageNodeIds(entry);
     const mediaItems = this._extractMedia(entry);
-    return {
+    return normalizeGenerationResult({
       promptId,
       images: mediaItems.filter(item => !isVideoRef(item)),
       videos: mediaItems.filter(isVideoRef),
       imageNodeIds: [...imageNodeIds],
       executionStatus: entry.status?.status_str || (entry.status?.completed ? 'success' : 'unknown'),
       status: 'completed',
-    };
+    });
   },
 
   async recentImages(limit = 1) {
@@ -473,7 +531,7 @@ export const ComfyUITool = {
         const items = nodeOutputs[key];
         if (Array.isArray(items)) {
           for (const item of items) {
-            if (item.filename) images.push(item);
+            if (item.filename) images.push({ ...item, nodeId: String(nodeId) });
           }
         }
       }

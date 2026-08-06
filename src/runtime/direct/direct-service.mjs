@@ -1,4 +1,4 @@
-import { assertDirectExecutionPolicy, directGenerationRequest } from '../generation-contract.mjs';
+import { assertDirectExecutionPolicy, directGenerationRequest, normalizeGenerationResult } from '../generation-contract.mjs';
 import { validateDirectRequest } from './direct-validator.mjs';
 import { classifyFailure } from '../../agent/optimizer/retry-policy.mjs';
 import { checkEditedPrompt } from '../../agent/optimizer/prompt-guard.mjs';
@@ -36,6 +36,8 @@ function previewFor(request, workflow, validation, previewId) {
     sessionId: request.sessionId || '',
     source: 'direct',
     origin: request.origin,
+    presetId: request.presetId || '',
+    presetOrigin: request.presetOrigin || '',
     mode: 'raw',
     model: profile.family || workflow.modelType || 'generic',
     modelType: profile.family || workflow.modelType || 'generic',
@@ -51,6 +53,8 @@ function previewFor(request, workflow, validation, previewId) {
       valid: validation.valid,
       modelReady: workflow.modelReady !== false,
     },
+    workflowName: request.workflowName,
+    preflight: validation,
     checks,
     warnings: checks.filter(check => check.level === 'warning' || check.level === 'medium').map(check => check.message),
     issues: checks.filter(check => check.level === 'error'),
@@ -111,6 +115,7 @@ export class DirectService {
     return preview;
   }
 
+
   getPreview(previewId) {
     return this._previews.get(previewId)?.preview || null;
   }
@@ -141,12 +146,43 @@ export class DirectService {
 
     this._running = true;
     let completed = false;
+    const isCancelled = () => options.signal?.aborted || options.isCancelled?.() === true;
+    const throwIfCancelled = () => {
+      if (!isCancelled()) return;
+      const error = Object.assign(new Error('Direct generation cancelled'), {
+        code: 'GENERATION_CANCELLED',
+        failureType: 'cancelled',
+        retryable: false,
+      });
+      throw error;
+    };
+    const waitBeforeRetry = async delayMs => {
+      throwIfCancelled();
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, delayMs);
+        const abort = () => {
+          clearTimeout(timer);
+          reject(Object.assign(new Error('Direct generation cancelled'), {
+            code: 'GENERATION_CANCELLED',
+            failureType: 'cancelled',
+            retryable: false,
+          }));
+        };
+        if (options.signal?.aborted) {
+          abort();
+          return;
+        }
+        options.signal?.addEventListener('abort', abort, { once: true });
+      });
+      throwIfCancelled();
+    };
     try {
       const maxAttempts = request.executionPolicy.retry ? 2 : 1;
       let attempt = 0;
       let result;
       let lastError;
       while (attempt < maxAttempts) {
+        throwIfCancelled();
         attempt++;
         try {
           result = await this.executor.execute(request, {
@@ -154,29 +190,36 @@ export class DirectService {
             clientId: options.clientId,
             sandboxInput: prepared.sandboxInput,
             onProgress: options.onProgress,
+            signal: options.signal,
           });
           if (!result || typeof result !== 'object') {
             lastError = Object.assign(new Error('No images in output'), { failureType: 'empty_output', retryable: true });
-          } else if (request.executionPolicy.evaluate) {
-            result.technicalEvaluation = evaluateTechnical(result);
-            if (result.technicalEvaluation.passed) break;
-            lastError = Object.assign(new Error(result.technicalEvaluation.detail), { failureType: 'empty_output', retryable: true });
           } else {
-            break;
+            result = normalizeGenerationResult(result);
+            if (!result.media.length) {
+              lastError = Object.assign(new Error('No media in output'), { failureType: 'empty_output', retryable: true });
+            } else if (request.executionPolicy.evaluate) {
+              result.technicalEvaluation = evaluateTechnical(result);
+              if (result.technicalEvaluation.passed) break;
+              lastError = Object.assign(new Error(result.technicalEvaluation.detail), { failureType: 'empty_output', retryable: true });
+            } else {
+              break;
+            }
           }
         } catch (error) {
           lastError = error;
         }
 
+        throwIfCancelled();
         const failure = classifyFailure(lastError, { tool: 'comfyui' });
         if (!failure.retryable || attempt >= maxAttempts) throw lastError;
-        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        await waitBeforeRetry(1000 * attempt);
         request.settings = { ...request.settings, seed: Math.floor(Math.random() * 0xFFFFFFFF) };
         options.onProgress?.({ stage: 'retrying', message: `直接生成重试 ${attempt}/${maxAttempts - 1}` });
       }
       if (!result) throw lastError || new Error('Direct generation produced no result');
       completed = true;
-      return {
+      return normalizeGenerationResult({
         ...result,
         requestId: request.requestId,
         taskId: request.requestId,
@@ -186,7 +229,7 @@ export class DirectService {
         origin: request.origin,
         promptIssues: promptChecks(request),
         executionPolicy: request.executionPolicy,
-      };
+      });
     } finally {
       this._running = false;
       if (completed) this._previews.delete(previewId);

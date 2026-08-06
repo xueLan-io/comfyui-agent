@@ -14,7 +14,7 @@ export class ComfyExecutor {
     return this.tool.discover(workflowDir);
   }
 
-  async execute(request, { workflowDir, clientId = '', sandboxInput, onProgress } = {}) {
+  async execute(request, { workflowDir, clientId = '', sandboxInput, onProgress, signal } = {}) {
     return this.executeToolInput({
       workflowName: request.workflowName,
       workflowDir,
@@ -31,11 +31,12 @@ export class ComfyExecutor {
       images: request.media?.images || [],
       masks: request.media?.masks || [],
       videos: request.media?.videos || [],
+      outputType: request.outputType || 'auto',
       clientId,
-    }, { workflowDir, sandboxInput, onProgress });
+    }, { workflowDir, sandboxInput, onProgress, signal });
   }
 
-  async executeToolInput(input, { workflowDir = input.workflowDir, sandboxInput, onProgress } = {}) {
+  async executeToolInput(input, { workflowDir = input.workflowDir, sandboxInput, onProgress, signal } = {}) {
     const progress = data => {
       if (data?.promptId) this._promptId = data.promptId;
       onProgress?.({ scope: 'generation', ...data });
@@ -46,6 +47,7 @@ export class ComfyExecutor {
         workflowDir,
         sandboxInput,
         onProgress: progress,
+        signal,
       });
     } finally {
       this._promptId = '';

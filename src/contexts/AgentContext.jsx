@@ -2,6 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { formatAgentError } from '../error-message.mjs';
 import { useComfyUI } from './ComfyUIContext.jsx';
 import { useSession } from './SessionContext.jsx';
+import { buildPresetGenerationRequest, presetWorkflowName } from '../runtime/preset-generation.mjs';
+import { normalizeProgressEvent } from '../runtime/progress.mjs';
 
 const TOOL_LABELS = {
   comfyui: 'ComfyUI',
@@ -61,6 +63,12 @@ function assetKey(image = {}) {
   return `${image.type || ''}:${image.projectId || ''}:${image.subfolder || ''}:${image.filename || ''}`;
 }
 
+function resultMedia(result = {}) {
+  const images = Array.isArray(result.images) ? result.images : [];
+  const videos = Array.isArray(result.videos) ? result.videos : [];
+  return Array.isArray(result.media) && result.media.length > 0 ? result.media : [...images, ...videos];
+}
+
 function messageAttachments(items = []) {
   return items
     .filter(item => item?.name || item?.path)
@@ -115,6 +123,8 @@ export function AgentProvider({ children }) {
   const [status, setStatus] = useState('idle');
   const [statusMsg, setStatusMsg] = useState('');
   const [images, setImages] = useState([]);
+  const [videos, setVideos] = useState([]);
+  const [media, setMedia] = useState([]);
   const [generationPending, setGenerationPending] = useState(false);
   const [assets, setAssets] = useState([]);
   const [thinking, setThinking] = useState('');
@@ -125,12 +135,15 @@ export function AgentProvider({ children }) {
   const [showTrace, setShowTrace] = useState(false);
   const [recoveryTasks, setRecoveryTasks] = useState([]);
   const [generationProgress, setGenerationProgress] = useState(null);
+  const [generationResult, setGenerationResult] = useState(null);
+  const [autoConfirmPreviewId, setAutoConfirmPreviewId] = useState('');
   const [generationSource, setGenerationSource] = useState('');
   const [preview, setPreview] = useState(null);
   const [promptPreview, setPromptPreview] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [editingMessageIndex, setEditingMessageIndex] = useState(-1);
   const [policyConfirm, setPolicyConfirm] = useState(null);
+  const [contextUsage, setContextUsage] = useState(null);
 
   const msgEndRef = useRef(null);
   const conversationRef = useRef(null);
@@ -143,7 +156,9 @@ export function AgentProvider({ children }) {
   const streamingUpdatesRef = useRef(new Map());
   const streamingFrameRef = useRef(0);
   const activeTaskIdRef = useRef('');
+  const activeImageRequestIdRef = useRef('');
   const blockedTaskIdsRef = useRef(new Set());
+  const submissionLockRef = useRef(false);
   const sessionInfoRef = useRef({ sessionId: '', projectId: '', title: '', messageCount: 0 });
   sessionInfoRef.current = {
     sessionId: session.activeSessionId,
@@ -210,9 +225,29 @@ export function AgentProvider({ children }) {
   const retryRecoveryTask = useCallback(async taskId => {
     const result = await window.electronAPI.agentRetryRecovery(taskId);
     await refreshRecoveryTasks();
-    if (result?.result?.images?.length) {
-      setImages(previous => mergeAssets(previous, result.result.images));
+    if (result?.result) {
+      const items = resultMedia(result.result);
+      if (!items.length) return result;
+      setImages(previous => mergeAssets(previous, result.result.images || []));
+      setVideos(previous => mergeAssets(previous, result.result.videos || []));
+      setMedia(previous => mergeAssets(previous, items));
       setStatusMsg('恢复任务已归档');
+    }
+    return result;
+  }, [refreshRecoveryTasks]);
+
+  const monitorRecoveryTask = useCallback(async taskId => {
+    if (!window.electronAPI.agentMonitorTask) return null;
+    const result = await window.electronAPI.agentMonitorTask(taskId);
+    await refreshRecoveryTasks();
+    if (result?.result) {
+      const items = resultMedia(result.result);
+      if (items.length) {
+        setImages(previous => mergeAssets(previous, result.result.images || []));
+        setVideos(previous => mergeAssets(previous, result.result.videos || []));
+        setMedia(previous => mergeAssets(previous, items));
+        setGenerationResult({ ...result.result, media: items });
+      }
     }
     return result;
   }, [refreshRecoveryTasks]);
@@ -255,26 +290,36 @@ export function AgentProvider({ children }) {
 
   useEffect(() => {
     if (!session.activeSessionId) return;
+    // Persisted session updates can arrive after a direct generation has started.
+    // Do not hydrate the old snapshot over the live task in that window.
+    if (generationPending || submissionLockRef.current) return;
     const storedState = session.sessionState || {};
     const storedImages = Array.isArray(storedState.lastImages) ? storedState.lastImages : [];
     const source = storedState.lastGenerationSource || '';
     setMessages(session.messages || []);
     setImages(storedImages);
+    setVideos(Array.isArray(storedState.lastVideos) ? storedState.lastVideos : []);
+    setMedia(Array.isArray(storedState.lastMedia) ? storedState.lastMedia : storedImages);
     setAssets(session.project?.assets || []);
     setLastGenerationRequest(storedState.lastPrompt || '');
     setLastGenerationNegative(storedState.lastCompiledPrompt?.negative || '');
     generationSourceRef.current = source || 'ai';
     setGenerationSource(source);
     setPromptMode(session.project?.promptMode || 'raw');
-    setSelectedFile(session.project?.workflow || '');
+    if (session.project?.workflow) setSelectedFile(session.project.workflow);
     setActivityEvents([]);
     setStatus(storedState.preparedPreview ? 'preview' : 'idle');
     setStatusMsg('');
     setGenerationPending(false);
-    setPromptPreview(storedState.preparedPreview || null);
+    // A direct quick-generation preview is live state. Do not overwrite it with
+    // the previous session snapshot while its prepare/run IPC is in flight.
+    if (!generationPending && !submissionLockRef.current) {
+      setPromptPreview(storedState.preparedPreview || null);
+    }
     setPreview(null);
     setTrace(null);
     setGenerationProgress(null);
+    setGenerationResult(null);
     setThinking('');
     setAttachments([]);
     setEditingMessageIndex(-1);
@@ -306,6 +351,34 @@ export function AgentProvider({ children }) {
 
   useEffect(() => {
     const unsubs = [];
+    let progressTimer = 0;
+    let pendingProgress = null;
+    let lastProgressKey = '';
+    const clearQueuedProgress = () => {
+      pendingProgress = null;
+      if (progressTimer) window.clearTimeout(progressTimer);
+      progressTimer = 0;
+    };
+    const flushProgress = () => {
+      progressTimer = 0;
+      const data = pendingProgress;
+      pendingProgress = null;
+      if (!data) return;
+      const key = [data.stage, data.nodeId || data.node, data.percent, data.overallPercent, data.nodePercent, data.message].join('|');
+      if (key === lastProgressKey) return;
+      lastProgressKey = key;
+      setGenerationProgress(previous => normalizeProgressEvent(data, previous));
+      if (data.message) setStatusMsg(data.message);
+    };
+    const queueProgress = data => {
+      pendingProgress = data;
+      if (['completed', 'error', 'cancelled'].includes(data.stage)) {
+        if (progressTimer) window.clearTimeout(progressTimer);
+        flushProgress();
+        return;
+      }
+      if (!progressTimer) progressTimer = window.setTimeout(flushProgress, 16);
+    };
     const isCurrentSessionEvent = data => data.projectId === session.activeProjectId
       && data.sessionId === session.activeSessionId;
 
@@ -378,9 +451,10 @@ export function AgentProvider({ children }) {
       setStatus(data.uiStatus || data.status);
       setStatusMsg(data.message || '');
       const terminal = ['completed', 'failed', 'error', 'cancelled', 'abandoned'].includes(data.status) || data.uiStatus === 'error';
-      if (data.status === 'error' || data.status === 'failed' || data.status === 'cancelled') setGenerationProgress(null);
       if (terminal) {
+        clearQueuedProgress();
         setGenerationPending(false);
+        setGenerationProgress(null);
         terminateStreamingTask(data.taskId, data.status === 'completed' ? 'completed' : data.status);
       }
       if (data.taskId && terminal) {
@@ -392,30 +466,46 @@ export function AgentProvider({ children }) {
 
     unsubs.push(window.electronAPI.onAgentProgress(data => {
       if (!isCurrentAgentEvent(data)) return;
-      setGenerationProgress(data);
-      if (data.message) setStatusMsg(data.message);
+      queueProgress(data);
     }));
 
     const isCurrentDirectEvent = data => {
       if ((data.projectId || data.sessionId) && !isCurrentSessionEvent(data)) return false;
+      if (!data.projectId || !data.sessionId) return false;
       if (data.taskId && blockedTaskIdsRef.current.has(data.taskId)) return false;
+      if (['running', 'completed', 'cancelled'].includes(data.status) && !data.taskId) return false;
+      if (data.status === 'failed' && !data.taskId && data.phase !== 'preparing') return false;
       if (data.taskId && !activeTaskIdRef.current) activeTaskIdRef.current = data.taskId;
       return !data.taskId || !activeTaskIdRef.current || data.taskId === activeTaskIdRef.current;
     };
 
     unsubs.push(window.electronAPI.onDirectStatus(data => {
       if (!isCurrentDirectEvent(data)) return;
+      if (data.status === 'prepared' && data.preview?.previewId) {
+        setPromptPreview({ ...data.preview, quickGenerate: data.preview.quickGenerate !== false });
+        setGenerationPending(true);
+        setStatus('preview');
+      }
       setStatus(data.uiStatus || data.status);
       setStatusMsg(data.message || '');
+      if (data.status === 'completed' && data.result) {
+        const result = data.result;
+        const resultItems = resultMedia(result);
+        setGenerationResult({ ...result, media: resultItems });
+        setImages(result.images || []);
+        setVideos(result.videos || []);
+        setMedia(resultItems);
+      }
       if (['completed', 'failed', 'cancelled'].includes(data.status)) {
+        clearQueuedProgress();
         setGenerationPending(false);
+        setGenerationProgress(null);
       }
     }));
 
     unsubs.push(window.electronAPI.onDirectProgress(data => {
       if (!isCurrentDirectEvent(data)) return;
-      setGenerationProgress(data);
-      if (data.message) setStatusMsg(data.message);
+      queueProgress(data);
     }));
 
     unsubs.push(window.electronAPI.onAgentStep(data => {
@@ -453,6 +543,13 @@ export function AgentProvider({ children }) {
       }
       queueStreamingMessage(data);
     }));
+
+    if (window.electronAPI.onAgentContextUsage) {
+      unsubs.push(window.electronAPI.onAgentContextUsage(data => {
+        if (!isCurrentAgentEvent(data)) return;
+        setContextUsage(data);
+      }));
+    }
 
     unsubs.push(window.electronAPI.onAgentError(data => {
       if (!isCurrentAgentEvent(data)) return;
@@ -498,6 +595,9 @@ export function AgentProvider({ children }) {
 
     return () => {
       unsubs.forEach(unsubscribe => unsubscribe());
+      if (progressTimer) window.clearTimeout(progressTimer);
+      progressTimer = 0;
+      pendingProgress = null;
       if (streamingFrameRef.current) window.cancelAnimationFrame(streamingFrameRef.current);
       streamingFrameRef.current = 0;
       streamingUpdatesRef.current.clear();
@@ -538,10 +638,12 @@ export function AgentProvider({ children }) {
   }, []);
 
   const runGeneration = useCallback(async (text, controlsOverride) => {
-    if ((!text && attachments.length === 0) || status === 'running') return;
+    if ((!text && attachments.length === 0) || status === 'running' || submissionLockRef.current) return;
+    submissionLockRef.current = true;
     if (!selectedFile) {
       setStatus('error');
       setStatusMsg('请先选择一个工作流');
+      submissionLockRef.current = false;
       return;
     }
 
@@ -550,10 +652,17 @@ export function AgentProvider({ children }) {
     setGenerationSource('ai');
     setLastGenerationRequest(text || IMAGE_ONLY_REQUEST);
     setLastGenerationNegative('');
+    activeTaskIdRef.current = '';
+    setAutoConfirmPreviewId('');
+    setPromptPreview(null);
+    setPreview(null);
     setActivityEvents([]);
     setGenerationProgress(null);
+    setGenerationResult(null);
     setGenerationPending(true);
     setImages([]);
+    setVideos([]);
+    setMedia([]);
     setThinking('');
     beginAgentTask();
     sendStartRef.current = Date.now();
@@ -574,6 +683,9 @@ export function AgentProvider({ children }) {
         workflowManifest,
         media,
         turnId,
+        executionPolicy: { retry: false, evaluate: false, mutatePrompt: false },
+        projectId: session.activeProjectId,
+        sessionId: session.activeSessionId,
       });
       if (result?.action === 'clarify') {
         const pendingIndex = pendingGenerationIndexRef.current;
@@ -606,27 +718,39 @@ export function AgentProvider({ children }) {
       setGenerationPending(false);
       setStatus('error');
       setStatusMsg(userMessage);
+    } finally {
+      submissionLockRef.current = false;
     }
   }, [status, selectedFile, workflowManifest, generationControls, attachments, beginAgentTask, discardGenerationTurn]);
 
   const runDirectGeneration = useCallback(async (text, overrides = {}) => {
-    if ((!text && attachments.length === 0) || status === 'running') return;
+    if (!text && attachments.length === 0) return { status: 'empty_prompt', message: '请输入提示词或添加参考图' };
+    if (status === 'running' || submissionLockRef.current) return { status: 'busy', message: '已有生成任务正在进行' };
+    submissionLockRef.current = true;
     if (!selectedFile) {
       setStatus('error');
       setStatusMsg('请先选择一个工作流');
-      return;
+      submissionLockRef.current = false;
+      return { status: 'missing_workflow', message: '请先选择一个工作流' };
     }
 
     const controls = overrides.controls || generationControls;
-    const media = requestMedia(text, attachments);
+    const media = overrides.media || requestMedia(text, attachments);
     generationSourceRef.current = 'direct';
     setGenerationSource('direct');
     setLastGenerationRequest(text || IMAGE_ONLY_REQUEST);
     if (typeof overrides.negative === 'string') setLastGenerationNegative(overrides.negative);
+    activeTaskIdRef.current = '';
+    setAutoConfirmPreviewId('');
+    setPromptPreview(null);
+    setPreview(null);
     setActivityEvents([]);
     setGenerationProgress(null);
+    setGenerationResult(null);
     setGenerationPending(true);
     setImages([]);
+    setVideos([]);
+    setMedia([]);
     setThinking('');
     beginAgentTask();
     sendStartRef.current = Date.now();
@@ -637,7 +761,7 @@ export function AgentProvider({ children }) {
       pendingGenerationIndexRef.current = previous.length;
       return [...previous, { role: 'user', content: text || '图片', time: timeStr(), turnId, attachments: attached, pendingGeneration: true }];
     });
-    setStatus('running');
+    setStatus(overrides.quickGenerate === true ? 'preparing' : 'running');
     setStatusMsg('正在准备直接生成...');
 
     try {
@@ -645,7 +769,7 @@ export function AgentProvider({ children }) {
         source: 'direct',
         projectId: session.activeProjectId,
         sessionId: session.activeSessionId,
-        workflowName: selectedFile,
+        workflowName: overrides.workflowName || selectedFile,
         positive: text || IMAGE_ONLY_REQUEST,
         negative: overrides.negative || '',
         settings: controls.settings || {},
@@ -654,23 +778,78 @@ export function AgentProvider({ children }) {
         media,
         turnId,
         origin: overrides.origin || 'prompt_library',
+        presetId: overrides.presetId || '',
+        presetOrigin: overrides.presetOrigin || '',
         executionPolicy: { retry: true, evaluate: true, mutatePrompt: false },
       });
-      setPromptPreview(result);
-      setStatus('preview');
-      setStatusMsg('请检查原文提示词和工作流检查结果');
+       const nextPreview = { ...result, quickGenerate: overrides.quickGenerate === true || overrides.autoConfirm === true };
+       setPromptPreview(nextPreview);
+       if (overrides.autoConfirm === true) setAutoConfirmPreviewId(result.previewId || '');
+       const finalWorkflowName = result?.workflow?.name || result?.workflowName || overrides.workflowName || selectedFile;
+       if (finalWorkflowName && finalWorkflowName !== selectedFile) setSelectedFile(finalWorkflowName);
+       setStatus('preview');
+       setStatusMsg('已完成生成准备，请确认后执行');
+       return { ...result, status: 'accepted', workflowName: finalWorkflowName };
     } catch (error) {
       const userMessage = formatAgentError(error);
       await discardGenerationTurn();
       setGenerationPending(false);
       setStatus('error');
       setStatusMsg(userMessage);
+      return { status: 'failed', message: userMessage };
+    } finally {
+      submissionLockRef.current = false;
     }
   }, [status, selectedFile, generationControls, attachments, beginAgentTask, discardGenerationTurn, session.activeProjectId, session.activeSessionId]);
 
-  const runLibraryGeneration = useCallback(async (text, negative = '') => {
-    return runDirectGeneration(text, { negative, origin: 'prompt_library' });
-  }, [runDirectGeneration]);
+  const sendQuickGeneration = useCallback((text, { negative = '', workflowName = '' } = {}) => (
+    runDirectGeneration(text, {
+      negative,
+      workflowName: workflowName || selectedFile,
+      origin: 'quick_generate',
+      autoConfirm: true,
+    })
+  ), [runDirectGeneration, selectedFile]);
+
+  const runLibraryGeneration = useCallback(async (text, negative = '', options = {}) => {
+    if (!options.preset) return runDirectGeneration(text, {
+      negative,
+      origin: 'prompt_library',
+      autoConfirm: options.immediate === true,
+    });
+    if (window.electronAPI.globalPresetCheckDependencies) {
+      const dependencyReport = await window.electronAPI.globalPresetCheckDependencies(options.preset.id);
+      if (!dependencyReport?.valid) {
+        const firstIssue = dependencyReport?.issues?.find(issue => issue.severity === 'error');
+        const message = firstIssue?.message || '预设依赖不完整，暂时无法生成';
+        setStatus('error');
+        setStatusMsg(message);
+        return { status: 'dependency_failed', message, dependencyReport };
+      }
+    }
+    const request = buildPresetGenerationRequest(options.preset, { workflowName: selectedFile, controls: generationControls, overrides: options.overrides });
+    let media = request.media;
+    if (window.electronAPI.globalPresetResolveResources) {
+      const resolved = await window.electronAPI.globalPresetResolveResources(options.preset);
+      media = { images: resolved?.sourceImages || [], videos: [] };
+    }
+     let workflowName = presetWorkflowName(request, selectedFile);
+     workflowName = workflowName && !workflowName.includes('/') && !workflowName.includes('\\') ? workflowName : selectedFile;
+    if (window.electronAPI.globalPresetMatchWorkflow && workflowName) {
+      const matched = await window.electronAPI.globalPresetMatchWorkflow(workflowName).catch(() => null);
+      if (matched?.matched) workflowName = matched.workflowName;
+    }
+    return runDirectGeneration(request.positive || text, {
+      negative: request.negative || negative,
+      origin: request.origin,
+      workflowName,
+      controls: { settings: request.settings, nodeOverrides: request.nodeOverrides, outputNodeIds: request.outputNodeIds },
+      media,
+      presetId: request.presetId,
+      presetOrigin: request.presetOrigin,
+      autoConfirm: options.immediate === true,
+    });
+  }, [runDirectGeneration, selectedFile, generationControls]);
 
   const confirmPromptPreview = useCallback(async (edits = {}) => {
     if (promptPreview?.action === 'ai_failed') {
@@ -679,18 +858,24 @@ export function AgentProvider({ children }) {
       setPromptPreview(null);
       setGenerationPending(false);
       setStatus('idle');
-      setStatusMsg('');
+     setStatusMsg('');
+    setContextUsage(null);
       if (edits.action === 'direct_original') return runDirectGeneration(request, { origin: 'ai_failure_fallback' });
       if (edits.action === 'force_cloud') return runGeneration(request, { ...generationControls, allowPolicyOverride: true });
       return runGeneration(request);
     }
-    if (!promptPreview?.previewId || status === 'running') return;
+    if (!promptPreview?.previewId) return;
     const previewId = promptPreview.previewId;
     const preview = promptPreview;
+    activeTaskIdRef.current = '';
+    setAutoConfirmPreviewId('');
     setPromptPreview(null);
     setMessages(previous => previous.filter(message => !message.previewNotice));
     setGenerationPending(true);
+    setGenerationResult(null);
     setImages([]);
+    setVideos([]);
+    setMedia([]);
     setThinking('');
     setStatus('running');
     setStatusMsg('正在执行已确认的提示词...');
@@ -710,16 +895,23 @@ export function AgentProvider({ children }) {
         });
       const executionResult = result?.result || result;
       if (executionResult?.error) throw new Error(executionResult.error);
-      if (executionResult?.images) {
-        setImages(executionResult.images);
+      const resultItems = resultMedia(executionResult);
+      if (resultItems.length) {
+        setGenerationResult({ ...executionResult, media: resultItems });
+        if (preview.presetId && window.electronAPI.globalPresetMarkUsed) void window.electronAPI.globalPresetMarkUsed(preview.presetId, true).catch(() => {});
+        setImages(executionResult.images || []);
+        setVideos(executionResult.videos || []);
+        setMedia(resultItems);
         setGenerationPending(false);
-        setAssets(previous => mergeAssets(previous, executionResult.images));
+        setAssets(previous => mergeAssets(previous, resultItems));
         setMessages(previous => {
           if (preview.source === 'direct') {
             return [...previous, {
               role: 'agent',
-              content: `Generated ${executionResult.images.length} image(s).`,
-              images: executionResult.images,
+              content: `Generated ${resultItems.length} media item(s).`,
+              images: executionResult.images || [],
+              videos: executionResult.videos || [],
+              media: resultItems,
               prompt: edits.positive || preview.positive || '',
               negative: edits.negative || preview.negative || '',
               turnId: preview.turnId || '',
@@ -730,7 +922,7 @@ export function AgentProvider({ children }) {
           if (index < 0) return previous;
           return previous.map((message, messageIndex) => (
             messageIndex === index
-              ? { ...message, images: mergeAssets(message.images || [], executionResult.images) }
+              ? { ...message, images: mergeAssets(message.images || [], executionResult.images || []), videos: mergeAssets(message.videos || [], executionResult.videos || []), media: mergeAssets(message.media || [], resultItems) }
               : message
           ));
         });
@@ -746,6 +938,12 @@ export function AgentProvider({ children }) {
       setStatusMsg(userMessage);
     }
   }, [promptPreview, status, selectedFile, workflowManifest, session.activeSessionId, runDirectGeneration, runGeneration, beginAgentTask, discardGenerationTurn, generationControls]);
+
+  useEffect(() => {
+    if (!autoConfirmPreviewId || !promptPreview?.previewId || autoConfirmPreviewId !== promptPreview.previewId) return;
+    setAutoConfirmPreviewId('');
+    void confirmPromptPreview();
+  }, [autoConfirmPreviewId, promptPreview, confirmPromptPreview]);
 
   const handleAttachMedia = useCallback(async () => {
     const selected = await window.electronAPI.selectMediaFiles();
@@ -850,7 +1048,8 @@ export function AgentProvider({ children }) {
   }, [selectedFile, setSelectedFile, session]);
 
   const submitTurn = useCallback(async (text, modeHint = 'answer') => {
-    if ((!text && attachments.length === 0) || status === 'running') return;
+    if ((!text && attachments.length === 0) || status === 'running' || submissionLockRef.current) return;
+    submissionLockRef.current = true;
     const requestText = text || IMAGE_ONLY_REQUEST;
     generationSourceRef.current = 'chat';
     setGenerationSource('agent');
@@ -874,6 +1073,7 @@ export function AgentProvider({ children }) {
         media,
         workflowName: selectedFile,
         workflowManifest,
+        projectId: session.activeProjectId,
         sessionId: session.activeSessionId,
         turnId,
       });
@@ -884,12 +1084,47 @@ export function AgentProvider({ children }) {
       setStatus('error');
       setStatusMsg(userMessage);
       setMessages(previous => [...previous, { role: 'agent', content: userMessage, time: timeStr() }]);
+    } finally {
+      submissionLockRef.current = false;
     }
   }, [status, selectedFile, workflowManifest, attachments, session.activeSessionId, beginAgentTask, applyTurnResult]);
 
   const confirmPolicyOverride = useCallback(async () => {
     const pending = policyConfirm;
-    if (!pending) return;
+    if (!pending || submissionLockRef.current) return;
+    submissionLockRef.current = true;
+    if (pending.kind === 'openai-image') {
+      setPolicyConfirm(null);
+      setGenerationPending(true);
+      setStatus('running');
+      setStatusMsg('已确认手动发送，正在调用云端生图...');
+      try {
+        const result = await window.electronAPI.imageGenerate(pending.text, {
+          projectId: session.activeProjectId,
+          sessionId: session.activeSessionId,
+          images: pending.images || [],
+          requestId: pending.turnId,
+          allowPolicyOverride: true,
+          ...(pending.imageOptions || {}),
+        });
+        activeImageRequestIdRef.current = pending.turnId;
+        activeTaskIdRef.current = result.taskId || '';
+        setImages(result.images || []);
+        await refreshAssets({ replace: true });
+        setMessages(previous => [...previous, { role: 'agent', content: 'OpenAI Image 生成完成。', images: result.images || [], time: timeStr(), turnId: pending.turnId }]);
+        setLastGenerationRequest(pending.text);
+        setGenerationSource('openai-image');
+        setStatus('idle');
+        setStatusMsg('生成完成');
+      } catch (error) {
+        setStatus('error');
+        setStatusMsg(formatAgentError(error));
+      } finally {
+        setGenerationPending(false);
+        submissionLockRef.current = false;
+      }
+      return;
+    }
     setPolicyConfirm(null);
     setGenerationPending(true);
     setThinking('');
@@ -917,6 +1152,8 @@ export function AgentProvider({ children }) {
       setStatus('error');
       setStatusMsg(userMessage);
       setMessages(previous => [...previous, { role: 'agent', content: userMessage, time: timeStr() }]);
+    } finally {
+      submissionLockRef.current = false;
     }
   }, [policyConfirm, selectedFile, workflowManifest, session.activeSessionId, beginAgentTask, applyTurnResult]);
 
@@ -928,16 +1165,65 @@ export function AgentProvider({ children }) {
     setMessages(previous => [...previous, { role: 'agent', content: '已取消发送：内容被云端审查拦截，未发送到云端。', time: timeStr() }]);
   }, []);
 
-  const handleSend = useCallback(async (action = 'answer') => {
-    const text = input.trim();
-    if ((!text && attachments.length === 0) || status === 'running') return;
+  const handleSend = useCallback(async (action = 'answer', imageOptions = {}, textOverride = null) => {
+    const text = textOverride === null ? input.trim() : String(textOverride || '').trim();
+    if ((!text && attachments.length === 0) || status === 'running' || submissionLockRef.current) return;
     setInput('');
 
     setEditingMessageIndex(-1);
     if (action === 'direct') return runDirectGeneration(text);
+    if (action === 'openai-image') {
+      submissionLockRef.current = true;
+      generationSourceRef.current = 'openai-image';
+      setStatus('running');
+      setStatusMsg('正在调用 OpenAI Image 生成图片...');
+      setGenerationPending(true);
+      const turnId = newTurnId();
+      activeImageRequestIdRef.current = turnId;
+      setMessages(previous => [...previous, { role: 'user', content: text, time: timeStr(), turnId }]);
+      try {
+        const result = await window.electronAPI.imageGenerate(text, {
+          projectId: session.activeProjectId,
+          sessionId: session.activeSessionId,
+          images: attachments,
+          requestId: turnId,
+          ...imageOptions,
+        });
+        setImages(result.images || []);
+        activeTaskIdRef.current = result.taskId || '';
+        await refreshAssets({ replace: true });
+        setMessages(previous => [...previous, { role: 'agent', content: 'OpenAI Image 生成完成。', images: result.images || [], time: timeStr(), turnId }]);
+        setLastGenerationRequest(text);
+        setGenerationSource('openai-image');
+        setStatus('idle');
+        setStatusMsg('生成完成');
+      } catch (error) {
+        if (error?.code === 'CLOUD_POLICY_BLOCKED') {
+          setGenerationPending(false);
+          setStatus('idle');
+          setPolicyConfirm({
+            kind: 'openai-image',
+            text,
+            images: attachments,
+            imageOptions,
+            turnId,
+            message: error.message || '内容被云端审查拦截',
+            categories: error.policyDecision?.categories || [],
+            reason: error.policyDecision?.reason || '',
+          });
+          return;
+        }
+        setStatus('error');
+        setStatusMsg(formatAgentError(error));
+      } finally {
+        setGenerationPending(false);
+        submissionLockRef.current = false;
+      }
+      return;
+    }
     if (action === 'answer') setAttachments([]);
     return submitTurn(text, action === 'generate' ? 'generate' : 'answer');
-  }, [input, status, attachments, runDirectGeneration, submitTurn]);
+  }, [input, status, attachments, runDirectGeneration, submitTurn, session.activeProjectId, session.activeSessionId, refreshAssets]);
 
   const handleRegenerate = useCallback((feedbackType = 'regenerate') => {
     const controls = { ...generationControls };
@@ -947,9 +1233,13 @@ export function AgentProvider({ children }) {
       runDirectGeneration(lastGenerationRequest.trim(), { controls, negative: lastGenerationNegative });
       return;
     }
+    if (generationSourceRef.current === 'openai-image') {
+      void handleSend('openai-image', { ...controls, count: 1 }, lastGenerationRequest.trim());
+      return;
+    }
     void window.electronAPI.agentFeedback(feedbackType);
     runGeneration(lastGenerationRequest.trim(), controls);
-  }, [lastGenerationRequest, lastGenerationNegative, runGeneration, runDirectGeneration, generationControls]);
+  }, [lastGenerationRequest, lastGenerationNegative, runGeneration, runDirectGeneration, generationControls, handleSend]);
 
   const recordFeedback = useCallback(async (type, details = {}) => {
     if (type === 'regenerate' || type === 'new_seed') {
@@ -963,10 +1253,12 @@ export function AgentProvider({ children }) {
 
   const handleCancel = useCallback(async () => {
     terminateStreamingTask(activeTaskIdRef.current, 'cancelled');
+    setGenerationProgress(null);
     if (generationSourceRef.current === 'direct' || generationSourceRef.current === 'ai') {
       await discardGenerationTurn();
     }
     if (generationSourceRef.current === 'direct') await window.electronAPI.directCancel();
+    else if (generationSourceRef.current === 'openai-image') await window.electronAPI.imageCancel(activeImageRequestIdRef.current);
     else await window.electronAPI.agentCancel(activeTaskIdRef.current);
     setGenerationPending(false);
     setStatus('idle');
@@ -980,19 +1272,44 @@ export function AgentProvider({ children }) {
     }
   }, [handleSend]);
 
-  const clearConversation = useCallback(() => {
+  const clearConversation = useCallback(async () => {
     if (status === 'running') return;
     terminateStreamingTask(activeTaskIdRef.current, 'cancelled');
+    if (promptPreview?.previewId) {
+      try {
+        if (promptPreview.source === 'direct') await window.electronAPI.directDiscardPreview(promptPreview.previewId);
+        else await window.electronAPI.agentDiscardPreview(promptPreview.previewId);
+      } catch {}
+    }
     void window.electronAPI.agentClearConversation();
     setMessages([]);
     setImages([]);
+    setVideos([]);
+    setMedia([]);
     setGenerationSource('');
+    setLastGenerationRequest('');
     setLastGenerationNegative('');
     setGenerationPending(false);
+    setGenerationProgress(null);
+    setGenerationResult(null);
+    setPromptPreview(null);
+    setPreview(null);
+    setAttachments([]);
+    setTrace(null);
+    setActivityEvents([]);
+    setContextUsage(null);
+    setPolicyConfirm(null);
+    setAutoConfirmPreviewId('');
+    setEditingMessageIndex(-1);
+    pendingGenerationIndexRef.current = -1;
+    pendingGenerationTurnIdRef.current = '';
+    activeTaskIdRef.current = '';
+    activeImageRequestIdRef.current = '';
+    submissionLockRef.current = false;
     setThinking('');
     setStatus('idle');
     setStatusMsg('');
-  }, [status, terminateStreamingTask]);
+  }, [status, promptPreview, terminateStreamingTask]);
 
   const value = {
     messages,
@@ -1001,6 +1318,7 @@ export function AgentProvider({ children }) {
     setInput,
     runGeneration,
     runLibraryGeneration,
+    sendQuickGeneration,
     attachments,
     handleAttachMedia,
     removeAttachment,
@@ -1010,6 +1328,8 @@ export function AgentProvider({ children }) {
     statusMsg,
     setStatusMsg,
     images,
+    videos,
+    media,
     setImages,
     assets,
     refreshAssets,
@@ -1017,6 +1337,7 @@ export function AgentProvider({ children }) {
     deleteAsset,
     thinking,
     lastGenerationRequest,
+    lastGenerationNegative,
     generationSource,
     promptMode,
     setPromptMode,
@@ -1026,6 +1347,7 @@ export function AgentProvider({ children }) {
     setShowTrace,
     generationProgress,
     setGenerationProgress,
+    generationResult,
     generationPending,
     preview,
     setPreview,
@@ -1033,6 +1355,7 @@ export function AgentProvider({ children }) {
     confirmPromptPreview,
     cancelPromptPreview,
     policyConfirm,
+    contextUsage,
     confirmPolicyOverride,
     cancelPolicyOverride,
     showSettings,
@@ -1055,6 +1378,7 @@ export function AgentProvider({ children }) {
     recoveryTasks,
     refreshRecoveryTasks,
     retryRecoveryTask,
+    monitorRecoveryTask,
     archiveRecoveryTask,
     archiveAllRecoveryTasks,
   };

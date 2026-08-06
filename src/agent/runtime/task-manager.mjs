@@ -220,6 +220,7 @@ export class TaskManager {
     const task = this._byId.get(id);
     if (!task) return null;
     this.complete(id, { result });
+    this.update(id, { error: null, lastError: '', traceError: null });
     const current = task.state || task.status;
     if (canTransition(current, 'completed')) this.transition(id, 'completed');
     else this.update(id, { status: 'completed', state: 'completed' });
@@ -290,6 +291,19 @@ export class TaskManager {
     for (const task of this.tasks) {
       const state = task.state || task.status;
       if (['completed', 'failed', 'cancelled', 'abandoned', 'error', 'idle'].includes(state)) continue;
+      if (state === 'archive_failed' && task.result?.executionStatus === 'success'
+        && (task.result.images?.length || task.result.videos?.length || task.result.media?.length)) {
+        this.update(task.id, {
+          status: 'completed',
+          state: 'completed',
+          error: null,
+          lastError: '',
+          traceError: null,
+          completedAt: task.completedAt || Date.now(),
+        });
+        changed = true;
+        continue;
+      }
       if (['submit_unknown', 'observe_timeout', 'archive_failed'].includes(state)) {
         recoverable.push(task);
         continue;

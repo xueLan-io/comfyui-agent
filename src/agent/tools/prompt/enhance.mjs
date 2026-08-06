@@ -2,6 +2,7 @@ import { applyGuard } from '../../optimizer/prompt-guard.mjs';
 import { publicAppearanceContext } from '../../research/appearance.mjs';
 import { attachVisionImages } from '../../runtime/chat-vision.mjs';
 import modelProfiles from '../../../config/modelProfiles.json' with { type: 'json' };
+import { minimaxH3VideoInstruction, validateMinimaxH3VideoPrompt } from './video-template.mjs';
 
 const STYLE_TEMPLATES = {
   raw: { name: 'Original', instruction: 'Preserve the user prompt without stylistic additions.' },
@@ -197,8 +198,16 @@ function aiFailureResult(originalRequest, error) {
 function compilerInstructions(profile, styleInstruction, customInstruction, feedback = '') {
   const family = String(profile.family || 'generic').toLowerCase();
   const modelProfile = modelProfiles[family] || modelProfiles.generic;
+  const h3Video = family === 'minimax_h3' && customInstruction?.includes('MiniMax H3')
+    ? `
+# MiniMax H3 视频规则
+- 使用中文自然语言输出完整视频提示词，不要翻译成英文。
+- positive 只能是可直接提交给 MiniMax H3 的提示词正文，不要输出 Markdown、JSON 或解释。
+- negative 必须为空字符串。
+` : '';
+  const languageRule = h3Video ? '- MiniMax H3 视频使用中文；其他模型遵循模型族规则。' : '- 全部用英文撰写（专有名词除外），句子内不混用语言。';
   const common = `# 角色
-你是 ComfyUI 提示词编译器，将用户请求转换为模型可用的正/负提示词。
+ 你是 ComfyUI 提示词编译器，将用户请求转换为模型可用的正/负提示词。
 
 # 输出格式
 返回单个有效 JSON：{"tags": [], "narrative": "", "positive": "", "negative": "", "self_check": {}}
@@ -245,13 +254,13 @@ ${family === 'wan' || family === 'animatediff' ? '- positive 必须包含明确�
 # 约束
   - Anima 的 artist 位只保留用户明确指定或已有提示词中的 artist token；**不得发明**艺术家名，也不要把普通风格词当作 artist token
 - 保持在 token 预算内（超限由外部截断，故优先精简）
-- 全部用英文撰写（专有名词除外），句子内不混用语言
-- 遵循提供的工作流格式和 negative 能力，不发明不支持的字段${feedback ? `
+  ${languageRule}
+  - 遵循提供的工作流格式和 negative 能力，不发明不支持的字段${feedback ? `
 
 # 上次自检未通过，请修正以下问题
 ${feedback}` : ''}`;
 
-  return common;
+  return `${common}${h3Video}`;
 }
 
 function parseCompiled(content) {
@@ -422,6 +431,9 @@ export const PromptEnhanceTool = {
       const videoRule = 'This is a video request: describe motion, timing, camera movement, and scene continuity explicitly in the narrative.';
       instruction = instruction ? `${instruction}. ${videoRule}` : videoRule;
     }
+    if (constraints.template === 'minimax_h3_video') {
+      instruction = `${instruction ? `${instruction}\n` : ''}${minimaxH3VideoInstruction(constraints)}`;
+    }
     try {
       let compiled;
       let lastIssues = [];
@@ -473,6 +485,15 @@ export const PromptEnhanceTool = {
           mode,
         });
         compiled = preserveRefinementBaseline(compiled, sourcePrompt, intent);
+        if (constraints.template === 'minimax_h3_video') {
+          const templateIssues = validateMinimaxH3VideoPrompt(compiled.positive, constraints);
+          compiled.selfCheck.issues.push(...templateIssues);
+          if (templateIssues.length > 0) {
+            compiled.selfCheck.preserved = false;
+            compiled.issues.push({ type: 'constraint', severity: 'high', detail: templateIssues.join('; ') });
+          }
+          compiled.negative = '';
+        }
         lastIssues = compiled.selfCheck?.issues || [];
         if (compiled.selfCheck?.preserved === true) break;
         if (attempt === 2) {

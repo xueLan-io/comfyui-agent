@@ -1,6 +1,25 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { PromptEnhanceTool } from '../src/agent/tools/prompt/enhance.mjs';
+import { minimaxH3VideoInstruction, validateMinimaxH3VideoPrompt } from '../src/agent/tools/prompt/video-template.mjs';
+
+test('MiniMax H3 video template validates the required Chinese prompt structure', () => {
+  const prompt = [
+    '生成一段5秒、16:9、2K、原生立体声的武戏。',
+    '0—5秒：白发女剑士挡住机械兽并完成反击。',
+    '剪辑与动作：保持动作因果和连续性。',
+    '视觉风格：雨夜冷色电影光影。',
+    '声音设计：雨声、金属撞击声和高潮落点清晰。',
+  ].join('\n');
+
+  assert.deepEqual(validateMinimaxH3VideoPrompt(prompt, { duration: 5 }), []);
+  assert.match(minimaxH3VideoInstruction({ duration: 5, videoMode: 'action' }), /中文自然语言/);
+});
+
+test('MiniMax H3 video template reports missing sections', () => {
+  const issues = validateMinimaxH3VideoPrompt('一个雨夜的战斗', { duration: 10 });
+  assert.equal(issues.length, 5);
+});
 
 test('raw mode returns original', async () => {
   const result = await PromptEnhanceTool.execute({ prompt: 'a cat', mode: 'raw' });

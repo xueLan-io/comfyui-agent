@@ -8,6 +8,6 @@ window.electronAPI?.uiPreferences?.().then(applyUIPreferences).catch(() => {});
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <App />
+    <App floating={new URLSearchParams(window.location.search).get('floating') === '1'} />
   </StrictMode>
 );

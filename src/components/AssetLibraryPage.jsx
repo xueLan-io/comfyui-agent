@@ -3,30 +3,7 @@ import { useAgent } from '../contexts/AgentContext.jsx';
 import { useSession } from '../contexts/SessionContext.jsx';
 import ImageAsset from './ImageAsset.jsx';
 import Icon from './Icon.jsx';
-
-const LABELS = {
-  title: '\u8D44\u4EA7\u5E93',
-  description: '\u5F53\u524D\u9879\u76EE\u7684\u56FE\u7247\u8D44\u4EA7',
-  all: '\u5168\u90E8',
-  recent: '\u6700\u8FD1 7 \u5929',
-  favorites: '\u6536\u85CF',
-  search: '\u641C\u7D22\u6587\u4EF6\u540D\u3001\u4EFB\u52A1\u6216\u76EE\u5F55',
-  newest: '\u6700\u65B0\u4F18\u5148',
-  oldest: '\u6700\u65E9\u4F18\u5148',
-  name: '\u6309\u540D\u79F0',
-  selectAll: '\u5168\u9009\u53EF\u89C1',
-  clearSelection: '\u6E05\u9664\u9009\u62E9',
-  previewSelection: '\u9884\u89C8\u6240\u9009',
-  noAssets: '\u8FD8\u6CA1\u6709\u751F\u6210\u56FE\u7247',
-  noResults: '\u6CA1\u6709\u5339\u914D\u7684\u8D44\u4EA7',
-  noAssetsHint: '\u5B8C\u6210\u4E00\u6B21\u751F\u6210\u540E\uFF0C\u56FE\u7247\u4F1A\u81EA\u52A8\u5F52\u6863\u5230\u8FD9\u91CC\u3002',
-  noResultsHint: '\u8BD5\u8BD5\u6362\u4E2A\u5173\u952E\u8BCD\u6216\u5207\u6362\u7B5B\u9009\u6761\u4EF6\u3002',
-  back: '\u8FD4\u56DE\u5BF9\u8BDD',
-  refresh: '\u5237\u65B0\u8D44\u4EA7',
-  loading: '\u6B63\u5728\u5237\u65B0',
-  selected: '\u5DF2\u9009',
-  generated: '\u5386\u53F2\u751F\u6210',
-};
+import { useI18n } from '../i18n/I18nContext.jsx';
 
 const RECENT_WINDOW = 7 * 24 * 60 * 60 * 1000;
 
@@ -52,13 +29,29 @@ function assetTime(image) {
   return Number.isFinite(value) ? value : 0;
 }
 
-function assetDate(image) {
+function assetDate(image, language, fallback) {
   const timestamp = assetTime(image);
-  if (!timestamp) return LABELS.generated;
-  return new Intl.DateTimeFormat(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(timestamp);
+  if (!timestamp) return fallback;
+  return new Intl.DateTimeFormat(language, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(timestamp);
+}
+
+function assetSource(image) {
+  return image.source === 'openai-image' || image.source === 'cloud' ? 'cloud' : 'local';
+}
+
+function tracePrompt(trace, image) {
+  const prompt = trace?.promptResult || trace?.result?.compiledPrompt || trace?.compiledPrompt || {};
+  return {
+    positive: image.positive || prompt.positive || trace?.request || trace?.rawInput || '',
+    negative: image.negative || prompt.negative || '',
+    workflow: image.workflowName || trace?.workflowName || trace?.result?.workflowName || '',
+    parameters: image.parameters || trace?.result?.settings || trace?.settings || {},
+    source: image.source === 'cloud' ? 'cloud' : 'direct',
+  };
 }
 
 export default function AssetLibraryPage({ onBack }) {
+  const { language, t } = useI18n();
   const { assets, setPreview, refreshAssets, removeAsset, deleteAsset } = useAgent();
   const { activeProjectId } = useSession();
   const [query, setQuery] = useState('');
@@ -169,7 +162,7 @@ export default function AssetLibraryPage({ onBack }) {
   }
 
   async function handleDelete(image) {
-    if (!window.confirm(`确定删除「${image.filename}」吗？此操作会删除项目归档文件。`)) return;
+    if (!window.confirm(t('deleteAssetConfirm', { name: image.filename }))) return;
     try {
       await deleteAsset(image);
       setSelectedKeys(previous => {
@@ -178,8 +171,31 @@ export default function AssetLibraryPage({ onBack }) {
         return next;
       });
     } catch (error) {
-      window.alert(error.message || '删除资产失败');
+      window.alert(error.message || t('deleteAsset'));
     }
+  }
+
+  async function saveAssetsAsPreset(selected) {
+    if (!selected.length) return;
+    const title = window.prompt(t('presetName'), selected[0].filename?.replace(/\.[^.]+$/, '') || t('historicalPreset'));
+    if (!title?.trim()) return;
+    let metadata = {};
+    if (selected[0].taskId && window.electronAPI.agentGetTrace) {
+      try { metadata = tracePrompt(await window.electronAPI.agentGetTrace(selected[0].taskId), selected[0]); } catch {}
+    }
+    if (!metadata.positive) {
+      metadata.positive = window.prompt(t('positivePrompt'), '') || '';
+    }
+    if (!metadata.positive.trim()) { window.alert(t('noPositivePrompt')); return; }
+    try {
+      const saved = await window.electronAPI.globalPresetCreate({
+        title: title.trim(), description: `来自历史记录 · ${selected.length} 张结果`,
+        ...metadata, workflowName: metadata.workflow, resultRefs: selected,
+        coverRef: selected[0], tags: ['历史记录'], origin: 'asset-library',
+      });
+      window.dispatchEvent(new CustomEvent('comfy-agent:preset-saved', { detail: { id: saved?.id || '', title: title.trim() } }));
+      window.alert(t('presetSavedAndOpened', { name: title.trim() }));
+    } catch (error) { window.alert(error.message || t('savePresetFailed')); }
   }
 
   return (
@@ -187,48 +203,48 @@ export default function AssetLibraryPage({ onBack }) {
       <header className="asset-library-header">
         <div>
           <span className="page-eyebrow">LIBRARY</span>
-          <h1>{LABELS.title}</h1>
-          <p>{LABELS.description}</p>
+          <h1>{t('assetTitle')}</h1>
+          <p>{t('assetDescription')}</p>
         </div>
         <div className="asset-library-header-actions">
           <span className="asset-library-count">{visibleAssets.length} / {assets.length}</span>
-          <button className="btn btn-icon" onClick={() => void handleRefresh()} disabled={refreshing} title={LABELS.refresh} aria-label={LABELS.refresh}><Icon name="refresh" /></button>
-          <button className="btn" onClick={onBack}>{LABELS.back}</button>
+          <button className="btn btn-icon" onClick={() => void handleRefresh()} disabled={refreshing} title={t('refreshAssets')} aria-label={t('refreshAssets')}><Icon name="refresh" /></button>
+          <button className="btn" onClick={onBack}>{t('backToChat')}</button>
         </div>
       </header>
 
-      <section className="asset-library-toolbar" aria-label={LABELS.title}>
+      <section className="asset-library-toolbar" aria-label={t('assetTitle')}>
         <label className="asset-library-search">
           <Icon name="search" size={14} />
-          <input value={query} onChange={event => setQuery(event.target.value)} placeholder={LABELS.search} />
+          <input value={query} onChange={event => setQuery(event.target.value)} placeholder={t('searchAssets')} />
         </label>
-        <div className="asset-library-filters" role="group" aria-label={LABELS.title}>
+        <div className="asset-library-filters" role="group" aria-label={t('assetTitle')}>
           {[
-            ['all', LABELS.all],
-            ['recent', LABELS.recent],
-            ['favorites', `${LABELS.favorites} ${favoriteKeys.length}`],
+            ['all', t('all')],
+            ['recent', t('recent7Days')],
+            ['favorites', `${t('favorites')} ${favoriteKeys.length}`],
           ].map(([value, label]) => (
             <button key={value} className={filter === value ? 'active' : ''} onClick={() => setFilter(value)}>{label}</button>
           ))}
         </div>
         <div className="asset-library-toolbar-actions">
-          <select value={sort} onChange={event => setSort(event.target.value)} aria-label={LABELS.newest}>
-            <option value="newest">{LABELS.newest}</option>
-            <option value="oldest">{LABELS.oldest}</option>
-            <option value="name">{LABELS.name}</option>
+          <select value={sort} onChange={event => setSort(event.target.value)} aria-label={t('newestFirst')}>
+            <option value="newest">{t('newestFirst')}</option>
+            <option value="oldest">{t('oldestFirst')}</option>
+            <option value="name">{t('sortByName')}</option>
           </select>
-          <div className="asset-library-view-toggle" role="group" aria-label="View">
-            <button className={view === 'grid' ? 'active' : ''} onClick={() => setView('grid')} aria-label="Grid"><Icon name="grid" size={14} /></button>
-            <button className={view === 'list' ? 'active' : ''} onClick={() => setView('list')} aria-label="List"><Icon name="list" size={14} /></button>
+        <div className="asset-library-view-toggle" role="group" aria-label={t('view')}>
+          <button className={view === 'grid' ? 'active' : ''} onClick={() => setView('grid')} aria-label={t('grid')}><Icon name="grid" size={14} /></button>
+          <button className={view === 'list' ? 'active' : ''} onClick={() => setView('list')} aria-label={t('list')}><Icon name="list" size={14} /></button>
           </div>
         </div>
       </section>
 
       <div className="asset-library-selection-bar">
-        <span>{selectedKeys.size > 0 ? `${selectedKeys.size} ${LABELS.selected}` : `${visibleAssets.length} ${LABELS.all}`}</span>
+        <span>{selectedKeys.size > 0 ? `${selectedKeys.size} ${t('selected')}` : `${visibleAssets.length} ${t('all')}`}</span>
         <div>
-          <button className="btn btn-small" onClick={toggleSelectAll} disabled={visibleAssets.length === 0}>{allVisibleSelected ? LABELS.clearSelection : LABELS.selectAll}</button>
-          {selectedVisibleAssets.length > 0 && <button className="btn btn-small btn-primary" onClick={() => void previewSelection()}>{LABELS.previewSelection}</button>}
+          <button className="btn btn-small" onClick={toggleSelectAll} disabled={visibleAssets.length === 0}>{allVisibleSelected ? t('clearSelection') : t('selectAllVisible')}</button>
+          {selectedVisibleAssets.length > 0 && <><button className="btn btn-small btn-primary" onClick={() => void previewSelection()}>{t('previewSelection')}</button><button className="btn btn-small" onClick={() => void saveAssetsAsPreset(selectedVisibleAssets)}>{t('saveAsPreset')}</button></>}
         </div>
       </div>
 
@@ -241,17 +257,21 @@ export default function AssetLibraryPage({ onBack }) {
               <article key={key} className={`asset-library-item${selectedKeys.has(key) ? ' selected' : ''}`}>
                 <div className="asset-library-media">
                   <ImageAsset image={image} onOpen={preview => openPreview(preview)} onError={handleAssetUnavailable} />
-                  <button className={`asset-library-favorite${favorite ? ' active' : ''}`} onClick={() => toggleFavorite(image)} aria-pressed={favorite} title={favorite ? 'Unfavorite' : 'Favorite'}><Icon name="star" size={14} /></button>
-                  <button className="asset-library-delete" onClick={() => void handleDelete(image)} title="删除资产" aria-label={`删除 ${image.filename}`}><Icon name="trash" size={14} /></button>
-                  <label className="asset-library-select" title={selectedKeys.has(key) ? 'Deselect' : 'Select'}>
+                <span className={`asset-library-source-badge ${assetSource(image)}`} title={assetSource(image) === 'cloud' ? t('cloudImage') : t('localImage')}>{assetSource(image) === 'cloud' ? t('cloud') : t('local')}</span>
+                  <div className="asset-library-actions">
+                  <button className={`asset-library-favorite${favorite ? ' active' : ''}`} onClick={() => toggleFavorite(image)} aria-pressed={favorite} title={favorite ? t('unfavorite') : t('favorite')}><Icon name="star" size={14} /></button>
+                  <button className="asset-library-save-preset" onClick={() => void saveAssetsAsPreset([image])} title={t('saveAsPreset')} aria-label={`${t('saveAsPreset')} ${image.filename}`}><Icon name="bookmark" size={14} /></button>
+                  <button className="asset-library-delete" onClick={() => void handleDelete(image)} title={t('deleteAsset')} aria-label={`${t('deleteAsset')} ${image.filename}`}><Icon name="trash" size={14} /></button>
+                  </div>
+                <label className="asset-library-select" title={selectedKeys.has(key) ? t('deselect') : t('select')}>
                     <input type="checkbox" checked={selectedKeys.has(key)} onChange={() => toggleSelection(image)} />
                     <span aria-hidden="true" />
                   </label>
                 </div>
                 <div className="asset-library-item-meta">
                   <span title={image.filename}>{image.filename}</span>
-                  <small title={image.subfolder}>{image.subfolder || LABELS.generated}</small>
-                  <time dateTime={assetTime(image) ? new Date(assetTime(image)).toISOString() : undefined}>{assetDate(image)}</time>
+                <small title={image.subfolder}>{image.subfolder || t('generatedHistory')}</small>
+                <time dateTime={assetTime(image) ? new Date(assetTime(image)).toISOString() : undefined}>{assetDate(image, language, t('generatedHistory'))}</time>
                 </div>
               </article>
             );
@@ -259,8 +279,8 @@ export default function AssetLibraryPage({ onBack }) {
         </div>
       ) : (
         <div className="asset-library-empty">
-          <strong>{assets.length > 0 ? LABELS.noResults : LABELS.noAssets}</strong>
-          <span>{assets.length > 0 ? LABELS.noResultsHint : LABELS.noAssetsHint}</span>
+          <strong>{assets.length > 0 ? t('noMatchingAssets') : t('noGeneratedImages')}</strong>
+          <span>{assets.length > 0 ? t('noResultsHint') : t('noAssetsHint')}</span>
         </div>
       )}
     </main>
