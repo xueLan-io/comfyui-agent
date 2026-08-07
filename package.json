@@ -1,6 +1,6 @@
 {
   "name": "comfy-agent",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "type": "module",
   "description": "ComfyMuse - AI Creative Studio powered by ComfyUI",
   "main": "electron/main.mjs",
@@ -12,7 +12,7 @@
     "build": "vite build",
     "pack": "vite build",
     "icons": "node scripts/generate-icons.mjs",
-    "test": "node --test tests/*.test.mjs",
+    "test": "node scripts/run-tests.mjs",
     "lint": "node scripts/lint.mjs",
     "agent": "node src/cli.mjs",
     "mcp": "node src/mcp-server.mjs",

@@ -2,10 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAgent } from '../contexts/AgentContext.jsx';
 import { useComfyUI } from '../contexts/ComfyUIContext.jsx';
 import { ANIME_PROMPT_PACKS } from './prompt-library-anime.mjs';
-import { loadCollectedPromptItems, loadCollectedTagGroup, getCollectedSearchIndex, getCollectedTagGroups } from './prompt-library-collected.mjs';
+import { getCachedCollectedItemIds, hasPendingCollectedSegments, loadCachedCollectedItems, loadCollectedPromptItems, loadCollectedSearchIndex, loadCollectedTagGroup, getCollectedSearchIndex, getCollectedTagGroups, loadCollectedSegmentBatch } from './prompt-library-collected.mjs';
 import { PROMPT_LIBRARY_CATEGORIES, PROMPT_LIBRARY_ITEMS } from './prompt-library-data.mjs';
 import { buildSearchIndex, buildSearchIndexWithCachedCollected, matchesSearchText, randomSearchGuideTerms, searchLibrary } from './prompt-library-search.mjs';
-import { createCollectedTaxonomyGroups, matchesPromptTaxonomy, PROMPT_LIBRARY_TAXONOMY } from './prompt-library-taxonomy.mjs';
+import { matchesPromptTaxonomy, PROMPT_LIBRARY_TAXONOMY } from './prompt-library-taxonomy.mjs';
 import { checkPromptStructure, STRUCTURE_LABELS } from '../agent/optimizer/prompt-guard.mjs';
 import { formatWeight, normalizePromptPart, removePromptPart, reorderPromptPart, splitPromptParts, updatePromptWeight } from './prompt-parser.mjs';
 import Icon from './Icon.jsx';
@@ -186,6 +186,8 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   const [advancedFilters, setAdvancedFilters] = useState({ source: 'all', contentType: 'all', tagGroup: 'all' });
   const [collectedTagGroups] = useState(() => getCollectedTagGroups());
   const [collectedSearchIndex, setCollectedSearchIndex] = useState(null);
+  const [cachedCollectedItems, setCachedCollectedItems] = useState([]);
+  const [fullCollectionRequested, setFullCollectionRequested] = useState(false);
   const collectionLoad = useRef(null);
   const windowApi = window.electronAPI;
   const [maximized, setMaximized] = useState(false);
@@ -197,9 +199,9 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   const debouncedSearch = useDebouncedValue(search);
   const query = debouncedSearch.trim().toLowerCase();
   const isGlobalSearch = Boolean(query);
-  const shouldLoadCollection = activeGroup === 'collected'
+  const shouldLoadCollection = fullCollectionRequested || activeGroup === 'collected'
     || advancedFilters.source === 'collected'
-    || Boolean(query);
+    ;
 
   useEffect(() => {
     window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
@@ -247,9 +249,28 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   }, [windowApi]);
 
   useEffect(() => {
-    if (!shouldLoadCollection) return undefined;
+    let active = true;
+    loadCollectedSearchIndex().then(index => {
+      if (!active) return;
+      if (index) setCollectedSearchIndex(index);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    setCachedCollectedItems([]);
+    if (!query) return undefined;
+    let active = true;
+    loadCollectedSearchIndex().then(index => loadCachedCollectedItems(getCachedCollectedItemIds(query, index))).then(items => {
+      if (active && items.length > 0) setCachedCollectedItems(items);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [query]);
+
+  useEffect(() => {
+    if (!shouldLoadCollection || (activeGroup === 'collected' && !fullCollectionRequested && advancedFilters.tagGroup === 'all')) return undefined;
     const groupOnly = activeGroup === 'collected' && advancedFilters.tagGroup !== 'all' && !query;
-    const key = groupOnly ? `group:${advancedFilters.tagGroup}` : 'full';
+    const key = fullCollectionRequested ? 'full' : groupOnly ? `group:${advancedFilters.tagGroup}` : 'batch';
     let active = true;
     let load = collectionLoad.current;
     if (!load || load.key !== key) {
@@ -258,7 +279,9 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
         key,
         promise: groupOnly
           ? loadCollectedTagGroup(advancedFilters.tagGroup, setCollectionProgress)
-          : loadCollectedPromptItems(setCollectionProgress),
+          : fullCollectionRequested
+            ? loadCollectedPromptItems(setCollectionProgress)
+            : loadCollectedSegmentBatch(setCollectionProgress),
       };
       collectionLoad.current = load;
     }
@@ -274,9 +297,39 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
         .catch(() => {});
     }
     return () => { active = false; };
-  }, [shouldLoadCollection, advancedFilters.tagGroup, activeGroup, query]);
+  }, [shouldLoadCollection, advancedFilters.tagGroup, activeGroup, query, fullCollectionRequested]);
 
-  const libraryItems = useMemo(() => [...PROMPT_LIBRARY_ITEMS, ...collectedItems, ...customItems], [collectedItems, customItems]);
+  useEffect(() => {
+    if (activeGroup !== 'collected' || fullCollectionRequested || advancedFilters.tagGroup !== 'all') return undefined;
+    let cancelled = false;
+    let idle;
+    const schedule = () => {
+      if (cancelled || !hasPendingCollectedSegments()) return;
+      idle = window.requestIdleCallback ? window.requestIdleCallback(runBatch, { timeout: 1500 }) : window.setTimeout(runBatch, 800);
+    };
+    const runBatch = () => {
+      if (cancelled) return;
+      loadCollectedSegmentBatch(setCollectionProgress).then(items => {
+        if (!cancelled) {
+          setCollectedItems(items);
+          schedule();
+        }
+      }).catch(() => {});
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      if (window.cancelIdleCallback && typeof idle === 'number') window.cancelIdleCallback(idle);
+      else window.clearTimeout(idle);
+    };
+  }, [activeGroup, advancedFilters.tagGroup, fullCollectionRequested]);
+
+  const availableCollectedItems = useMemo(() => {
+    const items = new Map();
+    for (const item of [...cachedCollectedItems, ...collectedItems]) items.set(item.id, item);
+    return [...items.values()];
+  }, [cachedCollectedItems, collectedItems]);
+  const libraryItems = useMemo(() => [...PROMPT_LIBRARY_ITEMS, ...availableCollectedItems, ...customItems], [availableCollectedItems, customItems]);
   const indexedItems = useMemo(() => libraryItems.map(item => ({
     ...item,
     kind: item.kind || 'tag',
@@ -302,24 +355,45 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
       ? buildSearchIndexWithCachedCollected(filteredLibraryItems, collectedSearchIndex)
       : buildSearchIndex(filteredLibraryItems)
     : null, [collectedSearchIndex, filteredLibraryItems, isGlobalSearch, useCollectedSearchIndex]);
-  const collectedGroups = useMemo(() => createCollectedTaxonomyGroups(collectedItems), [collectedItems]);
+  const collectedGroups = useMemo(() => collectedTagGroups.map(group => ({
+    id: `collected-group:${group.tagGroup}`,
+    label: group.label,
+    description: `${group.count.toLocaleString()} 条收集标签`,
+    source: 'collected',
+    categoryIds: ['collected'],
+    tagGroup: group.tagGroup,
+    count: group.count,
+  })), [collectedTagGroups]);
   const taxonomyGroups = useMemo(() => [...PROMPT_LIBRARY_TAXONOMY, ...collectedGroups], [collectedGroups]);
   const taxonomyNodes = useMemo(() => taxonomyGroups.flatMap(group => [group, ...(group.children || [])]), [taxonomyGroups]);
   const countableTaxonomyNodes = useMemo(() => PROMPT_LIBRARY_TAXONOMY.flatMap(group => [
     group,
     ...(group.children || []).filter(child => isGlobalSearch || expandedGroups.has(group.id) || activeGroup === child.id || group.children?.some(item => item.id === activeGroup)),
   ]), [activeGroup, expandedGroups, isGlobalSearch]);
-  const taxonomyCounts = useMemo(() => {
-    const counts = {};
-    for (const node of countableTaxonomyNodes) counts[node.id] = 0;
-    let favoritesCount = 0;
-    for (const item of indexedItems) {
-      if (favorites.has(item.id)) favoritesCount += 1;
-      for (const node of countableTaxonomyNodes) {
-        if (matchesPromptTaxonomy(item, node)) counts[node.id] += 1;
+  const [taxonomyCounts, setTaxonomyCounts] = useState({ counts: {}, favoritesCount: favorites.size });
+  useEffect(() => {
+    let cancelled = false;
+    const calculate = () => {
+      if (cancelled) return;
+      const counts = {};
+      for (const node of countableTaxonomyNodes) counts[node.id] = 0;
+      let favoritesCount = 0;
+      for (const item of indexedItems) {
+        if (favorites.has(item.id)) favoritesCount += 1;
+        for (const node of countableTaxonomyNodes) {
+          if (matchesPromptTaxonomy(item, node)) counts[node.id] += 1;
+        }
       }
-    }
-    return { counts, favoritesCount };
+      if (!cancelled) setTaxonomyCounts({ counts, favoritesCount });
+    };
+    const task = window.requestIdleCallback
+      ? window.requestIdleCallback(calculate, { timeout: 1200 })
+      : window.setTimeout(calculate, 0);
+    return () => {
+      cancelled = true;
+      if (window.cancelIdleCallback && window.requestIdleCallback) window.cancelIdleCallback(task);
+      else window.clearTimeout(task);
+    };
   }, [countableTaxonomyNodes, favorites, indexedItems]);
   const categoryCounts = useMemo(() => PROMPT_LIBRARY_TAXONOMY.reduce((counts, group) => {
     counts[group.id] = group.id === 'favorites'
@@ -675,7 +749,7 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
             ))}
           </div>}
 
-           <div className="prompt-workbench-cards-heading"><strong>{activeIntent ? '接下来可以补充' : '可用内容'}</strong><span>{activeGroup === 'artist' || activeGroup === 'artist-anime' ? 'Anima 画师候选词；加入后请实际出图确认效果' : '点击加入购物车，替换会覆盖当前编辑内容'}</span></div>
+           <div className="prompt-workbench-cards-heading"><strong>{activeIntent ? '接下来可以补充' : '可用内容'}</strong><span>{activeGroup === 'artist' || activeGroup === 'artist-anime' ? 'Anima 画师候选词；加入后请实际出图确认效果' : '点击加入购物车，替换会覆盖当前编辑内容'}</span>{activeGroup === 'collected' && !fullCollectionRequested && <button type="button" className="prompt-library-load-more" onClick={() => setFullCollectionRequested(true)}>加载完整收集词库 · {getCollectedTagGroups().reduce((sum, group) => sum + group.count, 0).toLocaleString()} 条</button>}</div>
           <div className="prompt-workbench-card-scroll">
             {!isGlobalSearch && advancedFilters.source === 'collected' && collectionState === 'loading' ? <div className="prompt-library-empty"><strong>正在加载收集词库</strong><span>完成后可以搜索完整标签。</span></div> : visibleItems.length === 0 ? <div className="prompt-library-empty"><strong>没有找到匹配内容</strong><span>试试角色、发型、制服、夜景或 cel shading。</span></div> : <div className="prompt-workbench-results-sections">
               {visibleTagItems.length > 0 && <section className="prompt-workbench-result-section"><div className="prompt-workbench-result-section-heading"><strong>词条</strong><span>{visibleTagItems.length.toLocaleString()} 条</span></div><div className="prompt-workbench-card-grid">{visibleTagItems.map(renderPromptCard)}</div></section>}

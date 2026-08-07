@@ -87,6 +87,10 @@ function queryGroups(query) {
   return [...groups, ...searchTerms(residual).map(term => [term])];
 }
 
+export function searchQueryTokens(query) {
+  return [...new Set(queryGroups(query).flatMap(group => group.flatMap(term => [...searchTokens(term)])))];
+}
+
 export function matchesSearchText(value, query) {
   const text = String(value || '').toLowerCase();
   return queryGroups(query).some(group => group.some(term => text.includes(term.toLowerCase())));
@@ -106,10 +110,8 @@ export function buildSearchIndex(items) {
 
 export function buildSearchIndexWithCachedCollected(items, cachedCollectedIndex) {
   const index = new Map();
-  let collectedStart = -1;
   items.forEach((item, itemIndex) => {
     if (item.category === 'collected') {
-      if (collectedStart < 0) collectedStart = itemIndex;
       return;
     }
     for (const token of searchTokens(item.searchText)) {
@@ -118,11 +120,14 @@ export function buildSearchIndexWithCachedCollected(items, cachedCollectedIndex)
       index.set(token, matches);
     }
   });
-  if (collectedStart < 0 || !cachedCollectedIndex) return index;
-  const offset = collectedStart;
+  if (!cachedCollectedIndex) return index;
+  const itemIndexesById = new Map(items.map((item, itemIndex) => [item.id, itemIndex]));
   for (const [token, itemIndexes] of cachedCollectedIndex) {
     const matches = index.get(token);
-    const remapped = itemIndexes.map(itemIndex => itemIndex + offset);
+    const remapped = itemIndexes
+      .map(itemIndex => typeof itemIndex === 'number' ? items[itemIndex]?.id : itemIndex)
+      .map(itemId => itemIndexesById.get(itemId))
+      .filter(itemIndex => itemIndex !== undefined);
     if (matches) matches.push(...remapped);
     else index.set(token, remapped);
   }

@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ANIME_PROMPT_PACKS, ANIME_VISIBLE_PROMPT } from '../src/components/prompt-library-anime.mjs';
-import { createPhraseItems, createTagItems, parseTagMetadata, parseTagTranslations } from '../src/components/prompt-library-collected.mjs';
-import { buildSearchIndex, matchesSearchText, randomSearchGuideTerms, SEARCH_GUIDE_TERMS, searchLibrary } from '../src/components/prompt-library-search.mjs';
+import { createPhraseItems, createTagItems, getCachedCollectedItemIds, parseTagMetadata, parseTagTranslations } from '../src/components/prompt-library-collected.mjs';
+import { buildSearchIndex, matchesSearchText, randomSearchGuideTerms, SEARCH_GUIDE_TERMS, searchLibrary, searchQueryTokens } from '../src/components/prompt-library-search.mjs';
 import { PROMPT_LIBRARY_ITEMS } from '../src/components/prompt-library-data.mjs';
 import { performance } from 'node:perf_hooks';
 import { createCollectedTaxonomyGroups, matchesPromptTaxonomy, PROMPT_LIBRARY_TAXONOMY } from '../src/components/prompt-library-taxonomy.mjs';
@@ -87,6 +87,24 @@ test('search falls back to related results when all requested terms do not co-oc
   const results = searchLibrary(items, '红发 女仆装', buildSearchIndex(items));
 
   assert.deepEqual(results.map(item => item.prompt), ['red hair', 'maid outfit']);
+});
+
+test('cached collection lookup returns only IDs matching indexed query tokens', () => {
+  const index = new Map([
+    ['red', ['collected-tag:red_hair', 'collected-tag:red_eyes']],
+    ['hair', ['collected-tag:red_hair']],
+  ]);
+  assert.deepEqual(
+    getCachedCollectedItemIds('red hair', index).sort(),
+    ['collected-tag:red_eyes', 'collected-tag:red_hair'].sort(),
+  );
+});
+
+test('shared search query tokens include Chinese alias candidates', () => {
+  const tokens = searchQueryTokens('红发');
+  assert.ok(tokens.includes('red'));
+  assert.ok(tokens.includes('hair'));
+  assert.ok(tokens.includes('haired'));
 });
 
 test('combined aliases keep the non-alias query terms', () => {
