@@ -27,3 +27,11 @@ test('metrics and task store provide bounded observable persistence', async () =
   const metrics = createMetrics({ clock: (() => { let now = 1; return () => now++; })() }); metrics.increment('cache.hit'); metrics.observe('request', 4); assert.equal(metrics.snapshot().counters['cache.hit'], 1);
   const dir = await mkdtemp(join(tmpdir(), 'comfy-task-')); const store = new TaskStore(join(dir, 'tasks.json')); store.put({ id: 'a', state: 'queued' }); await store.flush(); assert.equal(JSON.parse(await readFile(join(dir, 'tasks.json'), 'utf8')).length, 1); assert.equal((await new TaskStore(join(dir, 'tasks.json')).load()).get('a').state, 'queued');
 });
+
+test('task store reload removes tasks deleted from disk and normalizes ids', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'comfy-task-reload-')); const path = join(dir, 'tasks.json');
+  const store = new TaskStore(path); store.put({ id: 1, state: 'queued' }); store.put({ id: 2, state: 'queued' }); await store.flush();
+  const replacement = new TaskStore(path); replacement.put({ id: 1, state: 'completed' }); await replacement.flush();
+  await store.load();
+  assert.equal(store.get(2), null); assert.equal(store.get(1).state, 'completed');
+});

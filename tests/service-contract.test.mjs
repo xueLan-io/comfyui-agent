@@ -28,8 +28,9 @@ test('service invoker requires confirmation and preserves preview identity', asy
   const registry = createServiceRegistry([service]);
   const ledger = { entries: new Map(), begin(id, value) { this.entries.set(id, { requestId: id, ...value }); }, update() {}, snapshot(id) { return this.entries.get(id); } };
   const invoker = new ServiceInvoker({ registry, ledger, clock: () => 1000 });
-  const preview = await invoker.prepare({ serviceId: 'test-service', input: { prompt: 'cat' }, owner: { principalId: 'p', projectId: 'x', sessionId: 's' } });
-  await assert.rejects(() => invoker.invoke({ serviceId: 'test-service', previewId: preview.previewId, requestId: preview.requestId, confirmation: false }), error => error.code === 'CONFIRMATION_REQUIRED');
+  const owner = { principalId: 'p', projectId: 'x', sessionId: 's', permissions: ['read', 'execute'] };
+  const preview = await invoker.prepare({ serviceId: 'test-service', input: { prompt: 'cat' }, owner });
+  await assert.rejects(() => invoker.invoke({ serviceId: 'test-service', previewId: preview.previewId, requestId: preview.requestId, confirmation: false, owner }), error => error.code === 'CONFIRMATION_REQUIRED');
   const result = await invoker.invoke({ serviceId: 'test-service', previewId: preview.previewId, requestId: preview.requestId, confirmation: true, owner: preview.owner });
   assert.equal(result.state, 'queued');
 });

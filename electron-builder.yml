@@ -2,7 +2,6 @@ appId: com.comfyui.agent
 productName: "ComfyMuse"
 executableName: "ComfyMuse"
 artifactName: "ComfyMuse-${version}-Setup.${ext}"
-companyName: "ComfyMuse"
 copyright: Copyright 2026
 icon: electron/icon.ico
 directories:

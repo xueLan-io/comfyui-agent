@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { Readable, Writable } from 'node:stream';
 import test from 'node:test';
-import { createMcpHttpServer, createSkillMcpTools, createWebMcpServer, runMcpStdio } from '../src/agent/mcp/web-server.mjs';
+import { createGenerationTools, createMcpHttpServer, createSkillMcpTools, createWebMcpServer, runMcpStdio } from '../src/agent/mcp/web-server.mjs';
 
 async function initialized(server) {
   await server.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '1' } } });
@@ -94,4 +94,72 @@ test('HTTP transport supports MCP initialize headers and bearer authentication',
   const unauthorized = await fetch(endpoint, { method: 'POST', body: '{}' });
   assert.equal(unauthorized.status, 401);
   await transport.close();
+});
+
+test('MCP generation lifecycle forwards owner and confirmation binding', async () => {
+  const owner = { principalId: 'principal-1', tenantId: 'tenant-1', projectId: 'project-1', sessionId: 'session-1' };
+  const calls = [];
+  const generation = {
+    async prepare(request) {
+      calls.push(['prepare', request]);
+      return { previewId: 'preview-1', requestId: request.requestId || 'request-1', requestDigest: 'sha256:digest', owner: request.owner };
+    },
+    async runPrepared(previewId, edits, runOwner, confirmation) {
+      calls.push(['run', previewId, edits, runOwner, confirmation]);
+      if (runOwner.sessionId !== owner.sessionId) throw Object.assign(new Error('owner mismatch'), { code: 'GENERATION_OWNER_MISMATCH' });
+      if (confirmation.digest !== 'sha256:digest') throw Object.assign(new Error('digest mismatch'), { code: 'CONFIRMATION_DIGEST_MISMATCH' });
+      return { state: 'completed', requestId: confirmation.requestId };
+    },
+    status: async ({ requestId, owner: statusOwner }) => ({ requestId, owner: statusOwner, state: 'completed' }),
+    cancel: async ({ previewId, taskId, owner: cancelOwner }) => {
+      if (!previewId && !taskId) throw Object.assign(new Error('resource required'), { code: 'RESOURCE_ID_REQUIRED' });
+      return { cancelled: true, previewId, taskId, owner: cancelOwner, state: 'cancelled' };
+    },
+  };
+  const server = createWebMcpServer({ generation, includeReadOnlyTools: false, includeSkillTools: false });
+  const result = await server.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'generation_prepare', arguments: { request: { requestId: 'request-1', positive: 'cat' } } } }, { owner });
+  assert.deepEqual(JSON.parse(result.content[0].text).owner, owner);
+  const run = await server.handle({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'generation_run_prepared', arguments: { previewId: 'preview-1', confirmation: { accepted: true, digest: 'sha256:digest', requestId: 'request-1', previewId: 'preview-1' } } } }, { owner });
+  assert.equal(JSON.parse(run.content[0].text).state, 'completed');
+  assert.equal(calls[0][1].owner.sessionId, 'session-1');
+  assert.equal(calls[1][3].sessionId, 'session-1');
+});
+
+test('MCP generation rejects foreign owner, wrong digest, missing cancel resource, duplicate request, and busy coordinator', async () => {
+  const owner = { principalId: 'p', tenantId: 't', projectId: 'project', sessionId: 'session' };
+  let prepared = 0;
+  let busy = false;
+  const previews = new Map();
+  const generation = {
+    async prepare(request) {
+      if (previews.has(request.requestId)) return previews.get(request.requestId);
+      if (busy) throw Object.assign(new Error('busy'), { code: 'GENERATION_BUSY' });
+      busy = true; prepared += 1;
+      const preview = { previewId: 'preview-1', requestId: request.requestId, requestDigest: 'sha256:ok', owner: request.owner };
+      previews.set(request.requestId, preview);
+      return preview;
+    },
+    runPrepared(previewId, edits, runOwner, confirmation) {
+      if (runOwner.sessionId !== owner.sessionId) throw Object.assign(new Error('foreign'), { code: 'GENERATION_OWNER_MISMATCH' });
+      if (confirmation.digest !== 'sha256:ok') throw Object.assign(new Error('wrong digest'), { code: 'CONFIRMATION_DIGEST_MISMATCH' });
+      return { state: 'completed' };
+    },
+    cancel({ previewId, taskId }) {
+      if (!previewId && !taskId) throw Object.assign(new Error('missing'), { code: 'RESOURCE_ID_REQUIRED' });
+      return { state: 'cancelled', cancelled: true };
+    },
+  };
+  const server = createWebMcpServer({ generation, includeReadOnlyTools: false, includeSkillTools: false });
+  const prepare = requestId => server.handle({ jsonrpc: '2.0', id: requestId, method: 'tools/call', params: { name: 'generation_prepare', arguments: { request: { requestId: 'same-request' } } } }, { owner });
+  await prepare(1);
+  assert.equal(JSON.parse((await prepare(2)).content[0].text).previewId, 'preview-1');
+  assert.equal(prepared, 1, 'duplicate requestId is idempotent at the generation bridge');
+  const foreign = await server.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'generation_run_prepared', arguments: { previewId: 'preview-1', confirmation: { accepted: true, digest: 'sha256:ok', requestId: 'same-request', previewId: 'preview-1' } } } }, { owner: { ...owner, sessionId: 'other-session' } });
+  assert.equal(foreign.isError, true);
+  const wrongDigest = await server.handle({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'generation_run_prepared', arguments: { previewId: 'preview-1', confirmation: { accepted: true, digest: 'sha256:bad', requestId: 'same-request', previewId: 'preview-1' } } } }, { owner });
+  assert.equal(wrongDigest.isError, true);
+  const missing = await server.handle({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'generation_cancel', arguments: {} } }, { owner });
+  assert.equal(missing.isError, true);
+  const busyResult = await server.handle({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'generation_prepare', arguments: { request: { requestId: 'another' } } } }, { owner });
+  assert.equal(busyResult.isError, true);
 });

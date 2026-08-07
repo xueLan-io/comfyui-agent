@@ -12,8 +12,8 @@ export function normalizeGenerationResult(result = {}) {
   const explicitVideos = Array.isArray(result.videos) ? result.videos : [];
   const suppliedMedia = Array.isArray(result.media) ? result.media : [];
   const media = [...explicitImages, ...explicitVideos, ...suppliedMedia].filter((item, index, items) => {
-    const key = item?.path || item?.filename || item?.url || `${index}`;
-    return items.findIndex(candidate => (candidate?.path || candidate?.filename || candidate?.url || '') === key) === index;
+    const key = mediaKey(item, index);
+    return items.findIndex((candidate, candidateIndex) => mediaKey(candidate, candidateIndex) === key) === index;
   });
   const isVideo = item => item?.mediaType === 'video'
     || item?.kind === 'video'
@@ -21,6 +21,12 @@ export function normalizeGenerationResult(result = {}) {
   const images = media.filter(item => !isVideo(item));
   const videos = media.filter(isVideo);
   return { ...result, media, images, videos };
+}
+
+function mediaKey(item, index) {
+  if (!item || typeof item !== 'object') return `${index}`;
+  const reference = item.path || item.url || item.filename || item.name || index;
+  return JSON.stringify([reference, item.subfolder || '', item.type || '', item.mediaType || item.kind || '', item.assetId || '']);
 }
 
 export function normalizeGenerationRequest(input = {}) {
@@ -37,6 +43,8 @@ export function normalizeGenerationRequest(input = {}) {
     turnId: input.turnId || '',
     projectId: input.projectId || '',
     sessionId: input.sessionId || '',
+    principalId: input.principalId || '',
+    tenantId: input.tenantId || '',
     source,
     workflowName: input.workflowName,
     positive: input.positive,

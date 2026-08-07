@@ -1,5 +1,5 @@
 import { copyFile, mkdir, rename, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join, resolve, relative, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { normalizeMediaReference } from './media-contract.mjs';
 import { assertServiceOwner } from '../service-policy.mjs';
@@ -21,7 +21,10 @@ export class ResultArchiveService {
         if (!sourcePath) throw new Error(`Unable to resolve media: ${reference.filename}`);
         const type = reference.mediaType === 'video' ? 'videos' : 'images';
         const filename = `${randomUUID()}-${String(reference.filename || 'result').replace(/[^a-zA-Z0-9._-]/g, '_')}`;
-        const target = join(resolve(project.dir, type), String(taskId || 'unassigned'));
+        const projectRoot = resolve(project.dir);
+        const target = resolve(projectRoot, type, String(taskId || 'unassigned'));
+        const targetRelative = relative(projectRoot, target);
+        if (!targetRelative || targetRelative.startsWith('..') || isAbsolute(targetRelative)) throw new Error('Invalid task id');
         await mkdir(target, { recursive: true });
         const destination = join(target, filename);
         const temporary = `${destination}.tmp-${randomUUID()}`;
@@ -38,6 +41,10 @@ export class ResultArchiveService {
     } catch (error) {
       await Promise.all(tempFiles.map(file => rm(file, { force: true }).catch(() => {})));
       await Promise.all(createdFiles.map(file => rm(file, { force: true }).catch(() => {})));
+      if (error.code === 'CANCELLED') {
+        this.taskManager?.update?.(taskId, { archiveStatus: 'cancelled', rawResultAvailable: true, archiveError: error.message });
+        return { archiveStatus: 'cancelled', rawResultAvailable: true, retryable: false, error: error.message, media: archived };
+      }
       this.taskManager?.update?.(taskId, { archiveStatus: 'archive_failed', rawResultAvailable: true, archiveError: error.message });
       return { archiveStatus: 'archive_failed', rawResultAvailable: true, retryable: true, error: error.message, media: archived };
     }

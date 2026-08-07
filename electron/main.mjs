@@ -39,6 +39,12 @@ import { createGovernanceContext } from '../src/runtime/governance/context.mjs';
 import { createWindowRegistry } from '../src/runtime/window-registry.mjs';
 import { createMetrics } from '../src/runtime/metrics.mjs';
 
+for (const stream of [process.stdout, process.stderr]) {
+  stream?.on('error', error => {
+    if (error?.code !== 'EPIPE') throw error;
+  });
+}
+
 const { app, BrowserWindow, ipcMain, dialog, Menu, shell, Tray, nativeImage, globalShortcut, screen } = pkg;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -158,6 +164,7 @@ const governanceAdmission = new AdmissionController({
 });
 let governanceGateway;
 let projectWriteQueue = Promise.resolve();
+let recoveryPromise;
 const activeImageRequests = new Map();
 let globalPresetsRoot = '';
 let embeddedMcpTransport;
@@ -627,26 +634,80 @@ function mcpGenerationBridge() {
   return {
     prepare: async request => {
       await startAgent(getStoredConfig());
-      return ensureDirectService().prepare(directGenerationRequest({
-        ...request,
-        requestId: request.requestId || `mcp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        projectId: request.projectId || agent?.sessionManager.activeProjectId || '',
-        sessionId: request.sessionId || agent?.sessionManager.activeSessionId || '',
-      }), { sandboxInput: directSandboxInput() });
+      assertExecutionAvailable();
+      const owner = executionOwner({ ...(request.owner || {}), projectId: request.owner?.projectId || request.projectId, sessionId: request.owner?.sessionId || request.sessionId, workflowDir: request.workflowDir });
+      const requestId = request.requestId || `mcp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const fingerprint = JSON.stringify({ workflowName: request.workflowName, positive: request.positive, negative: request.negative, settings: request.settings, media: request.media });
+      const existing = requestLedger.begin(requestId, { source: 'mcp', fingerprint, ...owner });
+      if (existing.state === 'completed') return existing.result;
+      if (existing.preview) return existing.preview;
+      return executionCoordinator.execute({
+        source: 'mcp', taskId: requestId, owner,
+        work: async entry => {
+          const preview = await ensureDirectService().prepare(directGenerationRequest({
+            ...request, requestId, projectId: owner.projectId, sessionId: owner.sessionId, principalId: owner.principalId, tenantId: owner.tenantId,
+          }), { sandboxInput: directSandboxInput() });
+          Object.assign(preview, owner);
+          requestLedger.update(requestId, { state: 'prepared', previewId: preview.previewId, preview });
+          executionCoordinator.registerPreview({ source: 'mcp', previewId: preview.previewId, taskId: requestId, requestId, owner, entry });
+          return preview;
+        },
+      });
     },
-    runPrepared: async (previewId, edits) => {
-      const result = await ensureDirectService().run(previewId, edits, { source: 'mcp' });
-      return archiveProjectResult(result, executionOwner());
+    runPrepared: async (previewId, edits, owner = {}, confirmation = {}) => {
+      const preview = ensureDirectService().getPreview(previewId);
+      const resolvedOwner = executionOwner({ ...preview, ...owner });
+      assertOwnerMatch(preview, resolvedOwner);
+      assertConfirmationBinding({ confirmation, expectedDigest: preview.requestDigest, requestId: preview.requestId, previewId });
+      const abortController = new AbortController();
+      return executionCoordinator.execute({
+        source: 'mcp', taskId: preview.requestId, owner: resolvedOwner, previewId,
+        cancel: async () => { abortController.abort(); await ensureDirectService().cancel(); },
+        work: async () => {
+          requestLedger.update(preview.requestId, { state: 'executing' });
+          try {
+            const result = await ensureDirectService().run(previewId, edits, { source: 'mcp', signal: abortController.signal });
+            const archived = await archiveProjectResult(result, resolvedOwner);
+            requestLedger.complete(preview.requestId, archived);
+            return archived;
+          } catch (error) {
+            requestLedger.fail(preview.requestId, error);
+            throw error;
+          }
+        },
+      });
     },
-    status: async ({ requestId = '', taskId = '' } = {}) => {
-      if (requestId) return requestLedger.snapshot(requestId);
-      if (taskId && agent) return agent.getTrace(taskId) || agent.taskManager.get(taskId) || { taskId, status: 'unknown' };
+    status: async ({ requestId = '', taskId = '', owner = {} } = {}) => {
+      if (requestId) { const entry = requestLedger.snapshot(requestId); assertOwnerMatch(entry, owner); return entry; }
+      if (taskId && agent) { const task = agent.taskManager.get(taskId); assertOwnerMatch(task, owner); return agent.getTrace(taskId) || task || { taskId, status: 'unknown' }; }
       return { status: 'unknown' };
     },
-    cancel: async ({ previewId = '', taskId = '' } = {}) => {
-      if (previewId) return ensureDirectService().discardPreview(previewId);
-      if (taskId && agent) return agent.cancel(taskId);
-      return ensureDirectService().cancel();
+    cancel: async ({ previewId = '', taskId = '', owner = {} } = {}) => {
+      if (previewId) {
+        const preview = ensureDirectService().getPreview(previewId);
+        assertOwnerMatch(preview, owner);
+        const discarded = ensureDirectService().discardPreview(previewId);
+        if (!discarded) throw Object.assign(new Error('Generation preview not found'), { code: 'PREVIEW_NOT_FOUND' });
+        if (preview.requestId) requestLedger.update(preview.requestId, { state: 'cancelled', result: { cancelled: true, requestId: preview.requestId, previewId } });
+        executionCoordinator.discardPreview(previewId);
+        return { cancelled: true, previewId, requestId: preview.requestId || '' };
+      }
+      if (taskId) {
+        const active = executionCoordinator.active;
+        if (active?.taskId === taskId && active.source === 'mcp') {
+          assertOwnerMatch(active.owner, owner);
+          const result = await executionCoordinator.cancel({ source: 'mcp', taskId });
+          requestLedger.update(active.requestId || taskId, { state: 'cancelled', result });
+          return result;
+        }
+        if (agent) {
+          const task = agent.taskManager.get(taskId);
+          assertOwnerMatch(task, owner);
+          return agent.cancel(taskId);
+        }
+        throw Object.assign(new Error('Generation task not found'), { code: 'TASK_NOT_FOUND' });
+      }
+      throw Object.assign(new Error('A previewId or taskId is required to cancel a generation'), { code: 'RESOURCE_ID_REQUIRED' });
     },
   };
 }
@@ -716,7 +777,7 @@ function updateDirectTask(taskId, state, patch = {}) {
 function completeDirectTask(taskId, result = {}, error = null) {
   if (!taskId || !agent?.taskManager?.get(taskId)) return;
   const task = agent.taskManager.get(taskId);
-  const state = error ? 'failed' : result.cancelled ? 'cancelled' : 'completed';
+  const state = error ? (error.stage === 'archive' ? 'archive_failed' : 'failed') : result.cancelled ? 'cancelled' : 'completed';
   if (!error && !result.cancelled && task.state === 'executing') updateDirectTask(taskId, 'observing', { promptId: result.promptId || task.promptId || '' });
   if (task.state !== state) updateDirectTask(taskId, state, { promptId: result.promptId || task.promptId || '' });
   agent.taskManager.complete(taskId, { result, error });
@@ -1191,7 +1252,9 @@ function startAgent(config) {
 
 async function recoverAgentTasks() {
   if (!agent) return [];
-  const recovered = await agent.recoverTasks?.() || [];
+  if (recoveryPromise) return recoveryPromise;
+  recoveryPromise = (async () => {
+    const recovered = await agent.recoverTasks?.() || [];
   for (const item of recovered) {
     if (item.status !== 'completed' || !item.history) continue;
     try {
@@ -1214,7 +1277,9 @@ async function recoverAgentTasks() {
       }
     }
   }
-  return recovered;
+    return recovered;
+  })();
+  try { return await recoveryPromise; } finally { recoveryPromise = null; }
 }
 
 function applyComfyConfig(config) {
@@ -1733,7 +1798,7 @@ function generationOptions(clientId, controls = {}) {
 
 function assertOwnerMatch(owner = {}, expected = {}) {
   for (const field of ['principalId', 'tenantId', 'projectId', 'sessionId']) {
-    if (expected[field] && owner[field] && owner[field] !== expected[field]) {
+    if (expected[field] && owner[field] !== expected[field]) {
       const code = field === 'tenantId' ? 'TENANT_MISMATCH' : field === 'projectId' ? 'PROJECT_ACCESS_DENIED' : 'OWNER_MISMATCH';
       throw Object.assign(new Error(`Resource owner mismatch: ${field}`), { code });
     }
@@ -1908,12 +1973,14 @@ ipcMain.handle('direct:prepare', async (_, { request = {} } = {}) => {
     ...request,
     projectId: request.projectId || agent?.sessionManager.activeProjectId,
     sessionId: request.sessionId || agent?.sessionManager.activeSessionId,
+    principalId: request.principalId || localPrincipal.id,
+    tenantId: request.tenantId || localPrincipal.tenantId,
   });
   if (agent && normalized.projectId && normalized.sessionId
     && (normalized.projectId !== agent.sessionManager.activeProjectId
       || normalized.sessionId !== agent.sessionManager.activeSessionId)) {
     await agent.useSession(normalized.projectId, normalized.sessionId);
-    sendToRenderer('project:state', agent.sessionManager.getState());
+    if (agent) sendToRenderer('project:state', agent.sessionManager.getState());
   }
   const owner = executionOwner(normalized);
   sendToRenderer('direct:status', {
@@ -1949,6 +2016,12 @@ ipcMain.handle('direct:prepare', async (_, { request = {} } = {}) => {
   });
   const existing = requestLedger.begin(normalized.requestId, { source: 'direct', fingerprint, ...owner });
   if (existing.preview) return existing.preview;
+  if (['completed', 'failed', 'cancelled'].includes(existing.state)) {
+    const error = new Error('该请求已经结束，不能使用相同 requestId 重新提交');
+    error.code = 'REQUEST_TERMINAL';
+    error.requestId = normalized.requestId;
+    throw error;
+  }
   if (existing.state === 'executing' || existing.state === 'observing') {
     const error = new Error('该请求仍在执行或等待恢复，拒绝重复提交');
     error.code = 'REQUEST_IN_PROGRESS';
@@ -1989,7 +2062,7 @@ ipcMain.handle('direct:prepare', async (_, { request = {} } = {}) => {
           turnId: normalized.turnId || '',
           attachments: [...(normalized.media?.images || []), ...(normalized.media?.videos || [])],
         });
-        sendToRenderer('project:state', agent.sessionManager.getState());
+        if (agent) sendToRenderer('project:state', agent.sessionManager.getState());
         executionCoordinator.registerPreview({
           source: 'direct',
           previewId: preview.previewId,
@@ -2130,7 +2203,7 @@ ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options
           negative: edits.negative || preview.negative || '',
           turnId: preview.turnId || '',
         });
-        sendToRenderer('project:state', agent.sessionManager.getState());
+         if (agent) sendToRenderer('project:state', agent.sessionManager.getState());
         sendToRenderer('direct:status', {
           source: 'direct',
           requestId,
@@ -2435,6 +2508,7 @@ ipcMain.handle('agent:monitor-task', async (_, { taskId } = {}) => {
       sessionId: task.sessionId,
     });
     agent.taskManager.settleComplete(taskId, { result: archived });
+    if (task.requestId) requestLedger.complete(task.requestId, archived);
     await agent.taskManager.persist();
     return { status: 'completed', taskId, promptId, result: archived };
   } catch (error) {
@@ -2458,6 +2532,7 @@ ipcMain.handle('agent:retry-recovery', async (_, { taskId } = {}) => {
   if (task.result?.executionStatus === 'success' && (task.result.images?.length || task.result.videos?.length || task.result.media?.length)) {
     const archived = task.result;
     settleRecoveredTask(taskId, archived);
+    if (task.requestId) requestLedger.complete(task.requestId, archived);
     await agent.taskManager.persist();
     return { status: 'completed', taskId, promptId, result: archived, recoveredFromTask: true };
   }

@@ -5,6 +5,7 @@ import { createPolicyEngine } from '../src/runtime/governance/policy-engine.mjs'
 import { AdmissionController } from '../src/runtime/governance/admission-controller.mjs';
 import { QuotaManager } from '../src/runtime/governance/quota-manager.mjs';
 import { RateLimiter } from '../src/runtime/governance/rate-limiter.mjs';
+import { deadlineSignal } from '../src/runtime/governance/deadline.mjs';
 
 test('admission releases quota and execution slots', () => {
   const context = createGovernanceContext({ principalId: 'p', tenantId: 't', projectId: 'pr', sessionId: 's' });
@@ -21,4 +22,20 @@ test('admission accepts the session wildcard limit', () => {
   const first = admission.admit(context, { action: 'service.invoke', input: { confirmation: true } });
   assert.throws(() => admission.admit(context, { action: 'service.invoke', input: { confirmation: true } }), error => error.code === 'RATE_LIMITED');
   first.release();
+});
+
+test('quota reservations account for concurrent requests and bounded actual usage', () => {
+  const context = { principalId: 'p', tenantId: 't' };
+  const quota = new QuotaManager({ limits: { generation_count: 1 } });
+  const first = quota.reserveQuota(context, { generation_count: 1 });
+  assert.throws(() => quota.reserveQuota(context, { generation_count: 1 }), error => error.code === 'QUOTA_EXCEEDED');
+  assert.throws(() => quota.commitQuota(first, { generation_count: 2 }), error => error.code === 'QUOTA_RESERVATION_EXCEEDED');
+  assert.throws(() => quota.reserveQuota(context, { generation_count: 1 }), error => error.code === 'QUOTA_EXCEEDED');
+});
+
+test('deadline signal inherits an already-aborted parent', () => {
+  const parent = new AbortController(); parent.abort();
+  const cancellation = deadlineSignal(null, parent.signal);
+  assert.equal(cancellation.signal.aborted, true);
+  cancellation.cancel();
 });

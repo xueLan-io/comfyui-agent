@@ -111,7 +111,7 @@ export function createSkillMcpTools(skills = SKILLS) {
   }));
 }
 
-function createGenerationTools({ generation } = {}) {
+export function createGenerationTools({ generation } = {}) {
   if (!generation) return [];
   return [
     {
@@ -119,16 +119,16 @@ function createGenerationTools({ generation } = {}) {
       description: 'Prepare a ComfyUI generation preview. This never submits a job.',
       input_schema: { type: 'object', properties: { request: { type: 'object' } }, required: ['request'], additionalProperties: false },
       output_schema: { type: 'object' }, side_effects: [], requires_confirmation: false, idempotent: true, retry: { mode: 'never' },
-      execute: input => generation.prepare(input.request),
+      execute: (input, context) => generation.prepare({ ...input.request, owner: context?.owner }),
     },
     {
       name: 'generation_run_prepared',
       description: 'Run a previously prepared and explicitly confirmed generation preview.',
-      input_schema: { type: 'object', properties: { previewId: { type: 'string' }, confirmation: { type: 'boolean' }, edits: { type: 'object' } }, required: ['previewId', 'confirmation'], additionalProperties: false },
+       input_schema: { type: 'object', properties: { previewId: { type: 'string' }, confirmation: { type: 'object', properties: { accepted: { type: 'boolean' }, digest: { type: 'string' }, requestId: { type: 'string' }, previewId: { type: 'string' } }, required: ['accepted', 'digest', 'requestId', 'previewId'], additionalProperties: false }, edits: { type: 'object' } }, required: ['previewId', 'confirmation'], additionalProperties: false },
       output_schema: { type: 'object' }, side_effects: ['comfyui_generation'], requires_confirmation: true, idempotent: false, retry: { mode: 'never' },
-      execute: input => {
-        if (input.confirmation !== true) return { error: 'Explicit confirmation is required' };
-        return generation.runPrepared(input.previewId, input.edits || {});
+       execute: (input, context) => {
+         if (input.confirmation?.accepted !== true) return { error: 'Explicit confirmation is required' };
+         return generation.runPrepared(input.previewId, input.edits || {}, context?.owner, input.confirmation);
       },
     },
     {
@@ -136,14 +136,14 @@ function createGenerationTools({ generation } = {}) {
       description: 'Read the status of a prepared or submitted generation request.',
       input_schema: { type: 'object', properties: { requestId: { type: 'string' }, taskId: { type: 'string' } }, additionalProperties: false },
       output_schema: { type: 'object' }, side_effects: [], requires_confirmation: false, idempotent: true, retry: { mode: 'limited', max_attempts: 1 },
-      execute: input => generation.status(input),
+       execute: (input, context) => generation.status({ ...input, owner: context?.owner }),
     },
     {
       name: 'generation_cancel',
       description: 'Cancel a prepared or running generation owned by the current MCP session.',
       input_schema: { type: 'object', properties: { previewId: { type: 'string' }, taskId: { type: 'string' } }, additionalProperties: false },
       output_schema: { type: 'object' }, side_effects: ['comfyui_generation'], requires_confirmation: true, idempotent: true, retry: { mode: 'never' },
-      execute: input => generation.cancel(input),
+       execute: (input, context) => generation.cancel({ ...input, owner: context?.owner }),
     },
   ];
 }
@@ -198,7 +198,7 @@ export function createWebMcpServer({ webTool = WebTool, llmProvider, tools = [],
   let multiSession = false;
   const server = {
      tools: exposedTools.map(toMcpTool),
-    async handle(request = {}) {
+    async handle(request = {}, context = {}) {
       if (request.jsonrpc !== undefined && request.jsonrpc !== JSON_RPC_VERSION) throw Object.assign(new Error('Invalid JSON-RPC version'), { code: -32600 });
       const method = request.method;
       if (method === 'initialize') {
@@ -218,7 +218,7 @@ export function createWebMcpServer({ webTool = WebTool, llmProvider, tools = [],
       const tool = byName.get(name);
       const validation = validateToolInput(tool, input || {});
       if (!validation.valid) throw Object.assign(new Error('Invalid tool arguments'), { code: -32602, data: validation.errors });
-      try { return mcpResult(await tool.execute(input || {})); } catch (error) { return mcpResult({ error: error.message }, true); }
+       try { return mcpResult(await tool.execute(input || {}, context)); } catch (error) { return mcpResult({ error: error.message }, true); }
     },
     enableMultiSession() { multiSession = true; },
   };
@@ -282,10 +282,18 @@ export function createMcpHttpServer(server, { host = '127.0.0.1', port = 0, auth
       response.writeHead(404); response.end('Unknown MCP session'); return;
     }
     if (rpc.method !== 'initialize' && sessionRegistry) {
-      try { sessionRegistry.assertSession(requestedSession); } catch (error) { response.writeHead(401, { 'content-type': 'application/json' }); response.end(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: rpc.id ?? null, error: rpcError(error.code, error.message) })); return; }
+      try {
+        const principal = principalResolver?.(request);
+        sessionRegistry.assertSession(requestedSession, {
+          principalId: principal?.id,
+          tenantId: principal?.tenantId,
+        });
+      } catch (error) { response.writeHead(401, { 'content-type': 'application/json' }); response.end(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: rpc.id ?? null, error: rpcError(error.code, error.message) })); return; }
     }
-    try {
-      const result = await server.handle(rpc);
+      try {
+        const principal = principalResolver?.(request);
+        const registeredSession = sessionRegistry?.getSession(requestedSession);
+        const result = await server.handle(rpc, { sessionId: requestedSession, owner: { principalId: principal?.id, tenantId: principal?.tenantId, projectId: registeredSession?.projectId || '', sessionId: requestedSession, permissions: ['read', 'execute', 'mutate'] } });
       if (rpc.id === undefined) { response.writeHead(202); response.end(); return; }
       const headers = { 'content-type': accepts.includes('text/event-stream') ? 'text/event-stream' : 'application/json' };
       if (rpc.method === 'initialize') {

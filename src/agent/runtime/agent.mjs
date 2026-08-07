@@ -321,8 +321,9 @@ export class Agent {
     this._recoverAbandonedTasks();
     const sessionState = this.sessionManager.getSessionState?.();
     if (sessionState?.state === 'awaiting_confirmation' && sessionState.preparedPreview) {
-      this._state = 'awaiting_confirmation';
-      this._needsConfirmation = true;
+      this._state = 'idle';
+      this._needsConfirmation = false;
+      this.sessionManager.setSessionState?.({ state: 'idle', phase: 'idle', pending: null, pendingIntent: null, pendingRequest: '', preparedPreview: null, taskStatus: 'idle', needsConfirmation: false });
     }
   }
 
@@ -2800,7 +2801,7 @@ ${researchContext}`,
     if (this.executor) this.executor.cancel();
     this._pendingQueue = [];
     if (this._taskId) {
-      this.taskManager.markAbandoned();
+      this.taskManager.markAbandoned({ taskId: this._taskId });
     }
     this.sessionManager.setSessionState?.({
       state: 'idle',

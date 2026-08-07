@@ -105,7 +105,9 @@ function validateLinks(workflow, issues) {
     .filter(node => node.mode !== 4)
     .map(node => String(node.id)));
   const outputsByNode = new Map();
+  const nodesById = new Map();
   for (const node of workflow.nodes || []) {
+    nodesById.set(String(node.id), node);
     outputsByNode.set(String(node.id), (node.outputs || []).length);
   }
   const linkIds = new Set((workflow.links || []).map(link => String(link[0])));
@@ -124,15 +126,21 @@ function validateLinks(workflow, issues) {
   }
 
   for (const link of workflow.links || []) {
-    const [linkId, srcNode, srcOut] = link;
+    const [linkId, srcNode, srcOut, targetNode, targetInput] = link;
     const src = String(srcNode);
     if (!activeIds.has(src)) {
       issues.push({ severity: 'error', code: 'broken_link', message: `连线 ${linkId} 指向不存在的激活源节点 #${src}` });
       continue;
     }
     const outputs = outputsByNode.get(src) || 0;
-    if (Number(srcOut) >= outputs) {
+    if (!Number.isInteger(Number(srcOut)) || Number(srcOut) < 0 || Number(srcOut) >= outputs) {
       issues.push({ severity: 'error', code: 'broken_link', message: `连线 ${linkId} 指向节点 #${src} 的越界输出 ${srcOut}（该节点只有 ${outputs} 个输出）` });
+    }
+    const target = nodesById.get(String(targetNode));
+    if (!target || target.mode === 4) {
+      issues.push({ severity: 'error', code: 'broken_link', message: `连线 ${linkId} 指向不存在或未激活的目标节点 #${targetNode}` });
+    } else if (!Number.isInteger(Number(targetInput)) || Number(targetInput) < 0 || Number(targetInput) >= (target.inputs || []).length) {
+      issues.push({ severity: 'error', code: 'broken_link', message: `连线 ${linkId} 指向节点 #${targetNode} 的越界输入 ${targetInput}` });
     }
   }
 

@@ -36,6 +36,8 @@ function previewFor(request, workflow, validation, previewId) {
     turnId: request.turnId || '',
     projectId: request.projectId || '',
     sessionId: request.sessionId || '',
+    principalId: request.principalId || '',
+    tenantId: request.tenantId || '',
     source: 'direct',
     origin: request.origin,
     presetId: request.presetId || '',
@@ -125,13 +127,15 @@ export class DirectService {
     const preview = previewFor(request, workflow, validation, previewId);
     const frozenRequest = freezeRuntimeRequest(request);
     preview.frozenRuntimeRequest = frozenRequest;
-    this._previews.set(previewId, { request: frozenRequest, frozenRuntimeRequest: frozenRequest, workflow, preview, sandboxInput });
+    this._previews.set(previewId, { request: frozenRequest, frozenRuntimeRequest: frozenRequest, workflow, preview: { ...preview, expiresAt: Date.now() + 15 * 60 * 1000 }, sandboxInput });
     return preview;
   }
 
 
   getPreview(previewId) {
-    return this._previews.get(previewId)?.preview || null;
+    const prepared = this._previews.get(previewId);
+    if (prepared?.preview.expiresAt && prepared.preview.expiresAt <= Date.now()) { this._previews.delete(previewId); return null; }
+    return prepared?.preview || null;
   }
 
   discardPreview(previewId) {
@@ -141,6 +145,7 @@ export class DirectService {
   async run(previewId, edits = {}, options = {}) {
     const prepared = this._previews.get(previewId);
     if (!prepared) throw new Error('Direct generation preview expired; prepare it again');
+    if (prepared.preview.expiresAt && prepared.preview.expiresAt <= Date.now()) { this._previews.delete(previewId); throw new Error('Direct generation preview expired; prepare it again'); }
     if (prepared.preview.status !== 'prepared') {
       const error = new Error('Direct generation preview is already being consumed');
       error.code = 'GENERATION_PREVIEW_BUSY';

@@ -165,6 +165,7 @@ export class Executor {
           workflowDir: trustedWorkflowDir,
           sandboxInput: enrichedInput.sandboxInput,
           onProgress: context.onProgress,
+          signal: context.signal,
         })
         : await tool.execute(enrichedInput);
       if (step.tool === 'comfyui') result = normalizeGenerationResult(result);

@@ -12,7 +12,7 @@ export function createServiceRegistry(services = []) {
     unregister(id) { return byId.delete(String(id)); },
     all: () => [...byId.values()],
     byId,
-    get: id => byId.get(id) || null,
+     get: id => { const service = byId.get(id) || null; return service?.enabled === false ? null : service; },
     list: ({ kind, permission, enabled = true } = {}) => [...byId.values()]
       .filter(service => enabled === false || service.enabled !== false)
       .filter(service => !kind || service.manifest.kind === kind)

@@ -60,8 +60,13 @@ function validateOutputs(workflow) {
     ? null : 'workflow must retain at least one active output node';
 }
 function validateStructure(workflow) {
-  const ids = new Set((workflow.nodes || []).map(node => String(node.id)));
+  const ids = new Set();
   const issues = [];
+  for (const node of workflow.nodes || []) {
+    const id = String(node.id);
+    if (ids.has(id)) issues.push({ code: 'duplicate_node_id', message: `node id ${id} is duplicated` });
+    ids.add(id);
+  }
   for (const link of workflow.links || []) {
     if (!ids.has(String(link[1])) || !ids.has(String(link[3]))) issues.push({ code: 'broken_link', message: `link ${link[0]} references a missing node` });
   }
@@ -75,6 +80,7 @@ function applyOperation(workflow, operation, objectInfo) {
   if (operation.op === 'set_property') {
     if (!EDITABLE_PROPERTIES.has(operation.path)) throw new Error(`Property is not editable: ${operation.path}`);
     if (operation.path === 'mode' && ![0, 4].includes(operation.value)) throw new Error('mode must be 0 or 4');
+    if (operation.path === 'title' && typeof operation.value !== 'string') throw new Error('title must be a string');
     operation.from = clone(node[operation.path]); node[operation.path] = clone(operation.value); return;
   }
   if (operation.op === 'set_widget') {

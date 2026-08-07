@@ -26,6 +26,15 @@ export function atomicReplace({ targetPath, content, expectedHash } = {}) {
       if (!['EEXIST', 'EPERM', 'ENOTEMPTY'].includes(error.code)) throw error;
     }
     const backupPath = `${targetPath}.agent-backup-${randomUUID()}`;
+    const latest = existsSync(targetPath) ? readFileSync(targetPath) : null;
+    const latestHash = bufferHash(latest);
+    if (expectedHash !== undefined && String(expectedHash).toLowerCase() !== String(latestHash).toLowerCase()) {
+      const conflict = new Error('File changed during atomic replace');
+      conflict.code = 'FILE_CONFLICT';
+      conflict.expectedHash = expectedHash;
+      conflict.actualHash = latestHash;
+      throw conflict;
+    }
     renameSync(targetPath, backupPath);
     try {
       renameSync(tempPath, targetPath);

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { assertServiceConfirmation, assertServiceOwner } from './service-policy.mjs';
+import { assertServiceConfirmation, assertServiceOwner, assertServicePermission } from './service-policy.mjs';
 
 function digest(value) { return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`; }
 
@@ -8,6 +8,7 @@ export class ServiceInvoker {
   async prepare({ serviceId, input = {}, owner = {} } = {}) {
     const service = this.registry.get(serviceId);
     if (!service) return { code: 'SERVICE_NOT_FOUND', error: `Unknown service: ${serviceId}` };
+    assertServicePermission(service.manifest, 'prepare', owner);
     const normalized = typeof service.normalizeInput === 'function' ? await service.normalizeInput(input) : structuredClone(input);
     const previewId = `service_preview_${this.clock()}_${Math.random().toString(36).slice(2, 8)}`;
     const requestId = input.requestId || `request_${this.clock()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -21,13 +22,13 @@ export class ServiceInvoker {
     if (!preview) return { code: 'PREVIEW_NOT_FOUND', error: 'Service preview not found or expired' };
     if (preview.expiresAt < this.clock()) return { code: 'PREVIEW_EXPIRED', error: 'Service preview has expired' };
     const service = this.registry.get(preview.serviceId);
-    assertServiceOwner(input.owner || preview.owner, preview.owner);
-    assertServiceConfirmation(service.manifest, 'invoke', input);
+    assertServiceConfirmation(service.manifest, 'invoke', { ...input, owner: input.owner || {} });
+    assertServiceOwner(input.owner || {}, preview.owner);
     if (input.requestId !== preview.requestId || input.serviceId !== preview.serviceId) return { code: 'SERVICE_PREVIEW_MISMATCH', error: 'Preview identity does not match' };
     const result = await service.invoke({ ...preview, idempotencyKey: input.idempotencyKey || preview.digest, owner: input.owner || preview.owner });
     this.ledger?.update(preview.requestId, { state: result?.state || 'queued', taskId: result?.taskId || '' });
     return { ...result, serviceId: preview.serviceId, requestId: preview.requestId, previewId: preview.previewId };
   }
-  status({ serviceId, requestId, taskId } = {}) { const service = this.registry.get(serviceId); if (!service) return { code: 'SERVICE_NOT_FOUND' }; return typeof service.status === 'function' ? service.status({ requestId, taskId }) : this.ledger?.snapshot(requestId) || null; }
-  result({ serviceId, requestId, taskId } = {}) { const service = this.registry.get(serviceId); if (!service) return { code: 'SERVICE_NOT_FOUND' }; return typeof service.result === 'function' ? service.result({ requestId, taskId }) : this.ledger?.snapshot(requestId)?.result || null; }
+  status({ serviceId, requestId, taskId, owner } = {}) { const service = this.registry.get(serviceId); if (!service) return { code: 'SERVICE_NOT_FOUND' }; assertServicePermission(service.manifest, 'status', owner); if (!requestId && !taskId) throw Object.assign(new Error('requestId or taskId is required'), { code: 'RESOURCE_ID_REQUIRED' }); const entry = requestId ? this.ledger?.snapshot(requestId) : null; if (entry) assertServiceOwner(owner || {}, entry); const task = taskId ? this.taskManager?.get?.(taskId) : null; if (task) assertServiceOwner(owner || {}, task); if (taskId && !requestId && !task) return { code: 'TASK_NOT_FOUND' }; return typeof service.status === 'function' ? service.status({ requestId, taskId, owner }) : entry || task || null; }
+  result({ serviceId, requestId, taskId, owner } = {}) { const service = this.registry.get(serviceId); if (!service) return { code: 'SERVICE_NOT_FOUND' }; assertServicePermission(service.manifest, 'result', owner); if (!requestId && !taskId) throw Object.assign(new Error('requestId or taskId is required'), { code: 'RESOURCE_ID_REQUIRED' }); const entry = requestId ? this.ledger?.snapshot(requestId) : null; if (entry) assertServiceOwner(owner || {}, entry); const task = taskId ? this.taskManager?.get?.(taskId) : null; if (task) assertServiceOwner(owner || {}, task); if (taskId && !requestId && !task) return { code: 'TASK_NOT_FOUND' }; return typeof service.result === 'function' ? service.result({ requestId, taskId, owner }) : entry?.result || task?.result || null; }
 }

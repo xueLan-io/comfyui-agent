@@ -8,7 +8,7 @@ export class AuditSink {
     if (!this.directory) return Promise.resolve(event);
     const date = new Date(event.timestamp).toISOString().slice(0, 10);
     const file = join(this.directory, `audit-${date}.jsonl`);
-    this.queue = this.queue.then(async () => { await mkdir(dirname(file), { recursive: true }); await appendFile(file, `${JSON.stringify(event)}\n`, 'utf8'); });
+    this.queue = this.queue.catch(() => {}).then(async () => { await mkdir(dirname(file), { recursive: true }); await appendFile(file, `${JSON.stringify(event)}\n`, 'utf8'); });
     return this.queue.then(() => event);
   }
 }

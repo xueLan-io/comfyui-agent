@@ -29,7 +29,7 @@ export const TASK_TRANSITIONS = {
   clarifying: ['idle', 'classifying', 'planning', 'awaiting_confirmation', 'failed', 'cancelled'],
   planning: ['awaiting_confirmation', 'executing', 'completed', 'failed', 'cancelled'],
   awaiting_confirmation: ['executing', 'classifying', 'idle', 'failed', 'cancelled'],
-  executing: ['observing', 'failed', 'cancelled'],
+  executing: ['observing', 'failed', 'cancelled', 'archive_failed'],
   observing: ['retrying', 'replanning', 'executing', 'completed', 'failed', 'cancelled', 'observe_timeout', 'submit_unknown', 'archive_failed'],
   retrying: ['executing', 'failed', 'cancelled'],
   replanning: ['executing', 'failed', 'cancelled'],
@@ -277,10 +277,13 @@ export class TaskManager {
     }
   }
 
-  markAbandoned() {
+  markAbandoned({ taskId = '', projectId = '', sessionId = '' } = {}) {
     const terminal = new Set(['completed', 'failed', 'cancelled', 'abandoned', 'error']);
     let changed = false;
     for (const task of this.tasks) {
+      if (taskId && task.id !== taskId) continue;
+      if (projectId && task.projectId !== projectId) continue;
+      if (sessionId && task.sessionId !== sessionId) continue;
       const state = task.state || task.status;
       if (terminal.has(state) || state === 'idle') continue;
       this.update(task.id, { status: 'abandoned', state: 'abandoned', lastError: 'Interrupted by restart', error: 'Interrupted by restart' });
