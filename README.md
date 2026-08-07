@@ -23,13 +23,21 @@ ComfyUI 是外部依赖，不包含在本仓库源代码或发布包的模型目
 
 ## 下载使用
 
-从 [Releases](https://github.com/xueLan-io/comfyui-agent/releases) 下载最新便携版：
+从 [Releases](https://github.com/xueLan-io/comfyui-agent/releases/latest) 下载最新便携版：
 
 ```text
-ComfyMuse-portable-v0.3.2.zip
+ComfyMuse-portable-v0.3.5.zip
 ```
 
 解压后运行 `ComfyMuseLauncher.exe`。便携版不要求另外安装 Node.js 或 Python。
+
+首次安装或从旧版本升级时，请使用完整的 Portable 包。已有兼容安装可以使用应用层更新包：
+
+```text
+ComfyMuse-update-v0.3.5.zip
+```
+
+应用内更新会验证 `manifest-stable.json.sig` 的 Ed25519 签名，并在下载后校验更新包的 SHA-256。更新器只替换 `resources\app`，不会修改 ComfyUI、模型、工作流或用户数据。
 
 首次启动时，在设置中选择已有的 ComfyUI portable 根目录，或填写已经运行的 ComfyUI 地址。portable 根目录通常包含：
 
@@ -98,7 +106,7 @@ npm run mcp
 - **业务运行时**：Node.js ES modules（`.mjs`）
 - **AI 服务接入**：Ollama、本地 OpenAI-compatible 服务、云端 OpenAI-compatible API
 - **图像工作流引擎**：ComfyUI HTTP/WebSocket API
-- **构建与发布**：Electron Builder、Windows NSIS、便携版打包脚本
+- **构建与发布**：Windows 便携版打包脚本、GitHub Actions Release
 - **测试**：Node.js built-in test runner
 - **静态检查**：Node.js `--check` 递归语法检查
 
@@ -187,7 +195,7 @@ COMFYUI_BASE_URL=http://127.0.0.1:8188
 - 发布构建由 `.github/workflows/release.yml` 在推送 `v*` Tag 后自动执行，生成完整便携包、应用层更新包、manifest 和 SHA-256 清单。
 - 便携版应用可在设置的“应用更新”页检查并安装应用层更新。更新器只替换 `resources\app`，不会修改 ComfyUI、模型和用户数据。
 - Stable 使用普通版本 Tag；包含预发布标识的版本（例如 `v0.3.0-preview.1`）会作为 Preview Release。
-- 发布 manifest 使用 Ed25519 detached signature（`.json.sig`）签名，客户端内置公钥并在读取版本信息前验签。更新包中的 Windows 可执行文件由 CI 使用 Authenticode/SHA-256 签名。
+- 发布 manifest 使用 Ed25519 detached signature（`.json.sig`）签名，客户端内置公钥并在读取版本信息前验签。发布页同时提供 `SHA256SUMS.txt`，用于核对完整包和更新包。
 - GitHub Actions 必须配置 `RELEASE_SIGNING_PRIVATE_KEY_B64`；`RELEASE_CERT_BASE64` 和 `RELEASE_CERT_PASSWORD` 为可选 Secrets。配置 PFX 后，CI 会额外对 Windows 可执行文件执行 Authenticode 签名。私钥和 PFX 证书不能提交到仓库或写入发布包。
 
 ### 发布签名密钥配置
@@ -198,7 +206,7 @@ COMFYUI_BASE_URL=http://127.0.0.1:8188
 node -e "const c=require('crypto'); const k=c.generateKeyPairSync('ed25519'); console.log('PUBLIC='+k.publicKey.export({type:'spki',format:'der'}).toString('base64')); console.log('PRIVATE='+k.privateKey.export({type:'pkcs8',format:'der'}).toString('base64'));"
 ```
 
-`PRIVATE` 放入 `RELEASE_SIGNING_PRIVATE_KEY_B64`。`PUBLIC` 需要替换 `src/runtime/update-signature.mjs` 中的公钥常量后再发布首个启用签名的版本。之后不要重新生成密钥，除非同时发布客户端公钥轮换版本。
+`PRIVATE` 放入 `RELEASE_SIGNING_PRIVATE_KEY_B64`。当前客户端公钥已写入 `src/runtime/update-signature.mjs`，不要更换密钥，除非同时发布客户端公钥轮换版本。私钥只能保存在 GitHub Actions Secret 中。
 
 Windows Authenticode 使用代码签名证书导出的 PFX：
 
@@ -206,7 +214,7 @@ Windows Authenticode 使用代码签名证书导出的 PFX：
 - `RELEASE_CERT_PASSWORD`：PFX 密码
 - PFX 私钥必须包含在证书中，且不能提交到仓库
 
-本地运行 `pack-portable.bat` 时不设置 `RELEASE_CERT`，不会执行 Authenticode 签名。未配置 PFX 时 Release 仍可发布，但 Windows 文件不会带 Authenticode 签名；以后补充证书后重新发布即可。
+本项目当前未配置 Authenticode PFX 证书，因此 Windows 可执行文件可能显示未知发布者提示。未配置 PFX 不影响 Ed25519 manifest 签名、SHA-256 校验或 Release 发布。
 - 发布产物和压缩包不应提交到源代码仓库；相关目录和文件已加入 `.gitignore`。
 - ComfyUI、模型权重及其第三方节点遵循各自项目和模型的许可证。
 
