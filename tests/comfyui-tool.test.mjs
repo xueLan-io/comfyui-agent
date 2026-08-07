@@ -78,7 +78,7 @@ test('rejects a workflow before queueing when a referenced model is unavailable'
   }
 });
 
-test('adaptation-only workflows fail with a preflight report', async t => {
+test('H3 workflows fail before queueing when official nodes are unavailable', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'comfy-agent-wf-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   await writeFile(join(dir, 'adapted.json'), JSON.stringify({
@@ -91,9 +91,9 @@ test('adaptation-only workflows fail with a preflight report', async t => {
   try {
     await assert.rejects(
       ComfyUITool.execute({ workflowName: 'adapted.json', workflowDir: dir }),
-      error => error.failureType === 'adaptation_only'
+      error => error.failureType === 'h3_runtime_unavailable'
         && error.preflight?.valid === false
-        && error.preflight?.adaptationOnly === true,
+        && error.preflight?.issues.some(issue => issue.code === 'h3_runtime_unavailable'),
     );
   } finally {
     ComfyUITool.setClient(original);

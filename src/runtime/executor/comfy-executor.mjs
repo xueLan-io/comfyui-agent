@@ -26,6 +26,8 @@ export class ComfyExecutor {
         negative: request.negative,
       },
       settings: request.settings,
+      frames: request.settings?.frames,
+      fps: request.settings?.fps,
       nodeOverrides: request.nodeOverrides,
       outputNodeIds: request.outputNodeIds || undefined,
       images: request.media?.images || [],

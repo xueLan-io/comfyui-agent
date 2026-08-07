@@ -27,13 +27,14 @@ export function validateDirectRequest(request, workflow) {
   }
 
   const media = request.media || {};
-  if ((media.images || []).length > 0 && ![...types].some(type => /loadimage/.test(type))) {
+  const modes = new Set(workflow?.capabilities?.modes || []);
+  if ((media.images || []).length > 0 && ![...types].some(type => /loadimage/.test(type)) && !modes.has('img2video')) {
     addCheck(checks, 'reference_media', 'warning', 'Reference images were provided, but the workflow has no image loader');
   }
   if ((media.masks || []).length > 0 && ![...types].some(type => /loadimagemask|loadimage/.test(type))) {
     addCheck(checks, 'reference_media', 'warning', 'Reference masks were provided, but the workflow has no image loader');
   }
-  if ((media.videos || []).length > 0 && ![...types].some(type => /video/.test(type))) {
+  if ((media.videos || []).length > 0 && ![...types].some(type => /video/.test(type)) && !modes.has('video2video')) {
     addCheck(checks, 'reference_media', 'warning', 'Reference videos were provided, but the workflow has no video loader');
   }
   if ((profile.promptLists || []).length > 0 || (profile.positiveTargets || []).length > 1) {

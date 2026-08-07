@@ -14,6 +14,12 @@ import { applyGuard } from '../agent/optimizer/prompt-guard.mjs';
 import { ComfyExecutor } from '../runtime/executor/comfy-executor.mjs';
 import { DirectService } from '../runtime/direct/direct-service.mjs';
 import { createPathContext } from '../runtime/path-context.mjs';
+import { createGovernanceContext } from '../runtime/governance/context.mjs';
+import { createPolicyEngine } from '../runtime/governance/policy-engine.mjs';
+import { AdmissionController } from '../runtime/governance/admission-controller.mjs';
+import { RateLimiter } from '../runtime/governance/rate-limiter.mjs';
+import { QuotaManager } from '../runtime/governance/quota-manager.mjs';
+import { OperationGateway, confirmationDigest } from '../runtime/governance/operation-gateway.mjs';
 
 const BOOLEAN_OPTIONS = new Set([
   'dry-run',
@@ -33,6 +39,8 @@ const SETTING_OPTIONS = {
   width: 'width',
   height: 'height',
   batch: 'batch',
+  frames: 'frames',
+  fps: 'fps',
   sampler: 'sampler_name',
   scheduler: 'scheduler',
 };
@@ -69,6 +77,7 @@ export function helpText() {
     '  npm run agent -- prompt check --text "a red cat" --intent generate',
     '  npm run agent -- prompt guard --positive "a red cat" --negative "blurry"',
     '  npm run agent -- diagnose --prompt-id <id>',
+    '  npm run agent -- doctor',
     '  npm run agent -- status [queue|models|device|log]',
     '',
     'Options:',
@@ -276,6 +285,23 @@ function runtimeFor(options, dependencies = {}) {
   };
 }
 
+function governanceFor(options, dependencies = {}) {
+  if (dependencies.governance) return dependencies.governance;
+  const principal = { id: 'principal_cli', tenantId: 'tenant_local', roles: ['admin'] };
+  const policyEngine = createPolicyEngine({ principals: new Map([[principal.id, principal]]) });
+  const admission = new AdmissionController({ policyEngine, rateLimiter: new RateLimiter({ limit: 120, burst: 20 }), quotaManager: new QuotaManager({ limits: { generation_count: 100 } }) });
+  return new OperationGateway({ policyEngine, admission, audit: dependencies.audit });
+}
+
+async function governedCli(options, action, resource, input, execute, dependencies = {}) {
+  const projectId = optionValue(options, 'project-id', optionValue(options, 'project-dir', 'cli-project'));
+  const context = createGovernanceContext({ principalId: 'principal_cli', tenantId: 'tenant_local', projectId: String(projectId), sessionId: optionValue(options, 'session-id', 'cli-session'), source: 'cli', requestId: input.requestId || `cli_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, taskId: input.taskId, traceId: input.traceId });
+  const confirmationInput = { confirmation: true };
+  const confirmation = { accepted: true, digest: confirmationDigest({ action, resource, input: confirmationInput }), requestId: context.requestId };
+  const quota = action === 'comfyui.submit' ? { generation_count: 1 } : {};
+  return governanceFor(options, dependencies).run({ context, action, resource, input: confirmationInput, confirmation, quota, execute: () => execute() });
+}
+
 function trustedFileRoots(options) {
   const entries = [{ name: 'workflow', path: workflowDir(options) }];
   const project = optionValue(options, 'project-dir', '');
@@ -359,6 +385,7 @@ async function runFile(positionals, options, runtime, dependencies) {
   }
   const expectedHash = optionValue(options, 'expected-hash', '');
   if (expectedHash) input.expectedHash = expectedHash;
+  if (input.execute) return governedCli(options, 'filesystem.write', { projectId: optionValue(options, 'project-id', '') }, input, () => runtime.mutate.execute(input), dependencies);
   return runtime.mutate.execute(input);
 }
 
@@ -439,14 +466,13 @@ async function runQueue(positionals, options, runtime) {
   if (action === 'cancel') {
     const promptId = requiredOption(options, 'prompt-id');
     if (!booleanOption(options, 'execute')) return { mode: 'preview', action, promptId };
-    return runtime.comfy.cancel(promptId);
+    return governedCli(options, 'comfyui.cancel', {}, {}, () => runtime.comfy.cancel(promptId), {});
   }
   if (action === 'clear') {
     const queue = await runtime.client.queue();
     const pendingPromptIds = (queue.queue_pending || []).map(item => item?.[1]).filter(Boolean);
     if (!booleanOption(options, 'execute')) return { mode: 'preview', action, pendingPromptIds };
-    await runtime.client.queueDelete(pendingPromptIds);
-    await runtime.client.interrupt();
+    await governedCli(options, 'comfyui.cancel', {}, {}, async () => { await runtime.client.queueDelete(pendingPromptIds); await runtime.client.interrupt(); return true; }, {});
     return { mode: 'execute', action, cleared: pendingPromptIds.length };
   }
   throw new Error(`Unknown queue action: ${action}`);
@@ -495,7 +521,7 @@ async function runGenerate(options, runtime, onProgress) {
   }
   if (!booleanOption(options, 'execute') || booleanOption(options, 'dry-run')) return result;
   result.mode = 'execute';
-  result.result = await runtime.direct.run(preview.previewId, {}, { onProgress });
+  result.result = await governedCli(options, 'comfyui.submit', { previewId: preview.previewId }, {}, () => runtime.direct.run(preview.previewId, {}, { onProgress }), {});
   return result;
 }
 
@@ -522,7 +548,8 @@ async function runBatch(options, runtime, onProgress) {
 
   result.mode = 'execute';
   result.results = [];
-  for (const prompt of selected) {
+  const batchId = `cli_batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  for (const [index, prompt] of selected.entries()) {
     try {
       const input = generationInput(options, dir, prompt);
       const preview = await runtime.direct.prepare(input);
@@ -531,7 +558,7 @@ async function runBatch(options, runtime, onProgress) {
         result.results.push({ prompt, mode: 'preview', preview });
         continue;
       }
-      const execution = await runtime.direct.run(preview.previewId, {}, { onProgress });
+      const execution = await governedCli(options, 'comfyui.submit', { previewId: preview.previewId, batchId, itemIndex: index }, { requestId: `${batchId}_request_${index}`, taskId: `${batchId}_task_${index}`, traceId: `${batchId}_trace_${index}` }, () => runtime.direct.run(preview.previewId, {}, { onProgress }), {});
       result.results.push({ prompt, result: execution });
     } catch (error) {
       result.results.push({ prompt, ...errorResult(error) });
@@ -571,8 +598,26 @@ async function runDiagnose(positionals, options, runtime) {
   return runtime.system.execute({ action: 'log', limit: numberOption(options, 'limit') || 5 });
 }
 
+async function runDoctor(options, runtime) {
+  const checks = await Promise.allSettled([
+    runtime.system.execute({ action: 'status' }),
+    runtime.system.execute({ action: 'device' }),
+  ]);
+  const [status, device] = checks.map(result => result.status === 'fulfilled'
+    ? result.value
+    : { reachable: false, error: result.reason?.message || String(result.reason) });
+  const workflowDirectory = workflowDir(options);
+  return {
+    action: 'doctor',
+    healthy: Boolean(status.reachable && device.reachable),
+    runtime: { node: process.version, platform: process.platform, arch: process.arch },
+    workflowDirectory,
+    comfyui: { status, device },
+  };
+}
+
 function exitCodeFor(command, result, options) {
-  if (command === 'diagnose') return EXIT.ok;
+  if (command === 'diagnose' || command === 'doctor') return EXIT.ok;
   if (result?.error || result?.patch?.error) return EXIT.preflight;
   if (['generate', 'batch'].includes(command) && result?.patch?.ignored?.length > 0) return EXIT.preflight;
   if (command === 'image' && result?.image?.exists === false) return EXIT.preflight;
@@ -631,6 +676,10 @@ async function dispatch(parsed, dependencies = {}) {
   }
   if (command === 'diagnose') {
     const result = await runDiagnose(positionals, options, runtime);
+    return { exitCode: EXIT.ok, result, json: booleanOption(options, 'json') };
+  }
+  if (command === 'doctor') {
+    const result = await runDoctor(options, runtime);
     return { exitCode: EXIT.ok, result, json: booleanOption(options, 'json') };
   }
   if (command === 'status') {

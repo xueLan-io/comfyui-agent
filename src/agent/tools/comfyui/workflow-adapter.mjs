@@ -33,6 +33,8 @@ function workflowModelRequirements(workflow) {
 function workflowCapabilities(workflow, family) {
   const types = activeNodes(workflow).map(node => node.type || '');
   const has = pattern => types.some(type => pattern.test(type));
+  const h3 = activeNodes(workflow).find(node => /minimaxh3referencetovideo/i.test(node.type || ''));
+  const h3Inputs = new Set((h3?.inputs || []).map(input => input.name));
   const modes = [];
   const inpaint = has(/loadimagemask/i) && has(/vaeencode(?:forinpaint)?/i);
 
@@ -42,6 +44,11 @@ function workflowCapabilities(workflow, family) {
   if (!has(/ksampler/i) && has(/upscale|imagescale|esrgan/i)) modes.push('upscale');
   if (has(/video|wan|animatediff|hunyuan|ltx|minimaxh3|referencetovideo/i) && has(/save|combine|output|vhs/i)) {
     modes.push(has(/^loadimage$/i) || has(/image.?to.?video/i) ? 'img2video' : 'txt2video');
+  }
+  if (h3Inputs.size > 0) {
+    if (h3Inputs.has('prompt') && !modes.includes('txt2video')) modes.push('txt2video');
+    if ([...h3Inputs].some(name => /^ref_images\./i.test(name)) && !modes.includes('img2video')) modes.push('img2video');
+    if ([...h3Inputs].some(name => /^ref_videos\./i.test(name)) && !modes.includes('video2video')) modes.push('video2video');
   }
 
   const labelFamily = family === 'anima' ? 'anime' : family;
@@ -153,7 +160,7 @@ export class WorkflowAdapter {
     if (/minimaxh3|mini.?max.?h3|qwen3vl.*minimax_h3/i.test(signature)) return 'minimax_h3';
     if (/miaomiao|anima(?!tediff)/i.test(signature)) return 'anima';
     if (types.some(t => t.includes('Flux') || t.includes('flux'))) return 'flux';
-    if (/\bwan(?:2|\s|_|-|\.)/i.test(signature)) return 'wan';
+    if (/\bwan(?:2|\s|_|-|\.)/i.test(signature) || types.some(type => /wanvideosampler/i.test(type || ''))) return 'wan';
     if (types.some(t => t.includes('SDXL') || t.includes('sdxl'))) return 'sdxl';
     if (types.some(t => t.includes('AnimateDiff') || t.includes('animatediff'))) return 'animatediff';
     if (types.some(t => t.includes('ControlNet') || t.includes('controlnet'))) return 'controlnet';

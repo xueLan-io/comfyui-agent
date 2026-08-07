@@ -8,15 +8,22 @@ import { TaskManager, canTransition } from './task-manager.mjs';
 import { RetryPolicy, classifyFailure, diffParameters } from '../optimizer/retry-policy.mjs';
 import { checkEditedPrompt, estimateTokens } from '../optimizer/prompt-guard.mjs';
 import { ComfyUITool } from '../tools/comfyui/index.mjs';
+import { RuntimeTools } from '../tools/comfyui/runtime.mjs';
+import { WorkflowReadTools } from '../tools/comfyui/workflow-read.mjs';
+import { ComfyUIRuntimeParametersTool } from '../tools/comfyui/runtime-parameters.mjs';
+import { normalizeRuntimeParameters, freezeRuntimeRequest, runtimeRequestDigest } from '../../runtime/runtime-parameters-contract.mjs';
 import { WorkflowInspectTool } from '../tools/comfyui/workflow-inspect.mjs';
 import { InspectImageTool } from '../tools/comfyui/image-inspect.mjs';
 import { WorkflowPatchTool } from '../tools/comfyui/workflow-patch.mjs';
+import { WorkflowMutationTools } from '../tools/comfyui/workflow-mutation-tools.mjs';
+import { WorkflowMutationPreviewTool, WorkflowMutationCommitTool } from '../tools/comfyui/workflow-mutation-tools.mjs';
 import { PromptEnhanceTool } from '../tools/prompt/enhance.mjs';
 import { PromptLibraryTool } from '../tools/prompt-library/index.mjs';
 import { FilesystemTool } from '../tools/filesystem/index.mjs';
 import { FilesystemMutateTool } from '../tools/filesystem/mutate.mjs';
 import { SystemTool } from '../tools/system/index.mjs';
 import { WebTool, openResultPages } from '../tools/web/index.mjs';
+import { createToolRegistry } from '../tools/registry.mjs';
 import { WorkflowAdapter } from '../tools/comfyui/workflow-adapter.mjs';
 import { promptProfileLabel } from '../tools/comfyui/prompt-profile.mjs';
 import { registerAdapters } from '../tools/comfyui/adapters/index.mjs';
@@ -252,6 +259,7 @@ export class Agent {
     this._promptMode = options.promptMode || 'raw';
     this._plannerOptions = { ...(options.plannerOptions || {}) };
     this._retryPolicyOptions = { ...(options.retryPolicyOptions || {}) };
+    this._toolRegistry = options.toolRegistry || null;
     this.projectId = options.projectId || '';
     this.sessionId = options.sessionId || '';
 
@@ -333,9 +341,10 @@ export class Agent {
     for (const task of tasks) {
       const promptId = task.promptId || task.attempts.find(attempt => attempt.promptId)?.promptId;
       try {
+        this.taskManager.update(task.id, { recovery: { ...(task.recovery || {}), state: 'observing', attempts: (task.recovery?.attempts || 0) + 1, lastCheckedAt: Date.now() } });
         const status = await ComfyUITool.monitor(promptId);
         if (status.status === 'unknown') {
-          this.taskManager.update(task.id, { status: 'observe_timeout', state: 'observe_timeout', lastError: `ComfyUI prompt ${promptId} is no longer observable` });
+          this.taskManager.update(task.id, { status: 'observe_timeout', state: 'observe_timeout', recovery: { ...(task.recovery || {}), state: 'user_confirmation_required', lastCheckedAt: Date.now() }, lastError: `ComfyUI prompt ${promptId} is no longer observable` });
         }
         results.push({ taskId: task.id, promptId, ...status });
       } catch (error) {
@@ -745,7 +754,10 @@ export class Agent {
   }
 
   _getTools() {
-    return {
+    if (this._toolRegistry?.byName) {
+      return this._toolRegistry.byName;
+    }
+    this.toolRegistry = createToolRegistry({ tools: [...Object.values({
       comfyui: ComfyUITool,
       prompt_enhance: PromptEnhanceTool,
       prompt_library: PromptLibraryTool,
@@ -756,7 +768,8 @@ export class Agent {
       workflow_inspect: WorkflowInspectTool,
       inspect_image: InspectImageTool,
       workflow_patch: WorkflowPatchTool,
-    };
+     }), ...RuntimeTools, ...WorkflowReadTools, ComfyUIRuntimeParametersTool, ...WorkflowMutationTools] });
+    return this.toolRegistry.byName;
   }
 
   reconfigureLLM(config) {
@@ -1255,7 +1268,24 @@ export class Agent {
 
       plan.steps = plan.steps.filter(step => step.tool !== 'prompt_enhance');
       for (const step of plan.steps) {
-        if (step.tool === 'comfyui') step.input.compiledPrompt = compiledPrompt;
+        if (step.tool === 'comfyui') {
+          step.input.compiledPrompt = compiledPrompt;
+          const canonical = normalizeRuntimeParameters({
+            workflowName: step.input.workflowName || currentWorkflow,
+            workflowDir: step.input.workflowDir || this.workflowDir || options.workflowDir || '',
+            prompt: compiledPrompt.positive,
+            prompts: compiledPrompt.positivePrompts,
+            negativePrompt: compiledPrompt.negative,
+            settings: { ...(options.settings || {}), ...(step.input.settings || {}) },
+            nodeOverrides: { ...(options.nodeOverrides || {}), ...(step.input.nodeOverrides || {}) },
+            images: step.input.images || ctx.attachedMedia?.images,
+            masks: step.input.masks || ctx.attachedMedia?.masks,
+            videos: step.input.videos || ctx.attachedMedia?.videos,
+            outputNodeIds: step.input.outputNodeIds,
+          });
+          step.input.frozenRuntimeRequest = freezeRuntimeRequest(canonical);
+          step.input.requestDigest = runtimeRequestDigest(step.input.frozenRuntimeRequest);
+        }
       }
       if (!plan.steps.some(step => step.tool === 'comfyui')) throw new Error('The prepared plan has no ComfyUI execution step');
       this.taskManager?.recordPlan?.(this._taskId, plan);
@@ -1430,6 +1460,28 @@ export class Agent {
     }
   }
 
+  async prepareWorkflowMutation(input, options = {}) {
+    const queued = this._enqueue(() => this.prepareWorkflowMutation(input, options));
+    if (queued) return queued;
+    if (this._state === 'awaiting_confirmation') throw new Error('A workflow mutation preview is awaiting confirmation');
+    this._running = true;
+    try {
+      const request = { ...input, workflowDir: input.workflowDir || this.workflowDir };
+      const result = await WorkflowMutationPreviewTool.execute(request);
+      if (result.error || result.code || !result.ready) return result;
+      const previewId = result.previewId;
+      this._preparedRuns.clear();
+      this._preparedRuns.set(previewId, { kind: 'workflow_mutation', input: request, preview: result, options, status: 'prepared' });
+      this._transitionState('awaiting_confirmation', { message: 'Awaiting workflow mutation confirmation', needsConfirmation: true });
+      const preview = { ...result, source: 'workflow_mutation', kind: 'workflow_mutation', needsConfirmation: true, status: 'prepared' };
+      this.sessionManager.setSessionState?.({ preparedPreview: preview, pending: { kind: 'workflow_mutation', previewId, request, turnId: options.turnId || '' }, taskStatus: 'awaiting_confirmation', needsConfirmation: true });
+      return preview;
+    } finally {
+      this._running = false;
+      await this._drainQueue();
+    }
+  }
+
   async runPrepared(previewId, edits = {}) {
     const prepared = this._preparedRuns.get(previewId);
     if (!prepared) throw new Error('Prompt preview expired; prepare it again');
@@ -1461,6 +1513,23 @@ export class Agent {
           preparedPreview: { ...(this.sessionManager.getSessionState?.().preparedPreview || {}), status: 'prepared' },
           taskStatus: 'awaiting_confirmation',
         });
+        throw error;
+      }
+    }
+    if (prepared.kind === 'workflow_mutation') {
+      try {
+        const result = await WorkflowMutationCommitTool.execute({
+          ...prepared.input,
+          previewId,
+          expectedHash: prepared.preview.baseRevision?.sha256,
+          confirmation: edits.confirmation !== false,
+        });
+        if (!result.committed) throw Object.assign(new Error(result.error || result.code || 'Workflow mutation failed'), { code: result.code });
+        this._preparedRuns.delete(previewId);
+        return result;
+      } catch (error) {
+        prepared.status = 'prepared';
+        this.sessionManager.setSessionState?.({ preparedPreview: { ...(this.sessionManager.getSessionState?.().preparedPreview || {}), status: 'prepared' }, taskStatus: 'awaiting_confirmation' });
         throw error;
       }
     }
@@ -1735,9 +1804,11 @@ export class Agent {
       previousArtifacts: this._artifacts.slice(-5),
       workflowManifest,
       attachedMedia,
+      signal: options.signal,
     });
     ctx.filesystemRoots = this._filesystemRoots();
     ctx.comfyRoot = this.comfyRoot;
+    ctx.signal = options.signal;
     ctx.onProgress = progress => {
         if (progress.promptId) {
         this._currentPromptId = progress.promptId;

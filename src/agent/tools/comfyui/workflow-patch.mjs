@@ -7,6 +7,8 @@ import {
   injectExecutionPrompts,
   injectInputMedia,
 } from './node-overrides.mjs';
+import { compileRuntimeParameters } from './runtime-parameters.mjs';
+import { normalizeRuntimeParameters } from '../../../runtime/runtime-parameters-contract.mjs';
 
 function clone(value) {
   return structuredClone(value);
@@ -50,7 +52,7 @@ export const WorkflowPatchTool = {
     properties: {
       action: { type: 'string', enum: ['preview'], description: 'Action to perform' },
       workflow: { type: 'string', description: 'Workflow filename inside the workflow directory' },
-      settings: { type: 'object', description: 'Sampling settings such as steps, cfg, denoise, seed, sampler, scheduler, width, height' },
+      settings: { type: 'object', description: 'Sampling settings such as steps, cfg, denoise, seed, sampler, scheduler, width, height, frames, fps' },
       nodeOverrides: { type: 'object', description: 'Per-node input overrides keyed by node id, e.g. {"3":{"text":"..."}}' },
       positivePrompts: { type: 'array', items: { type: 'string' } },
       negative: { type: 'string' },
@@ -90,6 +92,10 @@ export const WorkflowPatchTool = {
       .filter(entry => entry.source === 'node')
       .map(entry => ({ nodeId: entry.nodeId, input: entry.input, value: entry.value }));
 
+    // Keep the legacy patch response stable while using the same prompt
+    // compiler for the new runtime-parameters tool.
+    const normalized = normalizeRuntimeParameters({ workflowName: workflow, workflowDir, prompt: positivePrompts?.[0], prompts: positivePrompts, negativePrompt: negative, settings, nodeOverrides, images: media?.images, masks: media?.masks, videos: media?.videos });
+    const compiled = await compileRuntimeParameters({ workflow: resolved, objectInfo, request: normalized });
     return {
       workflow,
       diff,
@@ -100,6 +106,8 @@ export const WorkflowPatchTool = {
         diff.length > 0
         && (Object.keys(settings).length > 0 || Object.keys(nodeOverrides).length > 0 || positivePrompts?.length || negative || media),
       ),
+      runtimeDiff: compiled.diff,
+      preflight: compiled.preflight,
     };
   },
 };

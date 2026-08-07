@@ -1,0 +1,2 @@
+export function createCancellation(parentSignal) { const controller = new AbortController(); if (parentSignal) parentSignal.addEventListener('abort', () => controller.abort(), { once: true }); return { signal: controller.signal, cancel: reason => controller.abort(reason), get cancelled() { return controller.signal.aborted; } }; }
+export function assertNotCancelled(signal) { if (signal?.aborted) throw Object.assign(new Error('Operation cancelled'), { code: 'CANCELLED' }); }

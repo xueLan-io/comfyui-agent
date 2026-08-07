@@ -9,12 +9,14 @@ import { registerAdapters } from '../src/agent/tools/comfyui/adapters/index.mjs'
 
 registerAdapters();
 
-test('MiniMax H3 reference workflow is identified as adaptation-only video', async () => {
+test('MiniMax H3 reference workflow is identified as executable video after runtime preflight', async () => {
   const result = await WorkflowAdapter.resolve('MiniMax H3全能参考工作流.json', resolve('.'));
   assert.equal(result.modelType, 'minimax_h3');
   assert.equal(result.adapter.name, 'minimax_h3');
-  assert.equal(result.adapter.adaptationOnly, true);
+  assert.equal(result.adapter.adaptationOnly, false);
   assert.ok(result.capabilities.modes.includes('txt2video'));
+  assert.ok(result.capabilities.modes.includes('img2video'));
+  assert.ok(result.capabilities.modes.includes('video2video'));
   assert.equal(result.info.referenceImageSlots, 4);
   assert.equal(result.info.referenceVideoSlots, 3);
 });
@@ -95,6 +97,20 @@ test('WorkflowAdapter resolves the bundled Wan video workflow', async () => {
   assert.ok(result.adapter);
   assert.ok(result.capabilities.modes.includes('txt2video'));
   assert.equal(result.info.supportsVideoOutput, true);
+  assert.equal(result.info.supportsImageInput, false);
+});
+
+test('Wan adapter applies resolution, frames, FPS, and guidance from standard settings', async () => {
+  const dir = resolve('workflows');
+  const workflow = await WorkflowAdapter.prepareInput('wan_txt2video.json', dir, {
+    settings: { width: 640, height: 360, frames: 49, fps: 12, cfg: 7 },
+  });
+  const latent = workflow.nodes.find(node => node.type === 'EmptyWanVideoLatent');
+  const sampler = workflow.nodes.find(node => node.type === 'KSampler');
+  const output = workflow.nodes.find(node => node.type === 'VHS_VideoCombine');
+  assert.deepEqual(latent.widgets_values, [640, 360, 49, 1]);
+  assert.equal(sampler.widgets_values[3], 7);
+  assert.equal(output.widgets_values[0], 12);
 });
 
 test('detects Anima from active model artifacts before generic model types', () => {

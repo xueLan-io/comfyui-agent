@@ -29,9 +29,16 @@ const ToolDefinitionSchema = {
     version: { type: 'string', description: 'Tool version' },
     category: {
       type: 'string',
-      enum: ['generation', 'enhancement', 'filesystem', 'management', 'web'],
+      enum: ['generation', 'enhancement', 'filesystem', 'management', 'web', 'workflow', 'runtime', 'queue', 'model', 'media', 'service'],
       description: 'Tool category for routing',
     },
+    risk_level: { type: 'string', enum: ['none', 'low', 'medium', 'high', 'admin'], description: 'Operational risk level' },
+    permission: { type: 'string', enum: ['read', 'execute', 'mutate', 'admin'], description: 'Required permission' },
+    scope: { type: 'string', enum: ['session', 'project', 'workflow', 'runtime'], description: 'State scope' },
+    supports_preview: { type: 'boolean', description: 'Whether the tool can return a preview' },
+    supports_rollback: { type: 'boolean', description: 'Whether the tool supports rollback' },
+    output_types: { type: 'array', items: { type: 'string' }, description: 'Planner output types produced by the tool' },
+    surfaces: { type: 'array', items: { type: 'string' }, description: 'Calling surfaces that may expose the tool' },
     tags: { type: 'array', items: { type: 'string' }, description: 'Search/filter tags' },
     timeout_ms: { type: 'number', description: 'Default timeout in milliseconds' },
   },
@@ -50,12 +57,15 @@ function validateToolDefinition(tool) {
   if (typeof tool.idempotent !== 'boolean') errors.push('Tool must have "idempotent"');
   if (!tool.retry || !['never', 'limited'].includes(tool.retry.mode)) errors.push('Tool must have a valid "retry" contract');
   if (typeof tool.execute !== 'function') errors.push('Tool must have an "execute" function');
+  if (tool.risk_level !== undefined && !['none', 'low', 'medium', 'high', 'admin'].includes(tool.risk_level)) errors.push('Tool must have a valid "risk_level"');
+  if (tool.permission !== undefined && !['read', 'execute', 'mutate', 'admin'].includes(tool.permission)) errors.push('Tool must have a valid "permission"');
+  if (tool.output_types !== undefined && (!Array.isArray(tool.output_types) || tool.output_types.some(type => typeof type !== 'string'))) errors.push('Tool must have valid "output_types"');
 
   return { valid: errors.length === 0, errors };
 }
 
 function toolContract(tool) {
-  return {
+  const contract = {
     name: tool.name,
     description: tool.description,
     input_schema: tool.input_schema,
@@ -68,6 +78,10 @@ function toolContract(tool) {
       ...(tool.retry?.max_attempts ? { max_attempts: tool.retry.max_attempts } : {}),
     },
   };
+  for (const field of ['version', 'category', 'tags', 'timeout_ms', 'risk_level', 'permission', 'scope', 'supports_preview', 'supports_rollback', 'output_types', 'surfaces']) {
+    if (tool[field] !== undefined) contract[field] = Array.isArray(tool[field]) ? [...tool[field]] : tool[field];
+  }
+  return contract;
 }
 
 function plannerToolContracts(tools = {}) {
@@ -90,7 +104,11 @@ function validateToolInput(tool, input) {
 
   for (const [field, value] of Object.entries(input || {})) {
     const definition = schema.properties?.[field];
-    if (!definition || value === undefined || value === null) continue;
+    if (!definition) {
+      if (schema.additionalProperties === false) errors.push(`Unknown input: "${field}"`);
+      continue;
+    }
+    if (value === undefined || value === null) continue;
 
     const expectedType = definition.type;
     const actualType = Array.isArray(value) ? 'array' : typeof value;
@@ -108,6 +126,9 @@ function validateToolInput(tool, input) {
     if (Array.isArray(value) && definition.items?.type) {
       const invalidItem = value.some(item => typeof item !== definition.items.type);
       if (invalidItem) errors.push(`Invalid item type in "${field}"`);
+    }
+    if (expectedType === 'object' && value && !Array.isArray(value) && definition.additionalProperties === false) {
+      for (const key of Object.keys(value)) if (!definition.properties?.[key]) errors.push(`Unknown input: "${field}.${key}"`);
     }
   }
 

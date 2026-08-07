@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, rename, writeFile } from 'fs/promises';
+import { access, copyFile, mkdir, readFile, rename, writeFile } from 'fs/promises';
 import { dirname, join } from 'node:path';
 
 export class JSONFileStore {
@@ -27,7 +27,7 @@ export class JSONFileStore {
       return;
     }
     try {
-      await rename(this.filePath, `${this.filePath}.corrupt-${Date.now()}`);
+      await copyFile(this.filePath, `${this.filePath}.corrupt-${Date.now()}`);
     } catch {}
   }
 
@@ -50,4 +50,7 @@ export class JSONFileStore {
     });
     return this._savePromise;
   }
+
+  flush() { return this.save(); }
+  commit() { return this.save(); }
 }

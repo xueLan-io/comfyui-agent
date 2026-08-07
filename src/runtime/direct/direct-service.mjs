@@ -4,6 +4,8 @@ import { classifyFailure } from '../../agent/optimizer/retry-policy.mjs';
 import { checkEditedPrompt } from '../../agent/optimizer/prompt-guard.mjs';
 import { evaluateTechnical } from '../../agent/schemas/evaluation-schema.mjs';
 import { assertSandboxMedia } from '../../agent/security/sandbox.mjs';
+import { freezeRuntimeRequest, runtimeRequestDigest } from '../runtime-parameters-contract.mjs';
+import { estimateGenerationTime } from '../generation-time-estimate.mjs';
 
 function promptChecks(request) {
   return checkEditedPrompt({ positive: request.positive, negative: request.negative })
@@ -54,7 +56,14 @@ function previewFor(request, workflow, validation, previewId) {
       modelReady: workflow.modelReady !== false,
     },
     workflowName: request.workflowName,
+    timeEstimate: estimateGenerationTime({
+      modelType: workflow.modelType || profile.family || 'generic',
+      settings: request.settings,
+       resolution: workflow.workflowProfile?.resolution || {},
+       runtime: workflow.preflight?.runtime || {},
+    }),
     preflight: validation,
+    requestDigest: runtimeRequestDigest(request),
     checks,
     warnings: checks.filter(check => check.level === 'warning' || check.level === 'medium').map(check => check.message),
     issues: checks.filter(check => check.level === 'error'),
@@ -95,7 +104,10 @@ export class DirectService {
   async _resolveWorkflow(request) {
     const mode = mediaWorkflowMode(request.media);
     const requested = await this.executor.inspect(request.workflowName, this.workflowDir);
-    if (!mode || requested?.capabilities?.modes?.includes(mode)) return { workflowName: request.workflowName, manifest: requested };
+    const supportedModes = requested?.capabilities?.modes || [];
+    const supportsReferenceMedia = (request.media.images?.length > 0 && supportedModes.includes('img2video'))
+      || (request.media.videos?.length > 0 && supportedModes.includes('video2video'));
+    if (!mode || supportedModes.includes(mode) || supportsReferenceMedia) return { workflowName: request.workflowName, manifest: requested };
     const candidates = (await this.executor.discover?.(this.workflowDir)) || [];
     const match = candidates.find(item => item.capabilities?.modes?.includes(mode));
     if (!match) return { workflowName: request.workflowName, manifest: requested };
@@ -111,7 +123,9 @@ export class DirectService {
     const validation = validateDirectRequest(request, workflow);
     const previewId = `direct_preview_${request.requestId}`;
     const preview = previewFor(request, workflow, validation, previewId);
-    this._previews.set(previewId, { request, workflow, preview, sandboxInput });
+    const frozenRequest = freezeRuntimeRequest(request);
+    preview.frozenRuntimeRequest = frozenRequest;
+    this._previews.set(previewId, { request: frozenRequest, frozenRuntimeRequest: frozenRequest, workflow, preview, sandboxInput });
     return preview;
   }
 
@@ -133,19 +147,23 @@ export class DirectService {
       throw error;
     }
     prepared.preview.status = 'consuming';
-
+    let completed = false;
+    try {
     const request = assertDirectExecutionPolicy(directGenerationRequest({
-      ...prepared.request,
+      ...prepared.frozenRuntimeRequest,
       positive: typeof edits.positive === 'string' ? edits.positive : prepared.request.positive,
       negative: typeof edits.negative === 'string' ? edits.negative : prepared.request.negative,
     }));
     assertSandboxMedia({ ...prepared.sandboxInput, ...request.media });
     const workflow = await this.executor.inspect(request.workflowName, this.workflowDir);
     const validation = validateDirectRequest(request, workflow);
-    if (!validation.valid) throw new Error(validation.checks.filter(check => check.level === 'error').map(check => check.message).join('; '));
+    if (!validation.valid) {
+      const error = new Error(validation.checks.filter(check => check.level === 'error').map(check => check.message).join('; '));
+      error.failureType = 'preflight_failed'; error.retryable = false; error.preflight = validation;
+      throw error;
+    }
 
     this._running = true;
-    let completed = false;
     const isCancelled = () => options.signal?.aborted || options.isCancelled?.() === true;
     const throwIfCancelled = () => {
       if (!isCancelled()) return;
@@ -234,6 +252,11 @@ export class DirectService {
       this._running = false;
       if (completed) this._previews.delete(previewId);
       else prepared.preview.status = 'prepared';
+    }
+     } catch (error) {
+       if (error?.code === 'GENERATION_CANCELLED' || options.signal?.aborted) this._previews.delete(previewId);
+       else prepared.preview.status = 'prepared';
+       throw error;
     }
   }
 

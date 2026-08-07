@@ -66,3 +66,30 @@ test('stops the full process tree owned by the manager', () => {
   assert.equal(manager.process, null);
   assert.equal(manager.stopOwned(), false);
 });
+
+test('does not start ComfyUI after shutdown has begun', async () => {
+  const manager = new ComfyUIManager();
+  manager.portableRoot = 'C:\\portable';
+  manager.shuttingDown = true;
+  manager.checkHealth = async () => false;
+  manager._spawnProcess = () => { throw new Error('must not spawn after shutdown'); };
+
+  const state = await manager.ensureStarted();
+
+  assert.equal(state.status, 'stopped');
+  assert.equal(manager.process, null);
+});
+
+test('serializes managed startup across manager instances', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'comfy-agent-lock-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const lockPath = join(root, 'comfyui-startup.lock');
+  const first = new ComfyUIManager({ startupLockPath: lockPath });
+  const second = new ComfyUIManager({ startupLockPath: lockPath });
+
+  assert.equal(first._acquireStartupLock().acquired, true);
+  assert.equal(second._acquireStartupLock().acquired, false);
+  first._releaseStartupLock();
+  assert.equal(second._acquireStartupLock().acquired, true);
+  second._releaseStartupLock();
+});

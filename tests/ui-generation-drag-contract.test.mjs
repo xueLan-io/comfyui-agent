@@ -25,6 +25,12 @@ test('drag payloads preserve preset and phrase semantics', async () => {
   const presets = await source('src/components/PresetLibraryPage.jsx');
   const prompts = await source('src/components/PromptLibraryPage.jsx');
   const quick = await source('src/components/QuickGenerateFloat.jsx');
+  assert.match(quick, /quick-generate-pages/);
+  assert.match(quick, /quick-generation-editor/);
+  assert.match(quick, /视频生成/);
+  assert.match(quick, /isMiniMaxH3Workflow\(workflowManifest\)/);
+  assert.doesNotMatch(quick, /setGenerationPage\(\/minimax/);
+  assert.doesNotMatch(quick, /视频生成<\/button>\n.*disabled=/);
   assert.match(presets, /target: 'preset'/);
   assert.match(prompts, /content: item\.prompt/);
   assert.match(quick, /tabRef\.current/);

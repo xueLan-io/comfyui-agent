@@ -125,6 +125,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   skillImportExternal: () => ipcRenderer.invoke('skills:import-external'),
   skillDeleteExternal: (id) => ipcRenderer.invoke('skills:delete-external', { id }),
   comfyUIStatus: () => ipcRenderer.invoke('comfyui:status'),
+  h3Readiness: () => ipcRenderer.invoke('h3:readiness'),
   comfyUIStart: () => ipcRenderer.invoke('comfyui:start'),
   comfyUISelectRoot: () => ipcRenderer.invoke('comfyui:select-root'),
   comfyUISetBaseUrl: (baseUrl) => ipcRenderer.invoke('comfyui:set-base-url', { baseUrl }),

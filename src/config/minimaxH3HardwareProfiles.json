@@ -1,0 +1,14 @@
+{
+  "nvidia": {
+    "name": "NVIDIA 首跑档",
+    "vendor": "nvidia",
+    "settings": { "width": 832, "height": 480, "frames": 124, "fps": 24, "steps": 24, "cfg": 5, "batch": 1 },
+    "runtime": { "recommendedReservedVramGiB": 1, "cpuOffload": false }
+  },
+  "amd": {
+    "name": "AMD 保守首跑档",
+    "vendor": "amd",
+    "settings": { "width": 640, "height": 352, "frames": 124, "fps": 24, "steps": 20, "cfg": 5, "batch": 1 },
+    "runtime": { "recommendedReservedVramGiB": 2, "cpuOffload": true }
+  }
+}

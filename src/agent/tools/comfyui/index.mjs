@@ -12,10 +12,32 @@ import { normalizeGenerationResult } from '../../../runtime/generation-contract.
 import { buildPreflightReport, preflightError } from '../../../runtime/preflight-contract.mjs';
 import { inspectRuntimeCapabilities } from '../../../runtime/runtime-capabilities.mjs';
 import { estimateGenerationResources } from '../../../runtime/resource-estimator.mjs';
+import { stat } from 'node:fs/promises';
+import { createManifestCache } from './manifest-cache.mjs';
+import { createMetrics } from '../../../runtime/metrics.mjs';
 
 let client = new ComfyUIClient();
+export const runtimeMetrics = createMetrics();
+
+export const workflowManifestCache = createManifestCache({
+  resolveFile: ({ workflowName, workflowDir }) => resolveWorkflowPath(workflowDir, workflowName),
+  resolveManifest: async ({ workflowName, workflowDir }) => WorkflowAdapter.resolve(workflowName, workflowDir),
+  statFile: filePath => stat(filePath),
+  metrics: runtimeMetrics,
+});
 
 const VIDEO_EXT = ['mp4', 'webm', 'mov', 'mkv', 'avi'];
+const H3_REQUIRED_NODES = ['MiniMaxH3ReferenceToVideo', 'MiniMaxH3SigmaShift', 'EmptyMiniMaxH3LatentAV'];
+
+function h3RuntimeIssues(modelType, objectInfo = {}) {
+  if (modelType !== 'minimax_h3') return [];
+  const missing = H3_REQUIRED_NODES.filter(name => !objectInfo[name]);
+  return missing.length === 0 ? [] : [{
+    severity: 'error',
+    code: 'h3_runtime_unavailable',
+    message: `MiniMax H3 nodes are not loaded: ${missing.join(', ')}`,
+  }];
+}
 
 function isVideoRef(item) {
   const name = item?.filename || '';
@@ -136,11 +158,12 @@ export const ComfyUITool = {
       capabilities: resolved.capabilities,
       resolution: resolved.workflowProfile?.resolution || {},
       settings: input.settings,
-      frames: input.frames,
+      frames: input.frames ?? input.settings?.frames,
       runtime: runtimeCheck.runtime,
       strict: true,
     });
     const preflight = buildPreflightReport({ modelRequirements, capabilities: resolved.capabilities, modelType: resolved.modelType, adapterAvailable: resolved.adapter !== null, adaptationOnly, adapterCapabilities: resolved.info, runtime: runtimeCheck.runtime, resourceEstimate });
+    preflight.issues.push(...h3RuntimeIssues(resolved.modelType, objectInfo));
     preflight.issues.push(...resourceEstimate.issues);
     preflight.issues.push(...runtimeCheck.issues);
     preflight.issueCount = preflight.issues.length;
@@ -276,7 +299,7 @@ export const ComfyUITool = {
         promptId,
         images: rawImages,
         videos: rawVideos.map(v => ({ filename: v.filename, subfolder: v.subfolder || '', type: v.type || 'output' })),
-        isVideoWorkflow: Boolean(input.frames) || /animatediff|video/i.test(String(resolved?.modelType || '')),
+        isVideoWorkflow: Boolean(input.frames ?? input.settings?.frames) || /wan|animatediff|video|minimax/i.test(String(resolved?.modelType || '')),
         imageChecks,
         outputNodeIds: selectedOutputIds.map(String),
         imageNodeIds: [...imageNodeIds],
@@ -334,8 +357,8 @@ export const ComfyUITool = {
     return uploaded;
   },
 
-  async inspectWorkflow(workflowName, workflowDir) {
-    const resolved = await WorkflowAdapter.resolve(workflowName, workflowDir);
+  async inspectWorkflow(workflowName, workflowDir, options = {}) {
+    const resolved = await workflowManifestCache.get(workflowName, workflowDir, options);
     if (!resolved) throw new Error(`Workflow not found: ${workflowName}`);
 
     const objectInfo = await client.objectInfo();
@@ -547,3 +570,10 @@ export const ComfyUITool = {
     return ids;
   },
 };
+
+// Stable atomic ComfyUI tools are re-exported here for callers that import the
+// ComfyUI tool module directly instead of the package entry point.
+export { RuntimeTools, RuntimeReadTools, RuntimeMutationTools, ComfyUIGetStatusTool, ComfyUIGetQueueTool, ComfyUIGetHistoryTool, ComfyUIGetObjectInfoTool, ComfyUIGetSystemStatsTool, ComfyUIGetOutputTool, ComfyUICancelPromptTool, ComfyUIInterruptTool } from './runtime.mjs';
+export { WorkflowReadTools, WorkflowListTool, WorkflowReadTool, WorkflowSnapshotTool, WorkflowListNodesTool, WorkflowGetNodeTool, WorkflowFindNodesTool, WorkflowListOutputsTool, WorkflowValidateTool } from './workflow-read.mjs';
+export { ComfyUIRuntimeParametersTool, compileRuntimeParameters } from './runtime-parameters.mjs';
+export { WorkflowMutationTools, WorkflowMutationPreviewTool, WorkflowMutationCommitTool, WorkflowRevisionListTool, WorkflowRollbackTool } from './workflow-mutation-tools.mjs';

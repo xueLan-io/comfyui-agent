@@ -7,6 +7,8 @@ import AssetPreviewModal from './AssetPreviewModal.jsx';
 import Icon from './Icon.jsx';
 import FloatingPresetView from './FloatingPresetView.jsx';
 import { presetDefaultControls, presetWorkflowName } from '../runtime/preset-generation.mjs';
+import H3VideoPanel from './H3VideoPanel.jsx';
+import { isMiniMaxH3Workflow } from './h3-video-controls.mjs';
 
 const INITIAL_PROMPT = '';
 const INITIAL_NEGATIVE = '';
@@ -85,8 +87,10 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
   const generationBaselineRef = useRef(null);
   const [resultCountdown, setResultCountdown] = useState(0);
   const [view, setView] = useState('quick');
+  const [generationPage, setGenerationPage] = useState('image');
   const [activePreset, setActivePreset] = useState(null);
   const [dragReceiving, setDragReceiving] = useState(false);
+  const [h3Readiness, setH3Readiness] = useState(null);
   const incomingDragRef = useRef(null);
   const isBusy = ['preparing', 'confirming', 'running'].includes(status);
   tabRef.current = tab;
@@ -345,7 +349,20 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
   const recentImages = (task?.result || []).slice(0, 4);
   const workflowName = task?.workflowName || workflowManifest?.workflowName || selectedFile || '未选择工作流';
   const modelType = workflowManifest?.modelType || workflowManifest?.promptProfile?.family || 'generic';
-  const workflowReady = Boolean(selectedFile && workflowFiles.includes(selectedFile));
+   // The backend performs the authoritative workflow existence/preflight check.
+   // Do not block the button on a stale floating-window file list.
+   const workflowReady = Boolean(selectedFile);
+   const h3Selected = isMiniMaxH3Workflow(workflowManifest) || /minimax|mini.?max|h3/i.test(`${selectedFile} ${workflowManifest?.workflowName || ''}`);
+   const videoPage = generationPage === 'video';
+   const generationReady = workflowReady && (!videoPage || (h3Selected && h3Readiness?.ready === true));
+
+  function selectGenerationPage(page) {
+    setGenerationPage(page);
+  }
+
+  useEffect(() => {
+    if (isMiniMaxH3Workflow(workflowManifest)) setGenerationPage('video');
+  }, [workflowManifest]);
 
   function handlePromptKeyDown(event) {
     if (!(event.ctrlKey || event.metaKey) || event.key !== 'Enter' || isBusy || !positive.trim()) return;
@@ -360,7 +377,7 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
   function startGeneration(preset = activePreset, positiveOverride = '', negativeOverride = '') {
     const generationPositive = positiveOverride || positive;
     const generationNegative = negativeOverride || negative;
-    if (!generationPositive.trim() || !workflowReady || isBusy) return;
+    if (!generationPositive.trim() || !generationReady || isBusy) return;
     generationBaselineRef.current = generationResult;
     setResultOnly(false);
     collapse();
@@ -370,8 +387,10 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
     setTask(request);
     setStatus('preparing');
     if (prepareTimeoutRef.current) window.clearTimeout(prepareTimeoutRef.current);
-    prepareTimeoutRef.current = window.setTimeout(() => {
-      setTask(current => current?.phase === 'preparing' ? { ...current, phase: 'failed', error: '工作流检查超时，请重试。' } : current);
+     prepareTimeoutRef.current = window.setTimeout(() => {
+       void handleCancel().catch(() => {});
+       if (cancelPromptPreview) void cancelPromptPreview().catch(() => {});
+       setTask(current => current?.phase === 'preparing' ? { ...current, phase: 'failed', error: '工作流检查超时，请重试。' } : current);
       setStatus(current => current === 'preparing' ? 'failed' : current);
     }, QUICK_PREPARE_TIMEOUT_MS);
     const generationPreset = preset ? { ...preset, positive: generationPositive.trim(), negative: generationNegative.trim() } : null;
@@ -480,8 +499,8 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
     stopResultCountdown();
     if (prepareTimeoutRef.current) window.clearTimeout(prepareTimeoutRef.current);
     prepareTimeoutRef.current = null;
-    if (['preparing', 'confirming', 'running'].includes(status)) void handleCancel();
-    else if (cancelPromptPreview) void cancelPromptPreview();
+     if (['preparing', 'confirming', 'running'].includes(status)) void handleCancel().catch(() => {});
+     else if (cancelPromptPreview) void cancelPromptPreview().catch(() => {});
     recoveryTaskRef.current = false;
     setResultOnly(false);
     setTab('positive');
@@ -589,14 +608,14 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
             <span className="quick-generate-status-dot" />
             <div><strong>{statusLabel}</strong><span>{statusDescription}</span></div>
             {status === 'running' && <span className="quick-generate-status-percent">{progress}%</span>}
-          </div>}
-          {!resultOnly && ['preparing', 'running'].includes(status) && <div className="quick-generate-progress"><span className={indeterminate || status === 'preparing' ? 'indeterminate' : ''} style={indeterminate || status === 'preparing' ? undefined : { width: `${progress}%` }} /></div>}
+           </div>}
+           {!resultOnly && ['preparing', 'running'].includes(status) && <div className="quick-generate-progress"><span className={indeterminate || status === 'preparing' ? 'indeterminate' : ''} style={indeterminate || status === 'preparing' ? undefined : { width: `${progress}%` }} /></div>}
 
           {resultOnly && <div className="quick-generate-featured-result">
              {recentImages[0] ? <ImageAsset image={recentImages[0]} onOpen={preview => setPreview({ ...preview, images: recentImages, index: 0 })} /> : <div className="quick-generate-result-empty"><Icon name="images" size={18} /><span>生成结果已完成</span></div>}
              <span className="quick-generate-result-caption">点击结果查看大图 · {resultCountdown}s 后返回提示词</span>
              <span className="quick-generate-result-countdown" style={{ width: `${Math.max(0, Math.min(100, (resultCountdown / (QUICK_RESULT_DISPLAY_MS / 1000)) * 100))}%` }} />
-          </div>}
+           </div>}
 
            {resultOnly && <div className="quick-generate-result-actions">
               <button type="button" className="btn" onClick={editPrompt}><Icon name="edit" size={13} />编辑提示词</button>
@@ -604,8 +623,14 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
               <button type="button" className="btn quick-generate-reset" onClick={resetGeneration}><Icon name="trash" size={13} />清空并恢复默认</button>
            </div>}
 
-          {!resultOnly && <div className="quick-prompt-card">
-            <div className="quick-prompt-card-heading"><div><span className="section-kicker">PROMPT CARD</span><strong>提示词</strong></div><span>{promptParts.length} 个片段</span></div>
+           {!resultOnly && <div className="quick-generate-pages" role="tablist" aria-label="生成类型">
+             <button type="button" className={!videoPage ? 'active' : ''} onClick={() => selectGenerationPage('image')} role="tab" aria-selected={!videoPage}><Icon name="images" size={13} />文生图</button>
+             <button type="button" className={videoPage ? 'active video' : ''} onClick={() => selectGenerationPage('video')} role="tab" aria-selected={videoPage} title="打开视频生成页；请在下方选择 MiniMax H3 工作流"><Icon name="play" size={13} />视频生成</button>
+           </div>}
+
+           {!resultOnly && <div className={`quick-generation-editor${videoPage ? ' video' : ''}`}>
+             <div className="quick-prompt-card">
+             <div className="quick-prompt-card-heading"><div><span className="section-kicker">PROMPT CARD</span><strong>提示词</strong></div><span>{promptParts.length} 个片段</span></div>
             <div className="quick-prompt-tabs" role="tablist" aria-label="提示词类型">
                <button type="button" className={tab === 'positive' ? 'active' : ''} onClick={() => setTab('positive')} role="tab" aria-selected={tab === 'positive'}><Icon name="plus" size={12} />我想要<span>{normalizePrompt(positive).split(',').filter(item => item.trim()).length}</span></button>
                <button type="button" className={tab === 'negative' ? 'active negative' : ''} onClick={() => setTab('negative')} role="tab" aria-selected={tab === 'negative'}><Icon name="minus" size={12} />我不想要<span>{normalizePrompt(negative).split(',').filter(item => item.trim()).length}</span></button>
@@ -614,26 +639,28 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
               <PromptChips value={currentValue} onRemove={removePart} />
                <textarea value={currentValue} onChange={event => setCurrentValue(normalizePrompt(event.target.value))} onKeyDown={handlePromptKeyDown} placeholder={tab === 'positive' ? '描述主体、动作、场景和风格...' : '例如：blurry, bad anatomy'} disabled={isBusy} aria-label={tab === 'positive' ? '正向提示词' : '负向提示词'} />
               <span className="quick-prompt-hint">内容会原样用于生成</span>
-            </div>
-          </div>}
+             </div>
+             </div>
+             {videoPage && <H3VideoPanel onApply={setGenerationControls} onReadinessChange={setH3Readiness} workflowSelected={h3Selected} />}
+           </div>}
 
           {!resultOnly && status === 'complete' && <div className="quick-generate-results" aria-label="最近生成结果">
             <div className="quick-generate-results-heading"><span>RESULT</span><small>{recentImages.length ? `${recentImages.length} 个结果` : '生成结果'}</small></div>
              {recentImages.length ? <div className="quick-generate-results-strip">{recentImages.map((image, index) => <ImageAsset key={`${image.filename}-${image.createdAt}`} image={image} compact onOpen={preview => setPreview({ ...preview, images: recentImages, index })} />)}</div> : <div className="quick-generate-result-empty"><Icon name="images" size={15} /><span>结果会显示在这里</span></div>}
           </div>}
-          {!resultOnly && <div className="quick-generate-meta">
+            {!resultOnly && <div className="quick-generate-meta">
             <label className="quick-generate-workflow-label" htmlFor="quick-workflow-select"><Icon name="workflow" size={13} /><span>工作流</span></label>
-            <select id="quick-workflow-select" className="quick-generate-workflow-select" value={selectedFile} onChange={event => selectWorkflow(event.target.value)} disabled={isBusy || workflowFiles.length === 0} aria-label="选择工作流">
+              <select id="quick-workflow-select" className="quick-generate-workflow-select" value={selectedFile} onChange={event => selectWorkflow(event.target.value)} disabled={isBusy || workflowFiles.length === 0} aria-label="选择工作流">
               <option value="">选择工作流</option>
               {workflowFiles.map(file => <option key={file} value={file}>{file}</option>)}
             </select>
-            <span title={modelType}>{modelType}</span>
-          </div>}
-           {!resultOnly && <div className="quick-generate-action-row">
-             <button type="button" className={`quick-generate-action${status === 'running' ? ' cancel' : status === 'failed' ? ' retry' : ''}`} onClick={status === 'running' ? resetGeneration : status === 'failed' ? retryGeneration : startGeneration} disabled={!positive.trim() || !workflowReady || isBusy}>
+             <span title={modelType}>{modelType}</span>
+           </div>}
+            {!resultOnly && <div className="quick-generate-action-row">
+              <button type="button" className={`quick-generate-action${status === 'running' ? ' cancel' : status === 'failed' ? ' retry' : ''}`} onClick={status === 'running' ? resetGeneration : status === 'failed' ? retryGeneration : startGeneration} disabled={status === 'running' ? false : !positive.trim() || !generationReady || isBusy}>
                <Icon name={status === 'running' ? 'stop' : status === 'complete' ? 'refresh' : status === 'failed' ? 'refresh' : 'spark'} size={19} />
                <span>{status === 'running' ? '取消生成' : status === 'complete' ? '再次生成' : status === 'failed' ? '重试生成' : '生成'}</span>
-               <small>{status === 'running' || status === 'failed' ? statusDescription : '使用当前工作流'}</small>
+                <small>{status === 'running' || status === 'failed' ? statusDescription : videoPage && !h3Selected ? '请先选择 MiniMax H3 视频工作流' : videoPage && !h3Readiness?.ready ? h3Readiness?.message || '正在检查 H3 节点' : '使用当前工作流'}</small>
              </button>
              {!isBusy && <button type="button" className="btn quick-generate-reset" onClick={resetGeneration} title="清空当前结果并恢复默认提示词"><Icon name="trash" size={13} />清空</button>}
            </div>}

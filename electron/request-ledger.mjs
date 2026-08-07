@@ -6,11 +6,26 @@ function clone(value) {
 }
 
 export class RequestLedger {
-  constructor() {
+  constructor({ metrics, maxEntries = 2000, ttlMs = 30 * 24 * 60 * 60 * 1000 } = {}) {
     this.entries = new Map();
     this.filePath = '';
     this.loaded = false;
     this.persistPromise = Promise.resolve();
+    this.metrics = metrics;
+    this.maxEntries = maxEntries;
+    this.ttlMs = ttlMs;
+  }
+
+  _prune() {
+    const cutoff = Date.now() - this.ttlMs;
+    for (const [requestId, entry] of this.entries) {
+      if (entry.updatedAt < cutoff && !['created', 'prepared', 'executing', 'observing'].includes(entry.state)) this.entries.delete(requestId);
+    }
+    while (this.entries.size > this.maxEntries) {
+      const oldest = [...this.entries.values()].filter(entry => !['created', 'prepared', 'executing', 'observing'].includes(entry.state)).sort((a, b) => a.updatedAt - b.updatedAt)[0];
+      if (!oldest) break;
+      this.entries.delete(oldest.requestId);
+    }
   }
 
   async load(filePath) {
@@ -20,6 +35,7 @@ export class RequestLedger {
       for (const entry of Array.isArray(data) ? data : []) {
         if (entry?.requestId) this.entries.set(entry.requestId, entry);
       }
+      this._prune();
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
@@ -28,13 +44,18 @@ export class RequestLedger {
 
   async persist() {
     if (!this.filePath) return false;
-    this.persistPromise = this.persistPromise.then(async () => {
+    const persist = this.persistPromise.catch(() => {}).then(async () => {
+      this._prune();
       await mkdir(dirname(this.filePath), { recursive: true });
       const temp = `${this.filePath}.tmp`;
       await writeFile(temp, JSON.stringify([...this.entries.values()], null, 2));
       await rename(temp, this.filePath);
     });
-    await this.persistPromise;
+    this.persistPromise = persist.catch(error => {
+      this.metrics?.increment('request.persist_failed');
+      return error;
+    });
+    await persist;
     return true;
   }
 
@@ -42,19 +63,22 @@ export class RequestLedger {
     return requestId ? this.entries.get(requestId) || null : null;
   }
 
-  begin(requestId, { source = '', fingerprint = '', taskId = '', previewId = '' } = {}) {
+  begin(requestId, { source = '', fingerprint = '', taskId = '', previewId = '', principalId = '', tenantId = '', projectId = '', sessionId = '', serviceId = '', traceId = '', schemaVersion = 1 } = {}) {
     if (!requestId) throw new Error('requestId is required');
     const existing = this.entries.get(requestId);
     if (existing) {
-      if (existing.fingerprint && fingerprint && existing.fingerprint !== fingerprint) {
+      const identity = { serviceId, principalId, tenantId, projectId, sessionId, fingerprint };
+      const identityFields = Object.keys(identity);
+      if (identityFields.some(field => existing[field] && identity[field] && existing[field] !== identity[field])) {
         const error = new Error('requestId is already associated with a different request');
-        error.code = 'REQUEST_ID_CONFLICT';
+        error.code = existing.serviceId || serviceId ? 'REQUEST_IDENTITY_CONFLICT' : 'REQUEST_ID_CONFLICT';
         throw error;
       }
       return existing;
     }
-    const entry = { requestId, source, fingerprint, taskId, previewId, state: 'created', preview: null, result: null, error: null, updatedAt: Date.now() };
+    const entry = { schemaVersion, requestId, serviceId, principalId, tenantId, projectId, sessionId, source, fingerprint, taskId, traceId, previewId, state: 'created', recovery: { state: 'none', attempts: 0 }, preview: null, result: null, error: null, updatedAt: Date.now() };
     this.entries.set(requestId, entry);
+    this.metrics?.increment('request.created');
     void this.persist();
     return entry;
   }
@@ -68,11 +92,18 @@ export class RequestLedger {
   }
 
   complete(requestId, result) {
+    this.metrics?.increment('request.completed');
     return this.update(requestId, { state: 'completed', result, error: null });
   }
 
   fail(requestId, error) {
+    this.metrics?.increment('request.failed');
     return this.update(requestId, { state: 'failed', error: error ? { message: error.message || String(error), code: error.code || '' } : null });
+  }
+
+  recover(requestId, { state = 'observing', taskId = '', promptId = '', recovery = 'restart' } = {}) {
+    const entry = this.get(requestId);
+    return this.update(requestId, { state, taskId, promptId, recovery: { state: recovery, attempts: (entry?.recovery?.attempts || 0) + 1, lastCheckedAt: Date.now() } });
   }
 
   snapshot(requestId) {

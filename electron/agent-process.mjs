@@ -7,7 +7,9 @@ import { emit } from '../src/agent/events/agent-events.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WORKER_PATH = join(__dirname, 'agent-worker.mjs');
 const JOB_HOST_PATH = join(__dirname, 'job-object-host.ps1');
-const DEFAULT_RPC_TIMEOUT_MS = 900000;
+const DEFAULT_RPC_TIMEOUT_MS = 2700000;
+const VIDEO_RPC_TIMEOUT_MS = 3600000;
+const TASK_SCOPED_METHODS = new Set(['cancel', 'getTrace', 'session.getTrace', 'task.update', 'task.transition', 'task.complete', 'task.settleComplete']);
 
 function rejected(message, code = 'AGENT_PROCESS_ERROR') {
   const error = new Error(message);
@@ -72,6 +74,7 @@ export class AgentProcessClient {
   get isRunning() { return this.cache.isRunning; }
   get state() { return this.cache.state; }
   get taskId() { return this.cache.taskId; }
+  get isAlive() { return Boolean(this.child && (this.usesUtilityProcess ? this.child.pid : this.child.connected)); }
 
   prepareGeneration(...args) { return this.call('prepareGeneration', args); }
   prepareFileMutation(...args) { return this.call('prepareFileMutation', args); }
@@ -150,13 +153,22 @@ export class AgentProcessClient {
       const error = args[0] instanceof Error
         ? args[0]
         : rejected(args.filter(Boolean).join(': ') || 'Agent process error');
+      this.cache.tasks = (this.cache.tasks || []).map(task => {
+        if (!['queued', 'executing', 'observing', 'retrying', 'replanning'].includes(task.state || task.status)) return task;
+        return { ...task, state: 'abandoned', status: 'abandoned', lastError: error.message, error: { code: 'AGENT_PROCESS_EXITED', message: error.message }, updatedAt: Date.now() };
+      });
       this._failPending(error);
     });
     this.child.on('exit', (code, signal) => {
       const error = rejected(`Agent process exited${signal ? ` with ${signal}` : ` with code ${code}`}`);
+      this.cache.tasks = (this.cache.tasks || []).map(task => {
+        if (!['queued', 'executing', 'observing', 'retrying', 'replanning'].includes(task.state || task.status)) return task;
+        return { ...task, state: 'abandoned', status: 'abandoned', lastError: error.message, error: { code: 'AGENT_PROCESS_EXITED', message: error.message }, updatedAt: Date.now() };
+      });
       this._failPending(error);
       this.child = null;
       this.ready = null;
+      this.options.onExit?.(error);
     });
     this.child.stderr?.on('data', data => {
       this.options.onStderr?.(String(data));
@@ -262,6 +274,20 @@ export class AgentProcessClient {
     this.readyReject?.(error);
   }
 
+  _taskIdFromArgs(args = []) {
+    const structured = args.find(value => value && typeof value === 'object' && typeof value.taskId === 'string');
+    if (structured) return structured.taskId;
+    return '';
+  }
+
+  _rpcTimeoutMs(method, args = []) {
+    const input = args.find(value => value && typeof value === 'object') || {};
+    const video = input.outputType === 'video'
+      || input.settings?.frames
+      || /video|wan|minimax|animatediff/i.test(String(input.workflowName || input.modelType || ''));
+    return video ? Math.max(this.options.rpcTimeoutMs || 0, VIDEO_RPC_TIMEOUT_MS) : (this.options.rpcTimeoutMs || DEFAULT_RPC_TIMEOUT_MS);
+  }
+
   call(method, args = []) {
     return (async () => {
       if (this.startPromise) await this.startPromise;
@@ -270,11 +296,14 @@ export class AgentProcessClient {
         throw rejected('Agent process is not running', 'AGENT_PROCESS_NOT_RUNNING');
       }
       const id = randomUUID();
-      const timeoutMs = this.options.rpcTimeoutMs || DEFAULT_RPC_TIMEOUT_MS;
+      const timeoutMs = this._rpcTimeoutMs(method, args);
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           this.pending.delete(id);
-          reject(rejected(`Agent RPC timed out: ${method}`, 'AGENT_RPC_TIMEOUT'));
+          const error = rejected(`Agent RPC timed out: ${method}`, 'AGENT_RPC_TIMEOUT');
+          const taskId = this._taskIdFromArgs(args) || (TASK_SCOPED_METHODS.has(method) && typeof args[0] === 'string' ? args[0] : '');
+          if (taskId && method !== 'cancel') void this.call('cancel', [taskId]).catch(() => {});
+          reject(error);
         }, timeoutMs);
         this.pending.set(id, {
           resolve: value => { clearTimeout(timer); resolve(value); },

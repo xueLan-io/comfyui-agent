@@ -20,19 +20,22 @@ function memoryMb(value) {
 }
 
 export function estimateGenerationResources({ modelType = 'generic', capabilities = {}, resolution = {}, settings = {}, frames, batch, runtime = {}, strict = false } = {}) {
-  const width = number(settings.width ?? resolution.width, 1024);
-  const height = number(settings.height ?? resolution.height, 1024);
-  const outputBatch = Math.max(1, Math.floor(number(settings.batch ?? batch, 1)));
+  const safeSettings = settings && typeof settings === 'object' ? settings : {};
+  const safeResolution = resolution && typeof resolution === 'object' ? resolution : {};
+  const safeRuntime = runtime && typeof runtime === 'object' ? runtime : {};
+  const width = number(safeSettings.width ?? safeResolution.width, 1024);
+  const height = number(safeSettings.height ?? safeResolution.height, 1024);
+  const outputBatch = Math.max(1, Math.floor(number(safeSettings.batch ?? batch, 1)));
   const video = capabilities.modes?.some(mode => /video/.test(mode)) || /video|wan|animatediff|minimax/i.test(modelType);
-  const outputFrames = video ? Math.max(1, Math.floor(number(frames ?? settings.frames ?? settings.length, 16))) : 1;
+  const outputFrames = video ? Math.max(1, Math.floor(number(frames ?? safeSettings.frames ?? safeSettings.length, 16))) : 1;
   const megapixels = (width * height) / 1_000_000;
   const base = BASE_VRAM_MB[modelType] || BASE_VRAM_MB.generic;
   const resolutionFactor = Math.max(0.5, megapixels);
   const batchFactor = 1 + (outputBatch - 1) * (video ? 0.5 : 0.65);
   const frameFactor = video ? Math.max(1, outputFrames / 16) : 1;
   const estimatedVramMb = Math.ceil(base * resolutionFactor * batchFactor * frameFactor * (video ? 1.15 : 1));
-  const freeVramMb = memoryMb(runtime.gpu?.vramFree);
-  const totalVramMb = memoryMb(runtime.gpu?.vramTotal);
+  const freeVramMb = memoryMb(safeRuntime.gpu?.vramFree);
+  const totalVramMb = memoryMb(safeRuntime.gpu?.vramTotal);
   const issues = [];
   if (freeVramMb > 0 && estimatedVramMb > freeVramMb * 0.9) {
     issues.push({

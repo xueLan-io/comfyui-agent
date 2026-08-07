@@ -1,0 +1,10 @@
+import { inspectMediaReference, compareMediaFiles } from './media-metadata.mjs';
+import { MediaDownloadService } from './media-download-service.mjs';
+
+export function createMediaTools({ resolvePath, downloadService = new MediaDownloadService() } = {}) {
+  return [
+    { name: 'media_inspect', description: 'Inspect a trusted image or video media reference.', category: 'media', permission: 'read', risk_level: 'none', side_effects: [], requires_confirmation: false, idempotent: true, retry: { mode: 'limited', max_attempts: 1 }, input_schema: { type: 'object', properties: { media: { type: 'object' }, includeMetadata: { type: 'boolean' } }, required: ['media'], additionalProperties: false }, output_schema: { type: 'object' }, execute: input => inspectMediaReference(input.media, { resolvePath }) },
+    { name: 'media_compare', description: 'Compare two trusted media files by hash and metadata.', category: 'media', permission: 'read', risk_level: 'none', side_effects: [], requires_confirmation: false, idempotent: true, retry: { mode: 'limited', max_attempts: 1 }, input_schema: { type: 'object', properties: { left: { type: 'string' }, right: { type: 'string' } }, required: ['left', 'right'], additionalProperties: false }, output_schema: { type: 'object' }, execute: input => compareMediaFiles(input.left, input.right) },
+    { name: 'media_download', description: 'Download an owned archived media asset by assetId.', category: 'media', permission: 'read', risk_level: 'high', side_effects: ['media_download'], requires_confirmation: true, idempotent: false, retry: { mode: 'never' }, input_schema: { type: 'object', properties: { assetId: { type: 'string' }, owner: { type: 'object' }, outputPath: { type: 'string' }, confirmation: { type: 'boolean' } }, required: ['assetId', 'outputPath', 'confirmation'], additionalProperties: false }, output_schema: { type: 'object' }, execute: input => input.confirmation === true ? downloadService.download(input) : { code: 'CONFIRMATION_REQUIRED', error: 'Download requires confirmation' } },
+  ];
+}

@@ -8,6 +8,8 @@ const COMMON_SETTINGS = {
   width: { inputs: ['width'], node: /latent|resolution|size/i },
   height: { inputs: ['height'], node: /latent|resolution|size/i },
   batch: { inputs: ['amount', 'batch_size'], node: /batch|latent/i },
+  frames: { inputs: ['frames', 'frame_count', 'video_length', 'length'], node: /video|wan|animatediff|latent/i },
+  fps: { inputs: ['fps', 'frame_rate', 'framerate'], node: /video|vhs|combine/i },
 };
 
 function isLink(value) {
@@ -203,7 +205,7 @@ export function injectExecutionPrompts(prompt, compiledPrompt = {}, promptProfil
     for (let index = 0; index < inputNames.length; index++) {
       const inputName = inputNames[index];
       node.inputs[inputName] = values[index] || '';
-      applied.push({ nodeId, input: inputName, value: node.inputs[inputName], polarity: 'positive' });
+       applied.push({ nodeId, input: inputName, value: node.inputs[inputName], polarity: 'positive', source: 'prompt_positive' });
     }
   }
 
@@ -213,7 +215,7 @@ export function injectExecutionPrompts(prompt, compiledPrompt = {}, promptProfil
       const node = prompt[nodeId];
       if (!node || isLink(node.inputs?.[target.input]) || typeof node.inputs?.[target.input] !== 'string') continue;
       node.inputs[target.input] = values[0];
-      applied.push({ nodeId, input: target.input, value: values[0], polarity: 'positive' });
+       applied.push({ nodeId, input: target.input, value: values[0], polarity: 'positive', source: 'prompt_positive' });
     }
   }
 
@@ -224,7 +226,7 @@ export function injectExecutionPrompts(prompt, compiledPrompt = {}, promptProfil
       const node = prompt[nodeId];
       if (!node || isLink(node.inputs?.[target.input]) || typeof node.inputs?.[target.input] !== 'string') continue;
       node.inputs[target.input] = negative;
-      applied.push({ nodeId, input: target.input, value: negative, polarity: 'negative' });
+       applied.push({ nodeId, input: target.input, value: negative, polarity: 'negative', source: 'prompt_negative' });
     }
   }
 
@@ -287,17 +289,56 @@ function findUnlinkedInput(node, names) {
   return null;
 }
 
+function linkedSource(prompt, value) {
+  return isLink(value) ? prompt[String(value[0])] : null;
+}
+
+function injectH3Reference(prompt, refs, kind, applied, ignored) {
+  const slots = Object.entries(prompt)
+    .filter(([, node]) => /minimaxh3referencetovideo/i.test(node.class_type || ''))
+    .flatMap(([nodeId, node]) => Object.entries(node.inputs || {})
+      .filter(([name]) => kind === 'images' ? /^ref_images\./i.test(name) : /^ref_videos\./i.test(name))
+      .map(([input, value]) => ({ nodeId, node, input, value })));
+
+  if (slots.length === 0) return;
+  for (const [index, ref] of refs.entries()) {
+    const slot = slots[index];
+    const value = kind === 'videos' ? `input/${mediaRefString(ref)}` : mediaRefString(ref);
+    if (!slot) {
+      ignored.push({ kind, reason: 'no_h3_reference_slot' });
+      continue;
+    }
+    const source = linkedSource(prompt, slot.value);
+    if (source) {
+      const hit = findUnlinkedInput(source, kind === 'images' ? ['image', 'images'] : ['video', 'video_path', 'video_file', 'file']);
+      if (hit) {
+        source.inputs[hit.inputName] = value;
+        applied.push({ nodeId: slot.nodeId, input: slot.input, value, source: kind });
+        continue;
+      }
+    } else if (typeof slot.value === 'string' || slot.value === undefined) {
+      prompt[slot.nodeId].inputs[slot.input] = value;
+      applied.push({ nodeId: slot.nodeId, input: slot.input, value, source: kind });
+      continue;
+    }
+    ignored.push({ nodeId: slot.nodeId, input: slot.input, kind, reason: 'h3_reference_not_patchable' });
+  }
+}
+
 export function injectInputMedia(prompt, media = {}) {
   const applied = [];
   const ignored = [];
   const usedNodeIds = new Set();
 
+  injectH3Reference(prompt, media.images || [], 'images', applied, ignored);
+  injectH3Reference(prompt, media.videos || [], 'videos', applied, ignored);
+
   const loadImageNodes = Object.entries(prompt).filter(([, node]) => node.class_type === 'LoadImage');
   const loadMaskNodes = Object.entries(prompt).filter(([, node]) => node.class_type === 'LoadImageMask');
-  const videoNodes = Object.entries(prompt).filter(([, node]) => /video/i.test(node.class_type || ''));
+  const videoNodes = Object.entries(prompt).filter(([, node]) => /video/i.test(node.class_type || '') && !/minimaxh3referencetovideo/i.test(node.class_type || ''));
 
   let imageIdx = 0;
-  for (const ref of media.images || []) {
+  for (const ref of (media.images || []).slice(applied.filter(item => item.source === 'images').length)) {
     const entry = loadImageNodes[imageIdx];
     if (!entry) {
       ignored.push({ kind: 'images', reason: 'no_load_image_node' });
@@ -339,7 +380,7 @@ export function injectInputMedia(prompt, media = {}) {
   }
 
   let videoIdx = 0;
-  for (const ref of media.videos || []) {
+  for (const ref of (media.videos || []).slice(applied.filter(item => item.source === 'videos').length)) {
     const entry = videoNodes[videoIdx];
     if (!entry) {
       ignored.push({ kind: 'videos', reason: 'no_video_loader_node' });

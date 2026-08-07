@@ -45,7 +45,7 @@ export class OpenAICompatibleProvider {
     }
   }
 
-  async chat({ messages, tools, toolChoice, temperature = 0.7, maxTokens = 4096, timeoutMs = 60000, onChunk }) {
+  async chat({ messages, tools, toolChoice, temperature = 0.7, maxTokens = 4096, timeoutMs = 60000, onChunk, signal }) {
     if (this.apiKeyError) throw new Error(this.apiKeyError);
     const streaming = typeof onChunk === 'function';
 
@@ -66,6 +66,11 @@ export class OpenAICompatibleProvider {
     const controller = new AbortController();
     this._controller = controller;
     const timeout = setTimeout(() => controller.abort('timeout'), timeoutMs);
+    const abortFromCaller = () => controller.abort(signal.reason || 'cancelled');
+    if (signal) {
+      if (signal.aborted) abortFromCaller();
+      else signal.addEventListener('abort', abortFromCaller, { once: true });
+    }
     let res;
     try {
       const requestHeaders = {
@@ -83,6 +88,7 @@ export class OpenAICompatibleProvider {
       });
     } catch (error) {
       clearTimeout(timeout);
+      signal?.removeEventListener('abort', abortFromCaller);
       if (this._controller === controller) this._controller = null;
       if (controller.signal.aborted) {
         const reason = controller.signal.reason === 'timeout'

@@ -49,7 +49,7 @@ export class ExecutionCoordinator {
     return true;
   }
 
-  async execute({ source, taskId = '', owner, previewId = '', work, onResult, cancel }) {
+  async execute({ source, taskId = '', owner, previewId = '', work, onResult, cancel, governance }) {
     if (this.active) throw busyError(this.active, this.preview);
     if (this.preview && !previewId) throw busyError(this.active, this.preview);
     if (previewId) {
@@ -76,7 +76,7 @@ export class ExecutionCoordinator {
       promise: null,
     };
     this.active = entry;
-    const workPromise = Promise.resolve().then(() => work(entry));
+    const workPromise = Promise.resolve().then(() => governance ? governance({ entry, work }) : work(entry));
     entry.promise = workPromise;
     try {
       const result = await workPromise;
@@ -105,7 +105,13 @@ export class ExecutionCoordinator {
     entry.cancelRequested = true;
     entry.cancelPromise = (async () => {
       entry.phase = 'stopping';
-      await (cancel || entry.cancel)?.();
+      try {
+        await (cancel || entry.cancel)?.();
+      } catch (error) {
+        entry.phase = 'running';
+        entry.cancelPromise = null;
+        throw error;
+      }
       try {
         await Promise.race([
           entry.promise,

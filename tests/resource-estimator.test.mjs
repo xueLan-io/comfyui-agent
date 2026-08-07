@@ -46,3 +46,9 @@ test('strict estimation records a severe shortage without forcing a block', () =
   assert.equal(result.issues[0].strictSeverity, 'error');
   assert.match(result.issues[0].message, /resolution|frames|batch/);
 });
+
+test('resource estimator accepts null resolution, settings, and runtime', () => {
+  const result = estimateGenerationResources({ modelType: 'minimax_h3', resolution: null, settings: null, runtime: null });
+  assert.equal(result.width, 1024);
+  assert.equal(result.height, 1024);
+});

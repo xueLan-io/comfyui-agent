@@ -1,5 +1,7 @@
 import { Agent, AgentEventTypes, ComfyUITool, configureSkills, on } from '../src/agent/index.mjs';
 import { ComfyUIClient } from '../src/agent/tools/comfyui/client.mjs';
+import { createGovernanceContext } from '../src/runtime/governance/context.mjs';
+import { createAuditEvent } from '../src/runtime/governance/audit-events.mjs';
 
 const EVENT_TYPES = Object.values(AgentEventTypes);
 const parentPort = process.parentPort || null;
@@ -49,6 +51,7 @@ const agentMethods = new Set([
 
 let agent;
 let callQueue = Promise.resolve();
+let workerContext;
 
 function send(message) {
   if (parentPort) {
@@ -70,6 +73,7 @@ function runCall(message) {
       code: error.code || '',
       policyDecision: error.code === 'CLOUD_POLICY_BLOCKED' ? error.policyDecision || null : null,
       stack: error.stack,
+      state: snapshot(),
     }));
 }
 
@@ -101,6 +105,10 @@ function wireEvents() {
 }
 
 async function invoke(method, args = []) {
+  if (!workerContext) throw Object.assign(new Error('Worker governance context is not initialized'), { code: 'AUTHENTICATION_REQUIRED' });
+  const sideEffect = !READ_ONLY_METHODS.has(method);
+  const audit = createAuditEvent({ ...workerContext, action: `worker.${method}`, decision: 'allow', reason: sideEffect ? 'worker_dispatch' : 'read', data: { sideEffect } });
+  if (sideEffect) send({ type: 'audit', event: audit });
   if (agentMethods.has(method)) return agent[method](...args);
   if (method === 'session.getProject') return agent.sessionManager.getProject(args[0]);
   if (method === 'session.getTrace') return agent.getTrace(args[0]);
@@ -139,8 +147,15 @@ async function start(config = {}) {
     workflowDir: config.workflowDir || '',
     comfyRoot: config.comfyRoot || '',
     userDataPath: config.userDataPath || '',
-    projectId: config.projectId || '',
-    sessionId: config.sessionId || '',
+    projectId: config.projectId || 'project_worker',
+    sessionId: config.sessionId || 'session_worker',
+  });
+  workerContext = createGovernanceContext({
+    principalId: config.principalId || 'principal_worker',
+    tenantId: config.tenantId || 'tenant_local',
+    projectId: config.projectId || 'project_worker',
+    sessionId: config.sessionId || 'session_worker',
+    source: 'internal',
   });
   wireEvents();
   await agent.init();

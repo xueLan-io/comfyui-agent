@@ -22,7 +22,7 @@ test('MiniMaxH3Adapter describes references, output, and required models', () =>
   assert.equal(info.supportsTextToVideo, true);
   assert.equal(info.supportsImageToVideo, true);
   assert.equal(info.supportsVideoReference, true);
-  assert.equal(info.adaptationOnly, true);
+  assert.equal(info.adaptationOnly, false);
   assert.equal(info.requiredModelFiles.length, 2);
 });
 
@@ -40,6 +40,21 @@ test('MiniMaxH3Adapter patches H3 controls without executing', () => {
   assert.equal(wf.nodes[3].widgets_values.frame_rate, 16);
 });
 
-test('MiniMaxH3Adapter explicitly remains adaptation-only', () => {
-  assert.equal(MiniMaxH3Adapter.adaptationOnly, true);
+test('MiniMaxH3Adapter consumes standard video settings and reports supported controls', () => {
+  const wf = workflow();
+  const info = MiniMaxH3Adapter.describe(wf);
+  MiniMaxH3Adapter.prepare(wf, { settings: { width: 960, height: 544, frames: 97, fps: 24, seed: 42, steps: 28, cfg: 6 } });
+  assert.equal(info.supportsDuration, true);
+  assert.equal(info.supportsResolution, true);
+  assert.equal(info.supportsFps, true);
+  assert.deepEqual(wf.nodes[2].widgets_values.slice(0, 4), ['', 960, 544, 97]);
+  assert.equal(wf.nodes[3].widgets_values.frame_rate, 24);
+});
+
+test('MiniMaxH3Adapter is executable after runtime preflight succeeds', () => {
+  assert.equal(MiniMaxH3Adapter.adaptationOnly, false);
+});
+
+test('NVIDIA and AMD H3 controls use portable vendor routes', () => {
+  assert.equal(MiniMaxH3Adapter.name, 'minimax_h3');
 });

@@ -10,6 +10,7 @@ import ModelSelector from './ModelSelector.jsx';
 import Icon from './Icon.jsx';
 import PresetSaveModal from './PresetSaveModal.jsx';
 import { useI18n } from '../i18n/I18nContext.jsx';
+import { progressTimeEstimate } from '../runtime/generation-time-estimate.mjs';
 
 function imageKey(image = {}) {
   return `${image.type || ''}:${image.projectId || ''}:${image.subfolder || ''}:${image.filename || ''}`;
@@ -25,6 +26,13 @@ function isCurrentResultMessage(message, currentMedia) {
 function formatTokens(value) {
   const tokens = Number(value) || 0;
   return tokens >= 1000 ? `${(tokens / 1000).toFixed(tokens >= 10000 ? 0 : 1)}k` : String(tokens);
+}
+
+function formatDuration(milliseconds) {
+  const seconds = Math.max(0, Math.ceil((Number(milliseconds) || 0) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return minutes > 0 ? `${minutes}:${String(remainder).padStart(2, '0')}` : `${remainder}s`;
 }
 
 function ContextRing({ usage, t }) {
@@ -122,6 +130,18 @@ export default function ChatPanel({ active = true, onReady }) {
         ? t('sourceAgent')
         : '';
   const { setShowNodeControls, selectedFile, generationControls, workflowManifest } = useComfyUI();
+  const [now, setNow] = useState(() => Date.now());
+  const timeProgress = progressTimeEstimate(generationProgress?.timeEstimate, {
+    startedAt: generationProgress?.startedAt || now,
+    percent: generationProgress?.percent,
+    now,
+  });
+
+  useEffect(() => {
+    if (status !== 'running' || !generationProgress?.timeEstimate) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [status, generationProgress?.timeEstimate]);
 
   useEffect(() => {
     if (thinking) setRuntimeOpen(true);
@@ -130,6 +150,7 @@ export default function ChatPanel({ active = true, onReady }) {
   useEffect(() => {
     if (active) onReady?.();
   }, [active, onReady]);
+
 
   useEffect(() => {
     if (status === 'idle' && ['ai', 'direct', 'openai-image'].includes(generationSource)) {
@@ -234,13 +255,20 @@ export default function ChatPanel({ active = true, onReady }) {
       <div className="chat-input-area">
           {status === 'running' && (
             <div className="generation-progress-chat" role="status" aria-live="polite">
-              <div className="generation-progress-meta">
+               <div className="generation-progress-meta">
                 <span>{generationProgress?.percentScope === 'node' && generationProgress?.nodePercent !== null
                    ? `${t('nodes')}：${generationProgress.message || generationProgress.node || t('processing')}`
                    : generationProgress?.message || statusMsg || t('processingRequest')}</span>
-                {Number.isFinite(generationProgress?.percent) && <strong>{generationProgress.percent}%</strong>}
-              </div>
-              <div className="generation-progress-track">
+                 {Number.isFinite(generationProgress?.percent) && <strong>{generationProgress.percent}%</strong>}
+               </div>
+               {timeProgress && (
+                 <div className="generation-time-estimate">
+                   <span>已用 {formatDuration(timeProgress.elapsedMs)}</span>
+                   <strong>预计剩余 {formatDuration(timeProgress.remainingMs)}</strong>
+                   <small>{timeProgress.confidence === 'calibrated' ? '已按实际采样进度校正' : '预估时长，首个采样进度后会校正'}</small>
+                 </div>
+               )}
+               <div className="generation-progress-track">
                 <span className={Number.isFinite(generationProgress?.percent) ? '' : 'indeterminate'} style={Number.isFinite(generationProgress?.percent) ? { width: `${Math.max(2, generationProgress.percent)}%` } : undefined} />
               </div>
             </div>

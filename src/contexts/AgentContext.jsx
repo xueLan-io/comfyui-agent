@@ -488,6 +488,14 @@ export function AgentProvider({ children }) {
       }
       setStatus(data.uiStatus || data.status);
       setStatusMsg(data.message || '');
+      if (data.status === 'running' && data.timeEstimate) {
+        setGenerationProgress(previous => normalizeProgressEvent({
+          ...previous,
+          timeEstimate: data.timeEstimate,
+          startedAt: data.startedAt || Date.now(),
+          message: data.message || previous?.message,
+        }, previous));
+      }
       if (data.status === 'completed' && data.result) {
         const result = data.result;
         const resultItems = resultMedia(result);
@@ -766,6 +774,7 @@ export function AgentProvider({ children }) {
 
     try {
       const result = await window.electronAPI.directPrepare({
+        requestId: turnId,
         source: 'direct',
         projectId: session.activeProjectId,
         sessionId: session.activeSessionId,
@@ -883,7 +892,14 @@ export function AgentProvider({ children }) {
     beginAgentTask();
     try {
       const result = promptPreview.source === 'direct'
-        ? await window.electronAPI.directRunPrepared(previewId, edits)
+        ? await window.electronAPI.directRunPrepared(previewId, edits, {
+          confirmation: {
+            accepted: true,
+            digest: preview.requestDigest,
+            requestId: preview.requestId,
+            previewId,
+          },
+        })
         : await window.electronAPI.agentHandleTurn({
           text: '确认执行',
           modeHint: 'generate',

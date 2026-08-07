@@ -218,6 +218,15 @@ Windows Authenticode 使用代码签名证书导出的 PFX：
 - 发布产物和压缩包不应提交到源代码仓库；相关目录和文件已加入 `.gitignore`。
 - ComfyUI、模型权重及其第三方节点遵循各自项目和模型的许可证。
 
+### MiniMax H3 硬件首跑档
+
+Agent 提供两条不绑定具体显卡型号的 MiniMax H3 首跑参数路线。它们只提供运行参数，可以应用到用户当前选中的任意 H3 工作流：
+
+- NVIDIA：开发配置中的 832 x 480、5 秒、24 steps。
+- AMD：开发配置中的 640 x 352、5 秒、20 steps，并启用 CPU offload 建议。
+
+两条路线都不强制写入工作流节点 ID、输出节点、CUDA、ROCm、SAGE attention 或特定显卡型号。Agent 会先检查当前工作流的 H3 节点、模型文件、显存和 FFmpeg，再决定是否允许提交。完成一次稳定结果后，只提高分辨率或时长中的一项，不要同时提高。
+
 ## 参与贡献
 
 欢迎提交 Issue 和 Pull Request。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，并确认测试、语法检查和构建均通过。

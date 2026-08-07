@@ -22,3 +22,12 @@ export function validateTaskTrace(trace, taskId, projectId) {
   }
   return trace;
 }
+
+export function assertTraceOwner(trace, owner = {}) {
+  if (!trace || trace.projectId !== owner.projectId
+    || (owner.sessionId && trace.sessionId !== undefined && trace.sessionId !== owner.sessionId)
+    || (owner.tenantId && trace.tenantId !== undefined && trace.tenantId !== owner.tenantId)) {
+    throw traceError('TRACE_OWNER_MISMATCH', 'Trace owner does not match the requested governance owner');
+  }
+  return trace;
+}

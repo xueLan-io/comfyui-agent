@@ -2,7 +2,7 @@ import { emit, AgentEventTypes } from '../events/agent-events.mjs';
 import { validatePlan, normalizePlan, MAX_PLAN_STEPS } from '../schemas/plan-schema.mjs';
 import { contextToPrompt } from '../schemas/context-schema.mjs';
 import { plannerToolContracts } from '../schemas/tool-schema.mjs';
-import { matchSkill } from '../skills/index.mjs';
+import { matchSkill, skillCandidates } from '../skills/index.mjs';
 import { resolveLLMStrategy } from '../llm/provider.mjs';
 
 const SYSTEM_PROMPT = `# 角色
@@ -282,7 +282,13 @@ export class Planner {
   _fallback(userMessage, context) {
     const workflowName = context.project?.currentWorkflow || context.availableWorkflows?.[0] || '';
     const promptMode = context.project?.promptMode || 'raw';
-    const skill = matchSkill(userMessage, { skillId: context.project?.skillId || context.skillId || '' });
+    const skillMatch = skillCandidates(userMessage, { ...context, skillId: context.project?.skillId || context.skillId || '' });
+    if (skillMatch.clarification) {
+      const clarificationPlan = { goal: userMessage, steps: [], metadata: { status: 'clarify', skillId: skillMatch.clarification.skillId, confidence: skillMatch.clarification.confidence, clarification: skillMatch.clarification, candidates: skillMatch.clarification.candidates || [] } };
+      emit(AgentEventTypes.PLAN, { stage: 'clarification', plan: clarificationPlan });
+      return clarificationPlan;
+    }
+    const skill = skillMatch.candidates[0]?.skill || matchSkill(userMessage, { skillId: context.project?.skillId || context.skillId || '' });
     if (!skill) throw new Error('没有启用的技能');
     const template = {
       goal: userMessage,

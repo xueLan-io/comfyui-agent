@@ -357,6 +357,40 @@ test('direct service switches to an inpaint workflow when a mask is attached', a
   }
 });
 
+test('direct service keeps a selected MiniMax H3 workflow for image and video references', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'comfy-agent-direct-h3-'));
+  const projectDir = join(base, 'project');
+  mkdirSync(projectDir);
+  writeFileSync(join(projectDir, 'reference.png'), 'image');
+  writeFileSync(join(projectDir, 'motion.mp4'), 'video');
+  let discovered = 0;
+  const executor = {
+    async inspect() {
+      return workflow({
+        modelType: 'minimax_h3',
+        capabilities: { modes: ['txt2video', 'img2video', 'video2video'] },
+        promptProfile: { positiveTargets: [{ nodeId: '1', input: 'prompt' }], supportsNegative: false },
+      });
+    },
+    async discover() { discovered++; return []; },
+    async execute() { return { videos: [] }; },
+  };
+  const service = new DirectService({ executor, workflowDir: 'workflows' });
+  const sandboxInput = { workflowDir: 'workflows', allowedRoots: [{ name: 'project', path: projectDir }] };
+  try {
+    const preview = await service.prepare({
+      workflowName: 'minimax-h3.json',
+      positive: 'a cinematic scene',
+      negative: '',
+      media: { images: [{ path: join(projectDir, 'reference.png') }], videos: [{ path: join(projectDir, 'motion.mp4') }] },
+    }, { sandboxInput });
+    assert.equal(preview.workflow.name, 'minimax-h3.json');
+    assert.equal(discovered, 0);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('direct service keeps the requested workflow without media and skips discovery', async () => {
   let discovered = 0;
   const executor = {

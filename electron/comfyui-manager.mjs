@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'child_process';
-import { existsSync } from 'fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { get as httpGet } from 'http';
 import { get as httpsGet } from 'https';
 import { dirname, join, resolve } from 'path';
@@ -58,11 +58,13 @@ export function findPortableRoot(...startDirs) {
 }
 
 export class ComfyUIManager {
-  constructor({ startDirs = [], baseUrl = DEFAULT_BASE_URL, onStatus, killTree = killProcessTree } = {}) {
+  constructor({ startDirs = [], baseUrl = DEFAULT_BASE_URL, onStatus, killTree = killProcessTree, startupLockPath = '' } = {}) {
     this.baseUrl = normalizeBaseUrl(baseUrl);
     this.portableRoot = findPortableRoot(...startDirs);
     this.onStatus = onStatus || (() => {});
     this.killTree = killTree;
+    this.startupLockPath = startupLockPath;
+    this.startupLockHeld = false;
     this.process = null;
     this.startPromise = null;
     this.shuttingDown = false;
@@ -87,6 +89,7 @@ export class ComfyUIManager {
 
   setPortableRoot(root) {
     const resolvedRoot = root ? resolve(root) : '';
+    if (resolvedRoot !== this.portableRoot && this.process) this.stopOwned();
     this.portableRoot = resolvedRoot && hasPortableLayout(resolvedRoot) ? resolvedRoot : '';
     this.state = { ...this.state, portableRoot: this.portableRoot };
     return this.portableRoot;
@@ -99,9 +102,18 @@ export class ComfyUIManager {
   }
 
   setBaseUrl(value) {
-    this.baseUrl = normalizeBaseUrl(value);
+    const nextBaseUrl = normalizeBaseUrl(value);
+    if (nextBaseUrl !== this.baseUrl && this.process) this.stopOwned();
+    this.baseUrl = nextBaseUrl;
     this.state = { ...this.state, baseUrl: this.baseUrl };
     return this.baseUrl;
+  }
+
+  setStartupLockPath(filePath) {
+    this.startupLockPath = filePath || '';
+    if (this.startupLockPath) {
+      try { mkdirSync(dirname(this.startupLockPath), { recursive: true }); } catch {}
+    }
   }
 
   async refreshState() {
@@ -162,7 +174,16 @@ export class ComfyUIManager {
   async _ensureStarted(timeoutMs) {
     this._setState('checking', '正在检测 ComfyUI...');
     if (await this.checkHealth()) {
+      if (this.shuttingDown) {
+        this._setState('stopped', 'ComfyUI 已停止');
+        return this.getState();
+      }
       this._setState('ready', 'ComfyUI 已连接');
+      return this.getState();
+    }
+
+    if (this.shuttingDown) {
+      this._setState('stopped', 'ComfyUI 已停止');
       return this.getState();
     }
 
@@ -171,11 +192,28 @@ export class ComfyUIManager {
       return this.getState();
     }
 
-    if (!this.process) this._spawnProcess();
+    if (!this.process) {
+      const lock = this._acquireStartupLock();
+      if (!lock.acquired) {
+        const recovered = await this._waitForHealthy(timeoutMs);
+        if (recovered) {
+          this._setState('ready', 'ComfyUI 已连接（其他实例启动）');
+          return this.getState();
+        }
+        this._setState('error', '已有其他 ComfyUI 实例正在启动或占用此连接');
+        return this.getState();
+      }
+      this._spawnProcess();
+    }
     this._setState('starting', '正在启动本地 ComfyUI...');
 
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
+      if (this.shuttingDown) {
+        this.stopOwned();
+        this._setState('stopped', 'ComfyUI 已停止');
+        return this.getState();
+      }
       if (!this.process) break;
       if (await this.checkHealth(2000)) {
         this._setState('ready', '本地 ComfyUI 已启动');
@@ -219,20 +257,65 @@ export class ComfyUIManager {
       this.logTail.push(error.message);
       this.process = null;
       if (!this.shuttingDown) this._setState('error', `ComfyUI 启动失败：${error.message}`);
+      this._releaseStartupLock();
     });
     child.once('exit', code => {
       this.process = null;
       if (!this.shuttingDown && this.state.status !== 'error') {
         this._setState('stopped', `ComfyUI 已停止${code == null ? '' : `（退出码 ${code}）`}`);
       }
+      this._releaseStartupLock();
     });
   }
 
-  stopOwned() {
-    this.shuttingDown = true;
+  stopOwned({ permanent = false } = {}) {
+    this.shuttingDown = permanent;
     const ownedProcess = this.process;
     this.process = null;
-    if (!ownedProcess) return false;
-    return this.killTree(ownedProcess);
+    if (!ownedProcess) {
+      this._releaseStartupLock();
+      return false;
+    }
+    const stopped = this.killTree(ownedProcess);
+    this._releaseStartupLock();
+    return stopped;
+  }
+
+  async _waitForHealthy(timeoutMs) {
+    const deadline = Date.now() + Math.min(timeoutMs, 15000);
+    while (Date.now() < deadline) {
+      if (await this.checkHealth(1000)) return true;
+      await new Promise(resolvePromise => setTimeout(resolvePromise, 500));
+    }
+    return false;
+  }
+
+  _acquireStartupLock() {
+    if (!this.startupLockPath || this.startupLockHeld) return { acquired: true };
+    try {
+      const fd = openSync(this.startupLockPath, 'wx');
+      writeFileSync(fd, JSON.stringify({ pid: process.pid, root: this.portableRoot, baseUrl: this.baseUrl }));
+      closeSync(fd);
+      this.startupLockHeld = true;
+      return { acquired: true };
+    } catch (error) {
+      if (error.code !== 'EEXIST') return { acquired: false };
+      let record;
+      try { record = JSON.parse(readFileSync(this.startupLockPath, 'utf8')); } catch { return { acquired: false }; }
+      try {
+        process.kill(Number(record.pid), 0);
+        return { acquired: false };
+      } catch (probeError) {
+        if (probeError.code !== 'ESRCH') return { acquired: false };
+        try { unlinkSync(this.startupLockPath); } catch {}
+        return this._acquireStartupLock();
+      }
+    }
+  }
+
+  _releaseStartupLock() {
+    if (!this.startupLockPath || !this.startupLockHeld) return;
+    try { unlinkSync(this.startupLockPath); } catch {}
+    this.startupLockHeld = false;
   }
 }

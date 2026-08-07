@@ -7,6 +7,8 @@ import { ControlNetSkill } from './controlnet.mjs';
 import { LoraSkill } from './lora.mjs';
 import { BatchSkill } from './batch.mjs';
 import { externalSkillManifest, normalizeExternalSkill } from './external.mjs';
+import { createSkillRegistry } from './registry.mjs';
+import { HighFrequencySkills } from './high-frequency.mjs';
 
 export const SKILLS = {
   txt2img: Txt2ImgSkill,
@@ -19,7 +21,17 @@ export const SKILLS = {
   batch: BatchSkill,
 };
 
+const BUILTIN_SKILLS = { ...SKILLS, ...HighFrequencySkills };
+
 export const SKILL_CONTRACT_VERSION = '1.0';
+
+export function createConfiguredSkillRegistry(options = {}) {
+  return createSkillRegistry({ builtin: options.builtin || BUILTIN_SKILLS, custom: options.custom || customSkills, external: options.external || [] });
+}
+
+export function skillCandidates(request, context = {}) {
+  return createConfiguredSkillRegistry().match(request, context);
+}
 
 export function skillManifest(skills = SKILLS, enabled = {}) {
   return Object.entries(skills).map(([id, skill]) => ({

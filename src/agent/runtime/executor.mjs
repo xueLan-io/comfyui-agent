@@ -45,6 +45,12 @@ export class Executor {
     const startTime = Date.now();
     const controller = new AbortController();
     this._controller = controller;
+    const parentSignal = context.signal;
+    const abortFromParent = () => controller.abort(parentSignal.reason || 'cancelled');
+    if (parentSignal) {
+      if (parentSignal.aborted) controller.abort(parentSignal.reason || 'cancelled');
+      else parentSignal.addEventListener('abort', abortFromParent, { once: true });
+    }
 
     emit(AgentEventTypes.STEP, {
       stepId: step.id,
@@ -99,6 +105,20 @@ export class Executor {
       };
 
       if (step.tool === 'comfyui') {
+        if (stepInput.frozenRuntimeRequest) {
+          const frozen = structuredClone(stepInput.frozenRuntimeRequest);
+          enrichedInput.workflowName = frozen.workflow?.name || stepInput.workflowName;
+          enrichedInput.prompt = frozen.prompt?.positive || '';
+          enrichedInput.prompts = frozen.prompt?.positivePrompts || [];
+          enrichedInput.negativePrompt = frozen.prompt?.negative || '';
+          enrichedInput.settings = frozen.settings || {};
+          enrichedInput.nodeOverrides = frozen.nodeOverrides || {};
+          enrichedInput.images = frozen.media?.images || [];
+          enrichedInput.masks = frozen.media?.masks || [];
+          enrichedInput.videos = frozen.media?.videos || [];
+          enrichedInput.outputNodeIds = frozen.outputNodeIds || [];
+          enrichedInput.frozenRuntimeRequest = frozen;
+        } else {
         const prompt = context.compiledPrompt?.positive || context.enhancedPrompt || stepInput.prompt || context.userRequest || '';
         enrichedInput.workflowName = stepInput.workflowName
           || context.project?.currentWorkflow
@@ -128,6 +148,7 @@ export class Executor {
         enrichedInput.outputNodeIds = context.outputNodeIds
           || stepInput.outputNodeIds
           || undefined;
+        }
       }
       if (step.tool === 'prompt_enhance' && context.characterResearch && !enrichedInput.referenceContext) {
         enrichedInput.referenceContext = context.characterResearch;
@@ -268,6 +289,7 @@ export class Executor {
 
       return { error: error.message, failure, duration_ms: duration };
     } finally {
+      parentSignal?.removeEventListener('abort', abortFromParent);
       if (this._controller === controller) this._controller = null;
     }
   }

@@ -4,7 +4,7 @@ const SOURCES = new Set(['direct', 'ai']);
 const VIDEO_EXTENSIONS = /\.(?:mp4|webm|mov|mkv|avi|gif)$/i;
 
 function copyObject(value) {
-  return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {};
+  return value && typeof value === 'object' ? structuredClone(value) : {};
 }
 
 export function normalizeGenerationResult(result = {}) {
@@ -41,7 +41,11 @@ export function normalizeGenerationRequest(input = {}) {
     workflowName: input.workflowName,
     positive: input.positive,
     negative: input.negative,
-    settings: copyObject(input.settings),
+    settings: {
+      ...copyObject(input.settings),
+      ...(input.frames !== undefined && input.settings?.frames === undefined ? { frames: input.frames } : {}),
+      ...(input.fps !== undefined && input.settings?.fps === undefined ? { fps: input.fps } : {}),
+    },
     nodeOverrides: copyObject(input.nodeOverrides),
     outputNodeIds: Array.isArray(input.outputNodeIds) ? [...input.outputNodeIds] : null,
     media: copyObject(input.media),

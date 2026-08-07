@@ -11,6 +11,7 @@ function nonEmptyObject(value) {
 
 export function confirmationForPlan(plan, context = {}) {
   const actions = [];
+  const changes = [];
   const seen = new Set();
   const add = (type, label, detail = '') => {
     if (seen.has(type)) return;
@@ -34,7 +35,15 @@ export function confirmationForPlan(plan, context = {}) {
       continue;
     }
 
+    if (contract.name === 'workflow_mutation_commit' || contract.name === 'workflow_rollback') {
+      const workflow = step.input?.workflowName || context.workflowName || '当前工作流';
+      add(contract.name, contract.name === 'workflow_rollback' ? '回滚工作流' : '修改工作流', `${workflow}${step.input?.diff?.length ? `；${step.input.diff.length} 项变更` : ''}`);
+      for (const change of step.input?.diff || []) changes.push(change);
+      continue;
+    }
+
     if (contract.side_effects.includes('queue_generation')) add('queue_generation', '提交生成任务', step.input?.workflowName || context.workflowName || '当前工作流');
+    for (const change of step.input?.runtimeDiff || step.input?.diff || []) changes.push(change);
     const media = [...(step.input?.images || []), ...(step.input?.masks || []), ...(step.input?.videos || [])];
     if (media.length > 0) add('upload_reference_media', '上传参考媒体', media.map(fileName).join(', '));
     if (nonEmptyObject(step.input?.settings) || nonEmptyObject(step.input?.nodeOverrides) || nonEmptyObject(context.settings) || nonEmptyObject(context.nodeOverrides)) {
@@ -56,6 +65,7 @@ export function confirmationForPlan(plan, context = {}) {
   return {
     required: toolContracts.some(contract => contract.requires_confirmation),
     actions,
+    changes,
     tools: toolContracts.map(contract => ({
       name: contract.name,
       side_effects: contract.side_effects,

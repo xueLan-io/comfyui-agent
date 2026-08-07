@@ -25,12 +25,24 @@ import { normalizeAssetPath, projectAssetRoot, removeEmptyAssetDirectories, scan
 import { displayPath } from '../src/runtime/path-display.mjs';
 import { importWorkflowFiles, collectWorkflowFiles, deleteWorkflowFile, renameWorkflowFile } from '../src/runtime/workflow-import.mjs';
 import { directGenerationRequest } from '../src/runtime/generation-contract.mjs';
-import { traceError, validateTaskTrace } from '../src/runtime/trace-contract.mjs';
+import { traceError, validateTaskTrace, assertTraceOwner } from '../src/runtime/trace-contract.mjs';
 import { verifyUpdateManifest } from '../src/runtime/update-signature.mjs';
 import { RequestLedger } from './request-ledger.mjs';
 import { listGlobalPresets, createGlobalPreset, updateGlobalPreset, deleteGlobalPreset, copyGlobalPreset, markPresetUsed, rateGlobalPreset, composeGlobalPresets, replacePresetModel, copyPresetCover, importGlobalPreset, FORMAT, VERSION, assertInside } from '../src/runtime/global-presets.mjs';
+import { createPolicyEngine } from '../src/runtime/governance/policy-engine.mjs';
+import { AdmissionController } from '../src/runtime/governance/admission-controller.mjs';
+import { RateLimiter } from '../src/runtime/governance/rate-limiter.mjs';
+import { QuotaManager } from '../src/runtime/governance/quota-manager.mjs';
+import { AuditSink } from '../src/runtime/governance/audit-sink.mjs';
+import { OperationGateway, confirmationDigest, assertConfirmationBinding } from '../src/runtime/governance/operation-gateway.mjs';
+import { createGovernanceContext } from '../src/runtime/governance/context.mjs';
+import { createWindowRegistry } from '../src/runtime/window-registry.mjs';
+import { createMetrics } from '../src/runtime/metrics.mjs';
 
 const { app, BrowserWindow, ipcMain, dialog, Menu, shell, Tray, nativeImage, globalShortcut, screen } = pkg;
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const APP_NAME = 'ComfyMuse';
@@ -132,7 +144,20 @@ let directService;
 let prefStore;
 const authorizedMediaPaths = new Set();
 const executionCoordinator = new ExecutionCoordinator();
-const requestLedger = new RequestLedger();
+const rawCoordinatorExecute = executionCoordinator.execute.bind(executionCoordinator);
+const runtimeMetrics = createMetrics();
+const windowRegistry = createWindowRegistry();
+const requestLedger = new RequestLedger({ metrics: runtimeMetrics });
+const localPrincipal = { id: 'principal_local_user', type: 'local_user', tenantId: 'tenant_local', roles: ['admin'], disabled: false };
+const governancePolicy = createPolicyEngine({ principals: new Map([[localPrincipal.id, localPrincipal]]) });
+const governanceAdmission = new AdmissionController({
+  policyEngine: governancePolicy,
+  rateLimiter: new RateLimiter({ limit: 120, intervalMs: 60_000, burst: 20 }),
+  quotaManager: new QuotaManager(),
+  limits: { 'session:*': 1 },
+});
+let governanceGateway;
+let projectWriteQueue = Promise.resolve();
 const activeImageRequests = new Map();
 let globalPresetsRoot = '';
 let embeddedMcpTransport;
@@ -196,8 +221,10 @@ function executionOwner(input = {}) {
   const sessionId = input.sessionId || agent?.sessionManager.activeSessionId || '';
   const project = agent?.sessionManager.getProject(projectId);
   return {
-    projectId,
-    sessionId,
+    principalId: input.principalId || localPrincipal.id,
+    tenantId: input.tenantId || localPrincipal.tenantId,
+    projectId: projectId || 'project_local',
+    sessionId: sessionId || 'session_local',
     projectDir: project?.dir || '',
     workflowDir: input.workflowDir || agent?.workflowDir || getDefaultWorkflowDir(),
   };
@@ -205,6 +232,21 @@ function executionOwner(input = {}) {
 
 function assertExecutionAvailable() {
   executionCoordinator.assertAvailable();
+}
+
+async function runGovernedIpcMutation({ action, input = {}, resource = {}, projectId = '', sessionId = '', quota = {}, operation = action, execute, confirmation } = {}) {
+  const owner = executionOwner({ projectId, sessionId });
+  const context = getGovernanceGateway().context({
+    ...owner,
+    requestId: input.requestId,
+    taskId: input.taskId,
+    traceId: input.traceId,
+  }, { source: 'ipc' });
+  const run = () => getGovernanceGateway().run({ context, action, resource, input, quota, operation, execute, confirmation });
+  if (action !== 'project.write') return run();
+  const result = projectWriteQueue.then(run, run);
+  projectWriteQueue = result.catch(() => {});
+  return result;
 }
 
 function listWorkflowFiles(dir) {
@@ -492,14 +534,14 @@ async function archiveProjectResult(result, owner = {}) {
       const { composeVideo } = await import('../src/agent/video/video-compose.mjs');
       const frameFiles = readdirSync(imageDir)
         .filter(name => /\.(png|jpe?g|webp)$/i.test(name))
-        .sort();
+         .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
       if (frameFiles.length > 1) {
         const videoFilename = `${taskId}.mp4`;
         await composeVideo({
           frames: frameFiles.map(file => ({ path: join(imageDir, file) })),
           outputPath: join(videoDir, videoFilename),
-          fps: 24,
-        });
+           fps: result.settings?.fps || result.parameters?.fps || result.fps || 24,
+         });
         archivedVideos.push({
           filename: videoFilename,
           subfolder: join('videos', taskId),
@@ -509,9 +551,11 @@ async function archiveProjectResult(result, owner = {}) {
           source: result.source || 'direct',
         });
       }
-    } catch (error) {
-      console.warn(`帧序列合成失败：${error.message}`);
-    }
+     } catch (error) {
+       const failure = new Error(`帧序列合成失败：${error.message}`, { cause: error });
+       failure.failureType = 'video_compose';
+       throw failure;
+     }
   }
   if (archived.length === 0 && archivedVideos.length === 0) return result;
   if (archived.length > 0) await agent.project.set('lastImages', archived);
@@ -572,11 +616,11 @@ async function readTaskTrace(taskId) {
     } catch {
       throw traceError('trace_invalid', 'Trace file is not valid JSON');
     }
-    return validateTaskTrace(trace, taskId, project.id);
+    return assertTraceOwner(validateTaskTrace(trace, taskId, project.id), { projectId: task.projectId, sessionId: task.sessionId, tenantId: task.tenantId });
   }
   const trace = await agent.getTrace(taskId);
   if (!trace) throw traceError('trace_not_found', 'Trace not found');
-  return validateTaskTrace(trace, taskId, project.id);
+  return assertTraceOwner(validateTaskTrace(trace, taskId, project.id), { projectId: task.projectId, sessionId: task.sessionId, tenantId: task.tenantId });
 }
 
 function mcpGenerationBridge() {
@@ -773,9 +817,14 @@ async function confirmLegacyExecution(detail) {
 }
 
 function sendToRenderer(channel, data) {
-  for (const window of [mainWindow, floatingWindow]) {
-    if (window && !window.isDestroyed()) window.webContents.send(channel, data);
-  }
+  const owner = data && typeof data === 'object' ? data : {};
+  const active = executionOwner();
+  windowRegistry.send(channel, data, metadata => {
+    if (owner.tenantId && owner.tenantId !== active.tenantId) return false;
+    if (owner.projectId && active.projectId && owner.projectId !== active.projectId) return false;
+    if (owner.sessionId && active.sessionId && owner.sessionId !== active.sessionId) return false;
+    return true;
+  });
 }
 
 function showMainWindow() {
@@ -818,6 +867,7 @@ function showFloatingWindow({ focus = true } = {}) {
     show: focus,
     webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false },
   });
+  windowRegistry.register('floating', floatingWindow.webContents, { kind: 'floating' });
   floatingWindow.setBackgroundColor('#00000000');
   floatingWindow.setAlwaysOnTop(true, 'floating');
   if (!focus) floatingWindow.showInactive();
@@ -849,6 +899,7 @@ function showFloatingWindow({ focus = true } = {}) {
     flushPendingFloatingDrag();
   });
   floatingWindow.on('closed', () => {
+    windowRegistry.unregister('floating');
     if (floatingResizeTimer) clearInterval(floatingResizeTimer);
     if (floatingAnimationReleaseTimer) clearTimeout(floatingAnimationReleaseTimer);
     floatingResizeTimer = null;
@@ -898,12 +949,13 @@ function createWindow() {
     },
   });
 
+  windowRegistry.register('main', mainWindow.webContents, { kind: 'main' });
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.on('close', () => {
     if (!quitRequested && floatingWindow && !floatingWindow.isDestroyed()) floatingWindow.destroy();
-    if (process.platform !== 'darwin') comfyManager.stopOwned();
   });
   mainWindow.on('closed', () => {
+    windowRegistry.unregister('main');
     mainWindow = null;
   });
   mainWindow.webContents.once('did-finish-load', () => {
@@ -1065,9 +1117,13 @@ function initAgent(config) {
   const llmConfig = config.llm || {};
   for (const unsubscribe of agentEventUnsubscribers) unsubscribe();
   agentEventUnsubscribers = [];
-  agent = new AgentProcessClient({
-    workflowDir: getWorkflowDir(config),
-    onStderr: message => console.error(`[agent] ${message}`),
+    agent = new AgentProcessClient({
+      workflowDir: getWorkflowDir(config),
+      onStderr: message => console.error(`[agent] ${message}`),
+      onExit: error => {
+        if (agent?.isAlive) return;
+        sendToRenderer('agent:error', { message: error.message, code: 'AGENT_PROCESS_EXITED' });
+      },
   });
   ensureDirectService().setWorkflowDir(agent.workflowDir);
   bindAgentEvent(AgentEventTypes.STATUS, (data) => {
@@ -1094,7 +1150,7 @@ function initAgent(config) {
     workflowDir: getWorkflowDir(config),
     comfyRoot: comfyManager.portableRoot ? join(comfyManager.portableRoot, 'ComfyUI') : '',
     userDataPath: app.getPath('userData'),
-    comfyBaseUrl: config.comfyui?.baseUrl || 'http://127.0.0.1:8188',
+    comfyBaseUrl: comfyManager.baseUrl,
      projectId: agent?.sessionManager?.activeProjectId || '',
      sessionId: agent?.sessionManager?.activeSessionId || '',
     skills: config.skills || {},
@@ -1111,7 +1167,8 @@ function bindAgentEvent(type, handler) {
 
 function startAgent(config) {
   if (agentReadyPromise) return agentReadyPromise;
-  if (agent) return Promise.resolve(agent);
+  if (agent?.isAlive) return Promise.resolve(agent);
+  if (agent) agent = null;
 
   const promise = initAgent(config)
     .then(() => {
@@ -1140,17 +1197,20 @@ async function recoverAgentTasks() {
     try {
       const result = await ComfyUITool.recoverResult(item.promptId, item.history);
       const task = agent.taskManager.get(item.taskId);
+      if (task?.requestId) requestLedger.update(task.requestId, { state: 'observing', taskId: item.taskId, promptId: item.promptId || '', recovery: 'recovered' });
       const archived = await archiveProjectResult({ ...result, taskId: item.taskId, promptId: item.promptId }, {
         projectId: task?.projectId,
         sessionId: task?.sessionId,
       });
       settleRecoveredTask(item.taskId, archived);
+      if (task?.requestId) requestLedger.complete(task.requestId, archived);
       await agent.taskManager.persist();
     } catch (error) {
       const task = agent.taskManager.get(item.taskId);
       if (task) {
         agent.taskManager.update(item.taskId, { state: 'archive_failed', status: 'archive_failed', lastError: error.message, error: error.message });
         await agent.taskManager.persist();
+        if (task.requestId) requestLedger.fail(task.requestId, error);
       }
     }
   }
@@ -1671,6 +1731,68 @@ function generationOptions(clientId, controls = {}) {
   };
 }
 
+function assertOwnerMatch(owner = {}, expected = {}) {
+  for (const field of ['principalId', 'tenantId', 'projectId', 'sessionId']) {
+    if (expected[field] && owner[field] && owner[field] !== expected[field]) {
+      const code = field === 'tenantId' ? 'TENANT_MISMATCH' : field === 'projectId' ? 'PROJECT_ACCESS_DENIED' : 'OWNER_MISMATCH';
+      throw Object.assign(new Error(`Resource owner mismatch: ${field}`), { code });
+    }
+  }
+  return owner;
+}
+
+function currentGovernanceOwner(input = {}) {
+  return executionOwner(input);
+}
+
+function assertPreviewOwner(preview, input = {}) {
+  if (!preview) throw Object.assign(new Error('Preview not found'), { code: 'PREVIEW_NOT_FOUND' });
+  return assertOwnerMatch(preview, currentGovernanceOwner(input));
+}
+
+function assertLedgerOwner(entry, input = {}) {
+  if (!entry) throw Object.assign(new Error('Request not found'), { code: 'REQUEST_NOT_FOUND' });
+  return assertOwnerMatch(entry, currentGovernanceOwner(input));
+}
+
+function getGovernanceGateway() {
+  if (!governanceGateway) {
+    governanceGateway = new OperationGateway({
+      policyEngine: governancePolicy,
+      admission: governanceAdmission,
+      audit: new AuditSink({ directory: join(app.getPath('userData'), 'agent-data', 'audit') }),
+    });
+  }
+  return governanceGateway;
+}
+
+function governedCoordinatorExecute(options = {}) {
+  const originalGovernance = options.governance;
+  return rawCoordinatorExecute({
+    ...options,
+    governance: async ({ entry, work }) => {
+      if (originalGovernance) return originalGovernance({ entry, work });
+      const owner = executionOwner(options.owner || {});
+      const context = createGovernanceContext({
+        ...owner,
+        source: 'ipc',
+        requestId: options.requestId || entry.requestId || `ipc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        taskId: options.taskId || entry.taskId || `task_${Date.now()}`,
+        traceId: `trace_${options.taskId || entry.taskId || Date.now()}`,
+      });
+      const action = options.source === 'direct' ? 'comfyui.submit' : 'llm.invoke';
+      const resource = { projectId: owner.projectId, sessionId: owner.sessionId, ...(options.previewId ? { previewId: options.previewId } : {}) };
+      const input = { confirmation: true };
+      const confirmation = { accepted: true, digest: confirmationDigest({ action, resource, input }), requestId: context.requestId, ...(options.previewId ? { previewId: options.previewId } : {}) };
+      return getGovernanceGateway().run({ context, action, resource, input, confirmation, execute: ({ signal }) => work(Object.assign(entry, { signal })) });
+    },
+  });
+}
+
+// Keep the existing coordinator API and preview semantics while making every
+// Agent/Direct coordinator operation pass through the governance lifecycle.
+executionCoordinator.execute = governedCoordinatorExecute;
+
 function policyBlockResult(error, turnId = '') {
   if (!(error instanceof CloudPolicyBlockedError) && error?.code !== 'CLOUD_POLICY_BLOCKED') return null;
   return {
@@ -1714,7 +1836,7 @@ ipcMain.handle('agent:prepare', async (_, { message, workflowName, clientId, con
   const owner = executionOwner();
   const requestId = controls.requestId || `ai_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const fingerprint = JSON.stringify({ source: 'ai', message, workflowName, controls });
-  const existing = requestLedger.begin(requestId, { source: 'ai', fingerprint });
+  const existing = requestLedger.begin(requestId, { source: 'ai', fingerprint, ...owner });
   if (existing?.state === 'completed') return existing.result || existing.preview;
   if (existing?.state === 'executing') return requestLedger.snapshot(requestId);
   if (existing.preview) return existing.preview;
@@ -1749,7 +1871,7 @@ ipcMain.handle('agent:generate', async (_, { message, workflowName, clientId, co
   const owner = executionOwner();
   const requestId = controls.requestId || `ai_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const fingerprint = JSON.stringify({ source: 'ai', message, workflowName, controls });
-  const existing = requestLedger.begin(requestId, { source: 'ai', fingerprint });
+  const existing = requestLedger.begin(requestId, { source: 'ai', fingerprint, ...owner });
   if (existing?.state === 'completed') return existing.result || existing.preview;
   if (existing?.state === 'executing') return requestLedger.snapshot(requestId);
   if (existing.preview) return existing.preview;
@@ -1825,13 +1947,24 @@ ipcMain.handle('direct:prepare', async (_, { request = {} } = {}) => {
     nodeOverrides: normalized.nodeOverrides,
     media: normalized.media,
   });
-  const existing = requestLedger.begin(normalized.requestId, { source: 'direct', fingerprint });
+  const existing = requestLedger.begin(normalized.requestId, { source: 'direct', fingerprint, ...owner });
   if (existing.preview) return existing.preview;
+  if (existing.state === 'executing' || existing.state === 'observing') {
+    const error = new Error('该请求仍在执行或等待恢复，拒绝重复提交');
+    error.code = 'REQUEST_IN_PROGRESS';
+    error.requestId = normalized.requestId;
+    throw error;
+  }
   service.setWorkflowDir(owner.workflowDir);
+  const prepareAbortController = new AbortController();
   return executionCoordinator.execute({
     source: 'direct',
     taskId: normalized.requestId,
     owner,
+    cancel: async () => {
+      prepareAbortController.abort();
+      service.discardPreview(`direct_preview_${normalized.requestId}`);
+    },
     work: async entry => {
       let preview;
       try {
@@ -1844,6 +1977,10 @@ ipcMain.handle('direct:prepare', async (_, { request = {} } = {}) => {
           message: '正在读取工作流和检查节点...',
         });
         preview = await service.prepare(normalized, { sandboxInput: directSandboxInput() });
+        if (entry.cancelRequested || prepareAbortController.signal.aborted) {
+          service.discardPreview(preview.previewId);
+          throw Object.assign(new Error('Direct generation cancelled'), { code: 'GENERATION_CANCELLED' });
+        }
         preview.taskId = await createDirectTask(preview);
         requestLedger.update(normalized.requestId, { state: 'prepared', taskId: preview.taskId, previewId: preview.previewId, preview });
         await agent?.recordConversationMessage?.('user', normalized.positive || '', {
@@ -1889,7 +2026,12 @@ ipcMain.handle('direct:prepare', async (_, { request = {} } = {}) => {
   });
 });
 
-ipcMain.handle('direct:get-preview', async (_, { previewId } = {}) => ensureDirectService().getPreview(previewId) || null);
+ipcMain.handle('direct:get-preview', async (_, { previewId } = {}) => {
+  const preview = ensureDirectService().getPreview(previewId) || null;
+  if (!preview) return null;
+  assertPreviewOwner(preview);
+  return preview;
+});
 
 ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options = {} } = {}) => {
   const comfyState = await comfyManager.ensureStarted();
@@ -1900,6 +2042,7 @@ ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options
   const owner = executionOwner(preview);
   const requestId = preview.requestId || '';
     const taskId = preview.taskId || requestId;
+  assertConfirmationBinding({ confirmation: options.confirmation, expectedDigest: preview.requestDigest, requestId, previewId });
   const ledgerEntry = requestLedger.get(requestId);
   if (ledgerEntry?.state === 'completed') return ledgerEntry.result;
   if (ledgerEntry?.state === 'executing') return requestLedger.snapshot(requestId);
@@ -1915,7 +2058,8 @@ ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options
       return service.cancel();
     },
     work: async entry => {
-      requestLedger.update(requestId, { state: 'executing', taskId, previewId });
+      const generationStartedAt = Date.now();
+      requestLedger.update(requestId, { state: 'executing', taskId, previewId, ...owner });
       updateDirectTask(taskId, 'executing', { currentStep: 'comfyui', currentAttempt: 1 });
       sendToRenderer('direct:status', {
         source: 'direct',
@@ -1924,6 +2068,8 @@ ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options
         status: 'running',
         uiStatus: 'running',
         message: '\u6b63\u5728\u6267\u884c\u539f\u6587\u63d0\u793a\u8bcd',
+        timeEstimate: preview.timeEstimate || null,
+        startedAt: generationStartedAt,
       });
       try {
         const result = await service.run(previewId, edits, {
@@ -1941,10 +2087,12 @@ ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options
                 nodeId: progress.nodeId || '',
                 nodeType: progress.nodeType || '',
                 message: progress.message || '',
+                timeEstimate: preview.timeEstimate || null,
+                startedAt: generationStartedAt,
                 updatedAt: Date.now(),
               },
             });
-            sendToRenderer('direct:progress', { ...progress, source: 'direct', requestId, ...directContext });
+            sendToRenderer('direct:progress', { ...progress, timeEstimate: preview.timeEstimate || null, startedAt: generationStartedAt, source: 'direct', requestId, ...directContext });
           },
         });
          const taskResult = {
@@ -1965,7 +2113,14 @@ ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options
             constraints: preview?.constraints || {},
           },
         });
-        const archived = await archiveProjectResult(taskResult, owner);
+         let archived;
+         try {
+           archived = await archiveProjectResult(taskResult, owner);
+         } catch (error) {
+           completeDirectTask(taskId, {}, { message: error.message, stage: 'archive' });
+           requestLedger.update(requestId, { state: 'archive_failed', error: { message: error.message, code: error.code || 'ARCHIVE_FAILED' } });
+           throw error;
+         }
         completeDirectTask(taskId, archived);
         requestLedger.complete(requestId, archived);
         await agent?.recordConversationMessage?.('agent', 'Generated ' + (archived.images?.length || 0) + ' image(s).', {
@@ -2013,6 +2168,7 @@ ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options
 ipcMain.handle('direct:discard-preview', async (_, { previewId } = {}) => {
   const service = ensureDirectService();
   const preview = service.getPreview(previewId);
+  assertPreviewOwner(preview);
   const discarded = service.discardPreview(previewId);
   if (discarded && preview?.taskId) completeDirectTask(preview.taskId, { cancelled: true, taskId: preview.taskId });
   if (discarded && preview?.requestId) requestLedger.update(preview.requestId, { state: 'cancelled' });
@@ -2158,7 +2314,7 @@ ipcMain.handle('agent:turn', async (_, turn = {}) => {
         return result;
       }
       if (requestId && response?.action === 'prepare' && response.preview?.previewId) {
-        requestLedger.begin(requestId, { source: 'ai', previewId: response.preview.previewId });
+        requestLedger.begin(requestId, { source: 'ai', previewId: response.preview.previewId, ...owner });
         requestLedger.update(requestId, { state: 'prepared', taskId: response.preview.taskId || agent.taskId, previewId: response.preview.previewId, preview: response.preview });
       }
       return response;
@@ -2166,7 +2322,12 @@ ipcMain.handle('agent:turn', async (_, turn = {}) => {
   });
 });
 
-ipcMain.handle('agent:get-request-status', async (_, { requestId = '' } = {}) => requestLedger.snapshot(requestId));
+ipcMain.handle('agent:get-request-status', async (_, { requestId = '' } = {}) => {
+  const entry = requestLedger.snapshot(requestId);
+  if (!entry) return null;
+  assertLedgerOwner(entry);
+  return entry;
+});
 
 ipcMain.handle('agent:run-prepared', async (_, { previewId, edits = {} }) => {
   if (!agent) throw new Error('Agent is not initialized');
@@ -2194,6 +2355,8 @@ ipcMain.handle('agent:run-prepared', async (_, { previewId, edits = {} }) => {
 });
 
 ipcMain.handle('agent:discard-preview', async (_, { previewId }) => {
+  const pending = executionCoordinator.getPreview(previewId);
+  assertPreviewOwner(pending?.owner || null);
   executionCoordinator.discardPreview(previewId);
   const result = agent ? await agent.discardPrepared(previewId) : { discarded: false };
   if (result.discarded && agent?.taskId) await persistTaskTrace(agent.taskId);
@@ -2242,7 +2405,9 @@ ipcMain.handle('agent:rewind-conversation', async (_, { index }) => {
 });
 
 ipcMain.handle('agent:list-tasks', async () => {
-  if (agent) return agent.listTasks(50);
+  if (agent) return (await agent.listTasks(50)).filter(task => {
+    try { assertOwnerMatch(task, currentGovernanceOwner()); return true; } catch { return false; }
+  });
   return [];
 });
 
@@ -2253,6 +2418,7 @@ ipcMain.handle('agent:recover-tasks', async () => recoverAgentTasks());
 ipcMain.handle('agent:monitor-task', async (_, { taskId } = {}) => {
   const task = agent?.taskManager?.get(taskId);
   if (!task) throw new Error('Task not found');
+  assertOwnerMatch(task, currentGovernanceOwner());
   const promptId = task.promptId || task.attempts?.find(attempt => attempt.promptId)?.promptId;
   if (!promptId) return { status: 'submit_unknown', taskId, promptId: '', task };
   const monitored = await ComfyUITool.monitor(promptId);
@@ -2281,6 +2447,7 @@ ipcMain.handle('agent:monitor-task', async (_, { taskId } = {}) => {
 ipcMain.handle('agent:retry-recovery', async (_, { taskId } = {}) => {
   const task = agent?.taskManager?.get(taskId);
   if (!task) throw new Error('Task not found');
+  assertOwnerMatch(task, currentGovernanceOwner());
   const promptId = task.promptId || task.attempts?.find(attempt => attempt.promptId)?.promptId;
   if (!promptId) return {
     status: 'submit_unknown',
@@ -2311,13 +2478,17 @@ ipcMain.handle('agent:retry-recovery', async (_, { taskId } = {}) => {
 
 ipcMain.handle('agent:archive-task', async (_, { taskId } = {}) => {
   if (!agent) throw new Error('Agent not ready');
-  const archived = agent.taskManager.archive(taskId);
+  const task = agent.taskManager.get(taskId);
+  if (!task) throw Object.assign(new Error('Task not found'), { code: 'TASK_NOT_FOUND' });
+  assertOwnerMatch(task || {}, currentGovernanceOwner());
+  const archived = await runGovernedIpcMutation({ action: 'admin.recover', input: { taskId }, projectId: task.projectId, sessionId: task.sessionId, execute: () => agent.taskManager.archive(taskId) });
   if (!archived) throw new Error('Task not found or is not recoverable');
   await agent.taskManager.persist();
   return { archived: true, taskId };
 });
 
 ipcMain.handle('agent:cancel', async (_, { taskId } = {}) => {
+  if (taskId && agent?.taskManager?.get(taskId)) assertOwnerMatch(agent.taskManager.get(taskId), currentGovernanceOwner());
   const entry = executionCoordinator.active;
   if (entry?.source === 'ai') {
     const result = await executionCoordinator.cancel({
@@ -2342,7 +2513,7 @@ ipcMain.handle('queue:list', async () => agent ? agent.listQueue() : { error: 'a
 ipcMain.handle('queue:cancel-prompt', async (_, { promptId }) => {
   if (!agent) return { error: 'agent not ready' };
   try {
-    return await agent.cancelPrompt(promptId);
+    return await runGovernedIpcMutation({ action: 'comfyui.cancel', input: { promptId }, execute: () => agent.cancelPrompt(promptId) });
   } catch (e) {
     return { error: e.message };
   }
@@ -2351,7 +2522,7 @@ ipcMain.handle('queue:cancel-prompt', async (_, { promptId }) => {
 ipcMain.handle('queue:clear', async () => {
   if (!agent) return { error: 'agent not ready' };
   try {
-    return await agent.clearQueue();
+    return await runGovernedIpcMutation({ action: 'comfyui.cancel', execute: () => agent.clearQueue() });
   } catch (e) {
     return { error: e.message };
   }
@@ -2417,20 +2588,20 @@ ipcMain.handle('projects:list', async () => {
 ipcMain.handle('projects:create', async (_, input = {}) => {
   if (executionCoordinator.isBusy) throw new Error('当前会话仍有直接生成任务或待确认预览，请先取消后再切换会话');
   await startAgent(getStoredConfig());
-  const state = await agent.createProject(input);
+  const state = await runGovernedIpcMutation({ action: 'project.write', input, execute: () => agent.createProject(input) });
   syncProjectPreferences();
   return state;
 });
 
 ipcMain.handle('projects:rename', async (_, { projectId, name }) => {
-  await agent.sessionManager.renameProject(projectId, name);
+  await runGovernedIpcMutation({ action: 'project.write', input: { projectId, name }, projectId, execute: () => agent.sessionManager.renameProject(projectId, name) });
   syncProjectPreferences();
   return agent.sessionManager.getState();
 });
 
 ipcMain.handle('projects:delete', async (_, { projectId }) => {
   if (executionCoordinator.isBusy) throw new Error('当前会话仍有直接生成任务或待确认预览，请先取消后再删除会话');
-  const state = await agent.deleteProject(projectId);
+  const state = await runGovernedIpcMutation({ action: 'project.write', input: { projectId }, projectId, execute: () => agent.deleteProject(projectId) });
   syncProjectPreferences();
   return state;
 });
@@ -2442,22 +2613,22 @@ ipcMain.handle('sessions:list', async (_, { projectId } = {}) => {
 
 ipcMain.handle('sessions:create', async (_, { title, projectId } = {}) => {
   if (executionCoordinator.isBusy) throw new Error('当前会话仍有直接生成任务或待确认预览，请先取消后再切换会话');
-  await agent.createSession(title, projectId);
+  await runGovernedIpcMutation({ action: 'session.write', input: { title, projectId }, projectId, execute: () => agent.createSession(title, projectId) });
   return agent.sessionManager.getState();
 });
 
 ipcMain.handle('sessions:delete', async (_, { sessionId, projectId } = {}) => {
   if (executionCoordinator.isBusy) throw new Error('当前会话仍有直接生成任务或待确认预览，请先取消后再删除会话');
-  return agent.deleteSession(sessionId, projectId);
+  return runGovernedIpcMutation({ action: 'session.write', input: { sessionId, projectId }, projectId, sessionId, execute: () => agent.deleteSession(sessionId, projectId) });
 });
 
 ipcMain.handle('sessions:rename', async (_, { sessionId, title, projectId } = {}) => {
-  return agent.sessionManager.renameSession(sessionId, title, projectId);
+  return runGovernedIpcMutation({ action: 'session.write', input: { sessionId, title, projectId }, projectId, sessionId, execute: () => agent.sessionManager.renameSession(sessionId, title, projectId) });
 });
 
 ipcMain.handle('session:activate', async (_, { projectId, sessionId }) => {
   if (executionCoordinator.isBusy) throw new Error('当前会话仍有直接生成任务或待确认预览，请先取消后再切换会话');
-  const state = await agent.useSession(projectId, sessionId);
+  const state = await runGovernedIpcMutation({ action: 'session.write', input: { projectId, sessionId }, projectId, sessionId, execute: () => agent.useSession(projectId, sessionId) });
   sendToRenderer('project:state', state);
   return state;
 });
@@ -2471,13 +2642,14 @@ ipcMain.handle('image:generate', async (_, { prompt, size = 'auto', count = 1, q
   await startAgent(getStoredConfig());
   const normalizedRequestId = requestId || `openai_image_request_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const owner = executionOwner({ projectId, sessionId });
+  const imageContext = createGovernanceContext({ ...owner, source: 'ipc', requestId: normalizedRequestId, taskId: `openai_image_${normalizedRequestId}`, traceId: `trace_openai_image_${normalizedRequestId}` });
   const project = agent?.sessionManager.getProject(owner.projectId);
   if (!project?.dir) {
     const error = Object.assign(new Error('当前项目目录无效'), { code: 'IMAGE_PROJECT_NOT_FOUND' });
     throw error;
   }
   const fingerprint = JSON.stringify({ prompt, size, count, quality, projectId: owner.projectId, sessionId: owner.sessionId, images: (images || []).map(image => image.path || image.name || '') });
-  const existing = requestLedger.begin(normalizedRequestId, { source: 'openai-image', fingerprint });
+  const existing = requestLedger.begin(normalizedRequestId, { source: 'openai-image', fingerprint, ...owner });
   if (existing.state === 'completed') return existing.result;
   if (existing.state === 'executing') return requestLedger.snapshot(normalizedRequestId);
   const llm = prefStore.get('llm');
@@ -2486,6 +2658,9 @@ ipcMain.handle('image:generate', async (_, { prompt, size = 'auto', count = 1, q
   const config = provider && model ? { ...provider, model: model.id } : null;
   if (!config) throw new Error('请先在设置中添加并选择 OpenAI Image 提供商');
   if (model.runtime === 'local') throw new Error('本地生图请使用 ComfyUI，云端 Image API 不会重复发送请求');
+  const imageLease = governanceAdmission.admit(imageContext, { action: 'llm.invoke', resource: { projectId: owner.projectId, sessionId: owner.sessionId }, input: { confirmation: true }, operation: 'image:generate', quota: { generation_count: 1 } });
+  await getGovernanceGateway().audit.emit({ ...imageContext, action: 'llm.invoke', decision: 'started', data: { projectId: owner.projectId, sessionId: owner.sessionId } });
+  let imageSucceeded = false;
   const referenceInputs = Array.isArray(images) ? images : [];
   const taskId = `openai_image_${normalizedRequestId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
   await agent?.recordConversationMessage?.('user', String(prompt || ''), {
@@ -2547,21 +2722,28 @@ ipcMain.handle('image:generate', async (_, { prompt, size = 'auto', count = 1, q
       messageId: `${normalizedRequestId}:agent`,
     });
     requestLedger.complete(normalizedRequestId, archived);
+    imageSucceeded = true;
+    await getGovernanceGateway().audit.emit({ ...imageContext, action: 'llm.invoke', decision: 'allow', reason: 'completed', data: { requestId: normalizedRequestId } });
     return archived;
   } catch (error) {
     requestLedger.fail(normalizedRequestId, error);
+    await getGovernanceGateway().audit.emit({ ...imageContext, action: error.code === 'CANCELLED' ? 'llm.invoke' : 'llm.invoke', decision: error.code === 'CANCELLED' ? 'cancel' : 'error', reason: error.code || error.message, data: { requestId: normalizedRequestId } }).catch(() => {});
     throw error;
   } finally {
+    imageLease.release(undefined, imageSucceeded);
     activeImageRequests.delete(normalizedRequestId);
     policyRouter.complete();
   }
 });
 
 ipcMain.handle('image:cancel', async (_, { requestId = '' } = {}) => {
+  const entry = requestLedger.get(requestId);
+  if (entry) assertLedgerOwner(entry);
   const controller = activeImageRequests.get(requestId);
   if (!controller) return { cancelled: false };
   controller.abort('cancelled');
   requestLedger.update(requestId, { state: 'cancelled' });
+  await getGovernanceGateway().audit.emit({ ...executionOwner(entry || {}), requestId, action: 'llm.invoke', decision: 'cancel', reason: 'cancel_requested' });
   return { cancelled: true, requestId };
 });
 
@@ -2735,7 +2917,7 @@ ipcMain.handle('project:update-state', async (_, patch = {}) => {
   const allowed = new Set(['workflow', 'skillId', 'budgets', 'researchSettings', 'promptMode', 'savedPreferences', 'commonParameters']);
   const unknown = Object.keys(patch).filter(key => !allowed.has(key));
   if (unknown.length) throw new Error(`不允许修改项目字段：${unknown.join(', ')}`);
-  await agent.call('project.update', [patch]);
+  await runGovernedIpcMutation({ action: 'project.write', input: patch, execute: () => agent.call('project.update', [patch]) });
   const state = agent.sessionManager.getState();
   sendToRenderer('project:state', state);
   return state;
@@ -2855,6 +3037,20 @@ ipcMain.handle('agent:workflow-dir', async (_, { dir }) => {
 });
 
 ipcMain.handle('comfyui:status', async () => comfyManager.refreshState());
+ipcMain.handle('h3:readiness', async () => {
+  const state = await comfyManager.refreshState();
+  if (state.status !== 'ready') return { ready: false, message: state.message || 'ComfyUI is not ready' };
+  try {
+    const info = await ComfyUITool.client.objectInfo();
+    const required = ['MiniMaxH3ReferenceToVideo', 'MiniMaxH3SigmaShift', 'EmptyMiniMaxH3LatentAV'];
+    const missing = required.filter(name => !info?.[name]);
+    return missing.length === 0
+      ? { ready: true, message: 'MiniMax H3 官方节点已加载' }
+      : { ready: false, message: `H3 节点未加载：${missing.join('、')}。请完成更新后重启 ComfyUI。`, missing };
+  } catch (error) {
+    return { ready: false, message: error.message || '无法读取 ComfyUI 节点信息' };
+  }
+});
 
 ipcMain.handle('comfyui:start', async () => comfyManager.ensureStarted());
 
@@ -2956,19 +3152,30 @@ ipcMain.handle('comfyui:show-image', async (_, image) => {
 
 ipcMain.handle('comfyui:recent-images', async () => getRecentImages());
 
-ipcMain.handle('project:assets', async (_, projectId) => getProjectAssets(projectId));
+ipcMain.handle('project:assets', async (_, projectId) => {
+  const requestedProjectId = typeof projectId === 'string' ? projectId : projectId?.projectId;
+  assertOwnerMatch({ projectId: requestedProjectId || executionOwner().projectId }, currentGovernanceOwner());
+  return getProjectAssets(requestedProjectId);
+});
 
-ipcMain.handle('project:delete-asset', async (_, image) => deleteProjectAsset(image));
+ipcMain.handle('project:delete-asset', async (_, image) => runGovernedIpcMutation({ action: 'media.export', input: image, projectId: image?.projectId, execute: () => deleteProjectAsset(image) }));
 
 // ===== App Lifecycle =====
 
 app.setName(APP_NAME);
 if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
 
-app.whenReady().then(async () => {
+if (hasSingleInstanceLock) {
+  app.on('second-instance', () => {
+    showMainWindow();
+  });
+}
+
+if (hasSingleInstanceLock) app.whenReady().then(async () => {
   const envDataDir = resolveAppPath(envConfig.AGENT_DATA_DIR);
   const userDataPath = envDataDir || join(app.getPath('appData'), USER_DATA_DIR_NAME);
   app.setPath('userData', userDataPath);
+  comfyManager.setStartupLockPath(join(userDataPath, 'comfyui-startup.lock'));
   prefStore = new PreferenceMemory(join(userDataPath, 'config.json'));
   const savedComfy = prefStore.get('comfyui') || {};
   const envComfyRoot = resolveAppPath(envConfig.COMFYUI_PORTABLE_ROOT);
@@ -3013,10 +3220,10 @@ app.on('before-quit', event => {
   if (quitRequested) return;
   quitRequested = true;
   event.preventDefault();
+  comfyManager.stopOwned({ permanent: true });
   void (async () => {
     try { await agent?.stop?.(); } catch {}
     try { await embeddedMcpTransport?.close?.(); } catch {}
-    comfyManager.stopOwned();
     app.quit();
   })();
 });
@@ -3026,7 +3233,6 @@ app.on('will-quit', () => {
   tray?.destroy();
   if (floatingWindow && !floatingWindow.isDestroyed()) floatingWindow.destroy();
   void agent?.stop?.();
-  comfyManager.stopOwned();
 });
 
 app.on('window-all-closed', () => {
@@ -3034,5 +3240,5 @@ app.on('window-all-closed', () => {
 });
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  showMainWindow();
 });

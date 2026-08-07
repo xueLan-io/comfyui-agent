@@ -355,12 +355,13 @@ export class LLMProvider {
     const cached = this._health.get(entry.provider.id);
     if (cached?.promise) return cached.promise;
     if (cached && now - cached.checkedAt < HEALTH_TTL_MS) return cached.healthy;
-    const state = { promise: null, checkedAt: now, healthy: false };
+    const state = { promise: null, checkedAt: now, healthy: false, expiresAt: now + HEALTH_TTL_MS };
     state.promise = Promise.resolve(entry.instance.healthCheck({ timeoutMs: 1000 }))
       .then(healthy => Boolean(healthy))
       .catch(() => false)
       .then(healthy => {
         state.checkedAt = Date.now();
+        state.expiresAt = state.checkedAt + HEALTH_TTL_MS;
         state.healthy = healthy;
         state.promise = null;
         return healthy;
@@ -391,6 +392,7 @@ export class LLMProvider {
           messages: compactMessages,
           maxTokens: attempt === 0 ? options.maxTokens : Math.min(options.maxTokens || 1024, attempt === 1 ? 768 : 512),
           degradationAttempt: attempt,
+          signal: options.signal,
         }));
       } catch (error) {
         lastError = error;

@@ -1,8 +1,9 @@
 function widgetIndex(node, inputName) {
   let index = 0;
   for (const input of node.inputs || []) {
-    if (input.name === inputName) return index;
-    if (input.widget || input.link == null || input.link < 0) index++;
+    const linked = input.link != null && input.link >= 0;
+    if (input.name === inputName) return linked ? -1 : index;
+    if (!linked && (input.widget || input.link == null || input.link < 0)) index++;
   }
   return -1;
 }
@@ -37,15 +38,14 @@ function patchLinkedWidget(workflow, node, inputName, value) {
   if (!input || input.link == null || input.link < 0) return false;
   const link = (workflow.links || []).find(item => item[0] === input.link);
   const source = link && (workflow.nodes || []).find(item => String(item.id) === String(link[1]));
-  if (!source || !Array.isArray(source.widgets_values)) return false;
-  source.widgets_values[0] = value;
-  return true;
+  if (!source) return false;
+  return setWidget(source, [inputName, 'value'], value);
 }
 
 export const MiniMaxH3Adapter = {
   name: 'minimax_h3',
-  adaptationOnly: true,
-  description: 'MiniMax H3 video workflow adapter; adaptation and preflight only when model files are unavailable',
+  adaptationOnly: false,
+  description: 'MiniMax H3 video workflow adapter with runtime preflight and reference media support',
 
   describe(workflow) {
     const nodes = activeNodes(workflow);
@@ -60,10 +60,13 @@ export const MiniMaxH3Adapter = {
       supportsImageToVideo: references.some(name => /^ref_images\./i.test(name)),
       supportsVideoReference: references.some(name => /^ref_videos\./i.test(name)),
       supportsAudio: inputs.has('ref_audios.ref_audio_0') || inputs.has('audio'),
+      supportsDuration: inputs.has('length'),
+      supportsResolution: inputs.has('width') && inputs.has('height'),
+      supportsFps: nodes.some(node => (node.inputs || []).some(input => /^(fps|frame_rate|framerate)$/i.test(input.name || ''))),
       referenceImageSlots: references.filter(name => /^ref_images\./i.test(name)).length,
       referenceVideoSlots: references.filter(name => /^ref_videos\./i.test(name)).length,
       outputNodeTypes: outputNodes.map(node => node.type),
-      adaptationOnly: true,
+      adaptationOnly: false,
       requiredModelFiles: nodes.flatMap(node => node.properties?.models || []).map(model => ({ name: model.name, directory: model.directory, url: model.url })),
     };
   },
@@ -71,20 +74,30 @@ export const MiniMaxH3Adapter = {
   prepare(workflow, input = {}) {
     const h3 = findH3Node(workflow);
     if (!h3) return workflow;
+    const settings = input.settings || {};
     const values = {
-      prompt: input.prompt || input.positive,
-      width: input.width || input.settings?.width,
-      height: input.height || input.settings?.height,
-      length: input.frames || input.settings?.frames,
+      prompt: input.prompt ?? input.positive,
+      width: input.width ?? settings.width,
+      height: input.height ?? settings.height,
+      length: input.frames ?? settings.frames,
     };
     for (const [name, value] of Object.entries(values)) {
-      if (!patchLinkedWidget(workflow, h3, name, value)) setWidget(h3, [name], value);
+      if (value === undefined) continue;
+      const input = (h3.inputs || []).find(item => item.name === name);
+      if (input?.link != null && input.link >= 0) {
+        if (!patchLinkedWidget(workflow, h3, name, value)) {
+          throw new Error(`MiniMax H3 linked input cannot be patched: ${name}`);
+        }
+      } else if (!setWidget(h3, [name], value)) {
+        throw new Error(`MiniMax H3 input cannot be patched: ${name}`);
+      }
     }
-    setWidget(h3, ['ref_image_size'], input.refImageSize);
+    setWidget(h3, ['ref_image_size'], input.refImageSize ?? settings.refImageSize);
     for (const node of workflow.nodes || []) {
-      setWidget(node, ['fps', 'frame_rate'], input.fps);
-      setWidget(node, ['noise_seed', 'seed'], input.seed || input.settings?.seed);
-      setWidget(node, ['steps'], input.steps || input.settings?.steps);
+      setWidget(node, ['fps', 'frame_rate', 'framerate'], input.fps ?? settings.fps);
+      setWidget(node, ['noise_seed', 'seed'], input.seed ?? settings.seed);
+      setWidget(node, ['steps'], input.steps ?? settings.steps);
+      setWidget(node, ['guidance', 'guidance_scale', 'cfg', 'cfg_scale'], input.guidance ?? settings.cfg);
     }
     return workflow;
   },

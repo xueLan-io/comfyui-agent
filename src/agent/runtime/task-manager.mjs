@@ -21,6 +21,7 @@ export const TASK_STATES = [
 ];
 
 export const TASK_STATUS = ['queued', ...TASK_STATES, 'error'];
+export const TASK_SCHEMA_VERSION = 2;
 
 export const TASK_TRANSITIONS = {
   idle: ['classifying', 'cancelled'],
@@ -65,6 +66,7 @@ export class TaskManager {
 
   create({ id, kind, message = '', workflowName = '', traceId = '', intent = '', projectId = '', sessionId = '', requestId = '' }) {
     const task = {
+      schemaVersion: TASK_SCHEMA_VERSION,
       id,
       taskId: id,
       kind,
@@ -96,6 +98,7 @@ export class TaskManager {
       completedAt: 0,
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      recovery: { state: 'none', attempts: 0, lastCheckedAt: 0 },
     };
     this.tasks.push(task);
     this._byId.set(id, task);
@@ -232,6 +235,7 @@ export class TaskManager {
     if (!task) return null;
     return sanitizeContextValue({
       schemaVersion: TRACE_SCHEMA_VERSION,
+      taskSchemaVersion: task.schemaVersion || 1,
       taskId: task.taskId || task.id,
       requestId: task.requestId || task.id,
       traceId: task.traceId || '',
@@ -250,6 +254,7 @@ export class TaskManager {
       error: task.traceError || task.error || null,
       createdAt: task.createdAt || 0,
       completedAt: task.completedAt || 0,
+      recovery: task.recovery || { state: 'none', attempts: 0, lastCheckedAt: 0 },
     });
   }
 
@@ -309,7 +314,7 @@ export class TaskManager {
         continue;
       }
       if (task.promptId || task.attempts?.some(attempt => attempt.promptId)) {
-        this.update(task.id, { status: 'observing', state: 'observing', lastError: 'Interrupted locally; remote prompt requires observation' });
+        this.update(task.id, { status: 'observing', state: 'observing', recovery: { state: 'observe_required', attempts: 0, lastCheckedAt: 0 }, lastError: 'Interrupted locally; remote prompt requires observation' });
         recoverable.push(task);
       } else {
         this.update(task.id, { status: 'abandoned', state: 'abandoned', lastError: 'Interrupted before ComfyUI submission', error: 'Interrupted before ComfyUI submission' });

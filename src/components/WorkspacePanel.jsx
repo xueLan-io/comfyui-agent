@@ -285,11 +285,11 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
           )}
             <p className="workflow-import-hint">{t('importHint')}</p>
            {workflowManifest && <div className="workflow-manifest-summary"><span>{workflowManifest.modelType || workflowManifest.promptProfile?.family || t('genericWorkflow')}</span><span>{workflowManifest.nodeCount || 0} {t('nodes')}</span><span>{t('positive')} {positiveTargetCount} · {t('negative')} {negativeTargetCount}</span><span>{workflowManifest.capabilities?.modes?.join(' / ') || 'txt2img'}</span></div>}
-          {importFeedback && <div className={`workflow-import-feedback ${importFeedback.type}`}><Icon name={importFeedback.type === 'ok' ? 'check' : 'circleAlert'} size={13} /><span>{importFeedback.text}</span></div>}
+           {importFeedback && <div className={`workflow-import-feedback ${importFeedback.type}`}><Icon name={importFeedback.type === 'ok' ? 'check' : 'circleAlert'} size={13} /><span>{importFeedback.text}</span></div>}
            {dragOver && <div className="workflow-drop-overlay"><Icon name="upload" size={20} /><span>{t('releaseToImport')}</span></div>}
-        </section>
+         </section>
 
-        <section className="workspace-section prompt-section">
+         <section className="workspace-section prompt-section">
            <div className="workspace-section-heading"><div><span className="section-kicker">02</span><div><h3>{t('promptTemplate')}</h3><p>{promptProfile?.family || t('waitingWorkflow')}</p></div></div><span className="prompt-target-count">{t('positive')} {positiveTargetCount} · {t('negative')} {negativeTargetCount}</span></div>
            <div className="prompt-mode-grid" role="group" aria-label={t('promptTemplate')}>
              {VISIBLE_PROMPT_MODES.map(id => <button key={id} type="button" className={`prompt-mode-card${promptMode === id ? ' active' : ''}`} onClick={() => setPromptMode(id)} aria-pressed={promptMode === id}><strong>{t(modeText[id][0])}</strong><span>{t(modeText[id][1])}</span></button>)}

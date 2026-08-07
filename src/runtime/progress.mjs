@@ -48,5 +48,7 @@ export function normalizeProgressEvent(event = {}, previous = null) {
     node: String(node),
     current: current === null ? 0 : current,
     total: total === null ? 0 : total,
+    timeEstimate: data.timeEstimate || previous?.timeEstimate || null,
+    startedAt: data.startedAt || previous?.startedAt || 0,
   };
 }

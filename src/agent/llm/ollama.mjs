@@ -19,7 +19,7 @@ export class OllamaProvider {
     }
   }
 
-  async chat({ messages, tools, toolChoice, temperature = 0.7, maxTokens = 4096, timeoutMs = 60000, onChunk }) {
+  async chat({ messages, tools, toolChoice, temperature = 0.7, maxTokens = 4096, timeoutMs = 60000, onChunk, signal }) {
     const streaming = typeof onChunk === 'function';
     const body = {
       model: this.model,
@@ -45,6 +45,11 @@ export class OllamaProvider {
     const controller = new AbortController();
     this._controller = controller;
     const timeout = setTimeout(() => controller.abort('timeout'), timeoutMs);
+    const abortFromCaller = () => controller.abort(signal.reason || 'cancelled');
+    if (signal) {
+      if (signal.aborted) abortFromCaller();
+      else signal.addEventListener('abort', abortFromCaller, { once: true });
+    }
     let res;
     try {
       res = await fetch(`${this.baseUrl}/api/chat`, {
@@ -55,6 +60,7 @@ export class OllamaProvider {
       });
     } catch (error) {
       clearTimeout(timeout);
+      signal?.removeEventListener('abort', abortFromCaller);
       if (this._controller === controller) this._controller = null;
       if (controller.signal.aborted) {
         const reason = controller.signal.reason === 'timeout'

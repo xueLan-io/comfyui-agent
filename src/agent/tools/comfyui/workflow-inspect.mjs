@@ -5,6 +5,14 @@ import { isEditableValue } from './node-overrides.mjs';
 import { buildPreflightReport } from '../../../runtime/preflight-contract.mjs';
 import { inspectRuntimeCapabilities } from '../../../runtime/runtime-capabilities.mjs';
 
+const H3_REQUIRED_NODES = ['MiniMaxH3ReferenceToVideo', 'MiniMaxH3SigmaShift', 'EmptyMiniMaxH3LatentAV'];
+
+function h3RuntimeIssues(modelType, objectInfo = {}) {
+  if (modelType !== 'minimax_h3') return [];
+  const missing = H3_REQUIRED_NODES.filter(name => !objectInfo[name]);
+  return missing.length === 0 ? [] : [{ severity: 'error', code: 'h3_runtime_unavailable', message: `MiniMax H3 nodes are not loaded: ${missing.join(', ')}` }];
+}
+
 function resolveMediaRef(value = '') {
   const parts = String(value).split('/');
   return parts.length > 1
@@ -329,6 +337,7 @@ export const WorkflowInspectTool = {
         adaptationOnly: resolved.adapter?.adaptationOnly === true,
         adapterCapabilities: resolved.info,
       });
+      preflight.issues.push(...h3RuntimeIssues(resolved.modelType, objectInfo));
       const runtimeCheck = await inspectRuntimeCapabilities({
         client,
         requireConnection: false,

@@ -17,11 +17,13 @@ export async function resolveFfmpeg() {
   return null;
 }
 
-export async function composeVideo({ frames, outputPath, fps = 24, ffmpegPath }) {
+export async function composeVideo({ frames, outputPath, fps = 24, ffmpegPath, signal, timeoutMs = 120000 }) {
   const ffmpeg = ffmpegPath || await resolveFfmpeg();
   if (!ffmpeg) throw new Error('未找到 ffmpeg，无法合成视频');
 
-  const paths = frames.map(frame => typeof frame === 'string' ? frame : frame.path).sort();
+  const paths = frames.map((frame, index) => ({ path: typeof frame === 'string' ? frame : frame.path, index }))
+    .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: 'base' }) || a.index - b.index)
+    .map(frame => frame.path);
   const listContent = paths.map(path => `file '${path.replace(/'/g, "'\\''").replaceAll('\\', '/')}'`).join('\n');
 
   const tempDir = await mkdtemp(join(tmpdir(), 'comfy-video-'));
@@ -31,11 +33,22 @@ export async function composeVideo({ frames, outputPath, fps = 24, ffmpegPath })
     await new Promise((resolve, reject) => {
       const child = spawn(ffmpeg, ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-vf', `fps=${fps},format=yuv420p`, '-c:v', 'libx264', '-movflags', '+faststart', outputPath]);
       let stderr = '';
+      let timer;
+      const stop = reason => {
+        child.kill('SIGTERM');
+        reject(new Error(reason));
+      };
+      if (signal) {
+        if (signal.aborted) return stop('视频合成已取消');
+        signal.addEventListener('abort', () => stop('视频合成已取消'), { once: true });
+      }
+      timer = setTimeout(() => stop('ffmpeg 合成视频超时'), timeoutMs);
       child.stderr.on('data', chunk => {
         stderr += chunk.toString();
       });
       child.on('error', error => reject(new Error(`ffmpeg 启动失败：${error.message}`)));
       child.on('close', code => {
+        clearTimeout(timer);
         if (code === 0) {
           resolve();
         } else {

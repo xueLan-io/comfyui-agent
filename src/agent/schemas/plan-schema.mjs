@@ -1,7 +1,7 @@
 import { validateToolInput } from './tool-schema.mjs';
 
-const TOOL_NAMES = ['prompt_enhance', 'comfyui', 'filesystem', 'filesystem_mutate', 'system', 'web', 'workflow_inspect', 'inspect_image', 'workflow_patch'];
-const EXPECTED_OUTPUTS = ['prompt', 'images', 'videos', 'files', 'validation', 'web', 'workflow', 'models', 'image', 'logs', 'patch', 'any'];
+const TOOL_NAMES = ['prompt_enhance', 'comfyui', 'filesystem', 'filesystem_mutate', 'system', 'web', 'workflow_inspect', 'inspect_image', 'workflow_patch', 'workflow_mutation_preview', 'workflow_mutation_commit', 'workflow_revision_list', 'workflow_rollback'];
+const EXPECTED_OUTPUTS = ['prompt', 'images', 'videos', 'files', 'validation', 'web', 'workflow', 'models', 'image', 'logs', 'patch', 'queue', 'status', 'media', 'revision', 'service', 'artifact', 'any'];
 export const MAX_PLAN_STEPS = 6;
 
 const PlanStepSchema = {
@@ -16,7 +16,7 @@ const PlanStepSchema = {
     },
     skill: {
       type: 'string',
-      enum: ['txt2img', 'img2img', 'character', 'video', ''],
+      pattern: '^[a-z][a-z0-9_-]*$',
       description: 'Optional skill context',
     },
     input: {
@@ -72,6 +72,8 @@ function supportsExpectedOutput(step, tool) {
   if (step.expected_output === 'any') return true;
   if (!tool) return false;
 
+  if (Array.isArray(tool.output_types) && tool.output_types.length > 0) return tool.output_types.includes(step.expected_output);
+
   const properties = tool.output_schema?.properties || {};
   if (step.expected_output === 'prompt') return tool.name === 'prompt_enhance' || Boolean(properties.enhanced || properties.positive);
   if (step.expected_output === 'images') return tool.name === 'comfyui' || Boolean(properties.images);
@@ -104,7 +106,7 @@ function supportsExpectedOutput(step, tool) {
       || Boolean(properties.entries || properties.queue);
   }
   if (step.expected_output === 'patch') {
-    return tool.name === 'workflow_patch' || Boolean(properties.diff);
+    return tool.name === 'workflow_patch' || tool.name === 'workflow_mutation_preview' || Boolean(properties.diff);
   }
   return false;
 }
@@ -212,10 +214,12 @@ export function validatePlan(input, options = {}) {
     return { valid: false, errors: ['Plan must be a non-null object'] };
   }
   if (typeof input.goal !== 'string' || !input.goal.trim()) errors.push('Plan must have a non-empty "goal" string');
-  if (!Array.isArray(input.steps) || input.steps.length === 0) {
+  const isClarification = input.metadata?.status === 'clarify';
+  if (!Array.isArray(input.steps) || (input.steps.length === 0 && !isClarification)) {
     errors.push('Plan must have at least one step');
     return { valid: false, errors };
   }
+  if (isClarification) return { valid: errors.length === 0, errors };
   if (input.steps.length > maxSteps) errors.push(`Plan exceeds maximum of ${maxSteps} steps`);
 
   const seen = new Set();

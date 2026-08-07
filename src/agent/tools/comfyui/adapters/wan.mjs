@@ -8,13 +8,20 @@ function setInputWidget(node, names, value) {
   if (!node.widgets_values || value === undefined) return false;
   let index = -1;
   let widgetIndex = 0;
+  const widgetInputs = (node.inputs || []).filter(input => input.widget || input.link == null || input.link < 0);
+  const hasSeedControl = widgetInputs[0]?.name === 'seed'
+    && Array.isArray(node.widgets_values)
+    && node.widgets_values.length === widgetInputs.length + 1;
   for (const input of node.inputs || []) {
-    const isWidget = Boolean(input.widget) || !input.link || input.link < 0;
+    const isWidget = Boolean(input.widget) || input.link == null || input.link < 0;
     if (names.includes(String(input.name || '').toLowerCase())) {
       index = widgetIndex;
       break;
     }
-    if (isWidget) widgetIndex++;
+    if (isWidget) {
+      widgetIndex++;
+      if (input.widget?.control_after_generate || (hasSeedControl && input.name === 'seed')) widgetIndex++;
+    }
   }
   if (index < 0 || index >= node.widgets_values.length) return false;
   node.widgets_values[index] = value;
@@ -35,16 +42,18 @@ export const WanAdapter = {
       modelType: 'wan',
       videoNodes: nodes.filter(node => /wan|video|vhs/i.test(node.type || '')).map(node => node.type),
       promptSlots: countPromptTargets(nodes),
-      supportsImageInput: nodes.some(node => /loadimage|image.?to.?video|wan/i.test(node.type || '')),
+      supportsImageInput: nodes.some(node => /loadimage|image.?to.?video/i.test(node.type || '')),
       supportsVideoOutput: nodes.some(node => /video|vhs|save.*gif|gif.*save/i.test(node.type || '')),
     };
   },
 
   prepare(wf, input = {}) {
-    const size = numericSize(input.size, null);
-    const frames = input.frames;
-    const fps = input.fps;
-    const guidance = input.guidance ?? input.settings?.cfg;
+    const settings = input.settings || {};
+    const requestedSize = input.size || (settings.width && settings.height ? `${settings.width}x${settings.height}` : '');
+    const size = numericSize(requestedSize, null);
+    const frames = input.frames ?? settings.frames;
+    const fps = input.fps ?? settings.fps;
+    const guidance = input.guidance ?? settings.cfg;
 
     for (const node of wf.nodes || []) {
       if (!node.widgets_values) continue;

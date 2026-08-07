@@ -8,6 +8,16 @@ import { FilesystemTool } from '../tools/filesystem/index.mjs';
 import { PromptLibraryTool } from '../tools/prompt-library/index.mjs';
 import { SystemTool } from '../tools/system/index.mjs';
 import { WebTool, openResultPages } from '../tools/web/index.mjs';
+import { registryFromTools } from '../tools/registry.mjs';
+import { RuntimeReadTools, RuntimeMutationTools } from '../tools/comfyui/runtime.mjs';
+import { WorkflowReadTools } from '../tools/comfyui/workflow-read.mjs';
+import { WorkflowMutationPreviewTool, WorkflowRevisionListTool, WorkflowMutationCommitTool, WorkflowRollbackTool } from '../tools/comfyui/workflow-mutation-tools.mjs';
+import { ComfyUIRuntimeParametersTool } from '../tools/comfyui/runtime-parameters.mjs';
+import { InspectImageTool } from '../tools/comfyui/image-inspect.mjs';
+import { createServiceTools } from '../../runtime/service-tools.mjs';
+import { createMediaTools } from '../../runtime/media/media-tools.mjs';
+import { createConfiguredSkillRegistry } from '../skills/index.mjs';
+import { normalizePlan, validatePlan } from '../schemas/plan-schema.mjs';
 
 export const MCP_PROTOCOL_VERSION = '2025-11-25';
 const SERVER_VERSION = '0.2.1';
@@ -67,9 +77,11 @@ function researchHandler(webTool, llmProvider) {
 }
 
 export function createSkillMcpTools(skills = SKILLS) {
-  return Object.entries(skills).map(([id, skill]) => ({
-    name: `plan_${id}`,
-    description: `Create an execution plan for the ${skill.name || id} workflow without executing side effects. ${skill.description || ''}`.trim(),
+  const registry = skills?.all && skills?.get ? skills : createConfiguredSkillRegistry({ builtin: skills });
+  return registry.all().map(skill => ({
+    id: skill.id,
+    name: `plan_${skill.id}`,
+    description: `Create an execution plan for the ${skill.name || skill.id} workflow without executing side effects. ${skill.description || ''}`.trim(),
     input_schema: {
       type: 'object',
       properties: {
@@ -79,12 +91,23 @@ export function createSkillMcpTools(skills = SKILLS) {
       required: ['userIntent'],
       additionalProperties: false,
     },
-    output_schema: { type: 'object', properties: { skill: { type: 'string' }, steps: { type: 'array' } }, required: ['skill', 'steps'] },
+    output_schema: { type: 'object', properties: { skill: { type: 'string' }, status: { type: 'string' }, steps: { type: 'array' }, metadata: { type: 'object' }, clarification: { type: 'object' } }, required: ['skill', 'status', 'steps'] },
     side_effects: [], requires_confirmation: false, idempotent: true, retry: { mode: 'never' },
     version: skill.version || SKILL_CONTRACT_VERSION,
     category: 'generation',
-    tags: ['skill', id, skill.external ? 'external' : 'builtin', 'plan'],
-    execute: async ({ userIntent, context = {} }) => ({ skill: id, steps: skill.steps(userIntent, context) }),
+    tags: ['skill', skill.id, skill.external ? 'external' : 'builtin', 'plan'],
+    execute: async ({ userIntent, context = {} }) => {
+      const match = skill.canHandle(userIntent, context);
+      const plan = skill.plan(userIntent, context);
+      const normalized = normalizePlan({ goal: userIntent, ...plan, metadata: { ...(plan.metadata || {}), skillId: skill.id, skillVersion: skill.version, status: match?.missing?.length ? 'clarify' : 'ready' } });
+      if (match?.missing?.length) return { skill: skill.id, status: 'clarify', steps: [], metadata: normalized.metadata, clarification: { action: 'clarify', skillId: skill.id, missing: match.missing, confidence: match.confidence || 0 } };
+      const validation = validatePlan(normalized, { tools: {
+        prompt_enhance: { name: 'prompt_enhance', output_types: ['prompt'], input_schema: { type: 'object', properties: {} } },
+        comfyui: { name: 'comfyui', output_types: ['images', 'videos'], input_schema: { type: 'object', properties: {} } },
+      }, context });
+      if (validation.errors.some(error => error.includes('tool is not registered'))) return { skill: skill.id, steps: skill.steps ? await skill.steps(userIntent, context) : normalized.steps };
+      return validation.valid ? { skill: skill.id, status: 'ready', steps: normalized.steps, metadata: normalized.metadata, clarification: null } : { skill: skill.id, status: 'invalid', steps: normalized.steps, metadata: normalized.metadata, errors: validation.errors };
+    },
   }));
 }
 
@@ -125,17 +148,21 @@ function createGenerationTools({ generation } = {}) {
   ];
 }
 
-export function createWebMcpServer({ webTool = WebTool, llmProvider, tools = [], generation, includeReadOnlyTools = true, includeSkillTools = true, skills = SKILLS } = {}) {
+export function createWebMcpServer({ webTool = WebTool, llmProvider, tools = [], toolRegistry = null, generation, serviceRegistry = null, serviceInvoker = null, includeReadOnlyTools = true, includeServiceTools = false, includeMediaTools = false, includeRuntimeMutationTools = false, includeWorkflowMutationTools = false, includeSkillTools = true, skills = SKILLS, surface = 'mcp', include, exclude } = {}) {
   const characterResearch = researchHandler(webTool, llmProvider);
   const baseTools = [
     { name: 'web_search', description: 'Search public web pages with the configured domain and source policy.', input_schema: { type: 'object', properties: { query: { type: 'string' }, maxResults: { type: 'number' }, timeoutMs: { type: 'number' }, allowedDomains: { type: 'array' }, sourcePolicy: { type: 'object' } }, required: ['query'], additionalProperties: false }, execute: input => webTool.execute({ action: 'search', ...input }) },
     { name: 'web_open', description: 'Open one public web page with SSRF and domain-policy checks.', input_schema: { type: 'object', properties: { url: { type: 'string' }, timeoutMs: { type: 'number' }, allowedDomains: { type: 'array' }, sourcePolicy: { type: 'object' } }, required: ['url'], additionalProperties: false }, execute: input => webTool.execute({ action: 'open', ...input }) },
     { name: 'character_research', description: 'Search and extract cited character appearance facts.', input_schema: { type: 'object', properties: { query: { type: 'string' }, maxResults: { type: 'number' }, maxOpenPages: { type: 'number' }, timeoutMs: { type: 'number' }, allowedDomains: { type: 'array' }, officialDomains: { type: 'array' }, verifiedDomains: { type: 'array' }, communityDomains: { type: 'array' } }, required: ['query'], additionalProperties: false }, execute: characterResearch },
   ];
-  const readOnlyTools = includeReadOnlyTools ? [FilesystemTool, PromptLibraryTool, SystemTool] : [];
+   const readOnlyTools = includeReadOnlyTools ? [FilesystemTool, PromptLibraryTool, SystemTool, InspectImageTool, ...RuntimeReadTools, ...WorkflowReadTools, ComfyUIRuntimeParametersTool] : [];
+  const runtimeMutationTools = includeRuntimeMutationTools ? RuntimeMutationTools : [];
+  const workflowMutationTools = includeWorkflowMutationTools ? [WorkflowMutationPreviewTool, WorkflowRevisionListTool, WorkflowMutationCommitTool, WorkflowRollbackTool] : [WorkflowMutationPreviewTool, WorkflowRevisionListTool];
   const plannerTools = includeSkillTools ? createSkillMcpTools(skills) : [];
-  const registry = [...baseTools, ...readOnlyTools, ...plannerTools, ...createGenerationTools({ generation }), ...tools];
-  const skillRegistryTool = {
+   const serviceTools = includeServiceTools && serviceRegistry && serviceInvoker ? createServiceTools({ registry: serviceRegistry, invoker: serviceInvoker }) : [];
+   const mediaTools = includeMediaTools ? createMediaTools() : [];
+   const rawTools = [...baseTools, ...readOnlyTools, ...runtimeMutationTools, ...workflowMutationTools, ...serviceTools, ...mediaTools, ...plannerTools, ...createGenerationTools({ generation }), ...tools];
+   const skillRegistryTool = {
     name: 'skills_list',
     description: 'List the normalized Skill registry and capabilities available to this MCP server.',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
@@ -143,17 +170,39 @@ export function createWebMcpServer({ webTool = WebTool, llmProvider, tools = [],
     side_effects: [], requires_confirmation: false, idempotent: true, retry: { mode: 'never' },
     category: 'management',
     execute: async () => ({ version: SKILL_CONTRACT_VERSION, skills: skillManifest(skills) }),
-  };
-  registry.push(skillRegistryTool);
-  const byName = new Map(registry.map(tool => [tool.name, tool]));
+   };
+   const skillPlanningTools = includeSkillTools ? [
+     {
+       name: 'skills_match', description: 'Match a user request to Skill candidates without executing side effects.', input_schema: { type: 'object', properties: { userIntent: { type: 'string' }, context: { type: 'object' }, skillId: { type: 'string' } }, required: ['userIntent'], additionalProperties: false }, output_schema: { type: 'object' }, side_effects: [], requires_confirmation: false, idempotent: true, retry: { mode: 'never' }, category: 'generation', execute: ({ userIntent, context = {}, skillId }) => createConfiguredSkillRegistry({ builtin: skills }).match(userIntent, { ...context, skillId }),
+     },
+     {
+       name: 'skill_requirements', description: 'Inspect Skill requirements without executing side effects.', input_schema: { type: 'object', properties: { skillId: { type: 'string' }, context: { type: 'object' } }, required: ['skillId'], additionalProperties: false }, output_schema: { type: 'object' }, side_effects: [], requires_confirmation: false, idempotent: true, retry: { mode: 'never' }, category: 'generation', execute: ({ skillId, context = {} }) => { const skill = createConfiguredSkillRegistry({ builtin: skills }).get(skillId); if (!skill) return { code: 'SKILL_NOT_FOUND' }; return { skillId, requirements: skill.requirements, capabilities: skill.capabilities, context }; },
+     },
+   ] : [];
+    const localRegistry = registryFromTools([...rawTools, skillRegistryTool, ...skillPlanningTools].map(tool => ({
+     category: tool.category || 'management',
+     permission: tool.permission || (tool.requires_confirmation ? 'execute' : 'read'),
+     risk_level: tool.risk_level || (tool.requires_confirmation ? 'medium' : 'none'),
+     side_effects: tool.side_effects || [],
+     requires_confirmation: tool.requires_confirmation === true,
+     idempotent: tool.idempotent !== false,
+     retry: tool.retry || { mode: 'never' },
+     input_schema: tool.input_schema || { type: 'object', properties: {}, additionalProperties: false },
+     output_schema: tool.output_schema || { type: 'object' },
+     ...tool,
+   })));
+   const registry = toolRegistry?.list ? toolRegistry : localRegistry;
+   const exposedTools = registry.list({ surface, include, exclude });
+   const byName = new Map(exposedTools.map(tool => [tool.name, tool]));
   let initialized = false;
+  let multiSession = false;
   const server = {
-    tools: registry.map(toMcpTool),
+     tools: exposedTools.map(toMcpTool),
     async handle(request = {}) {
       if (request.jsonrpc !== undefined && request.jsonrpc !== JSON_RPC_VERSION) throw Object.assign(new Error('Invalid JSON-RPC version'), { code: -32600 });
       const method = request.method;
       if (method === 'initialize') {
-        if (initialized) throw Object.assign(new Error('Server is already initialized'), { code: -32600 });
+        if (initialized && !multiSession) throw Object.assign(new Error('Server is already initialized'), { code: -32600 });
         initialized = true;
         return { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: { tools: {} }, serverInfo: { name: 'comfy-agent', version: SERVER_VERSION, title: 'ComfyMuse MCP' } };
       }
@@ -171,6 +220,7 @@ export function createWebMcpServer({ webTool = WebTool, llmProvider, tools = [],
       if (!validation.valid) throw Object.assign(new Error('Invalid tool arguments'), { code: -32602, data: validation.errors });
       try { return mcpResult(await tool.execute(input || {})); } catch (error) { return mcpResult({ error: error.message }, true); }
     },
+    enableMultiSession() { multiSession = true; },
   };
   return server;
 }
@@ -211,15 +261,16 @@ export async function runMcpStdio(server, input = process.stdin, output = proces
   }
 }
 
-export function createMcpHttpServer(server, { host = '127.0.0.1', port = 0, authToken = '' } = {}) {
-  let sessionId = '';
+export function createMcpHttpServer(server, { host = '127.0.0.1', port = 0, authToken = '', requireAuth = true, sessionRegistry = null, principalResolver = null } = {}) {
+  const sessions = new Map();
+  server.enableMultiSession?.();
   const httpServer = createServer(async (request, response) => {
     response.setHeader('Access-Control-Allow-Origin', 'null');
     response.setHeader('Access-Control-Allow-Headers', 'content-type, accept, authorization, mcp-session-id');
     response.setHeader('Access-Control-Expose-Headers', 'mcp-session-id');
     if (request.method === 'OPTIONS') { response.writeHead(204); response.end(); return; }
     if (request.method !== 'POST' || request.url !== '/mcp') { response.writeHead(404); response.end('Not found'); return; }
-    if (authToken && request.headers.authorization !== `Bearer ${authToken}`) { response.writeHead(401); response.end('Unauthorized'); return; }
+    if (requireAuth && (!authToken || request.headers.authorization !== `Bearer ${authToken}`)) { response.writeHead(401); response.end('Unauthorized'); return; }
     const accepts = String(request.headers.accept || 'application/json');
     if (!accepts.includes('application/json') && !accepts.includes('text/event-stream')) { response.writeHead(406); response.end('Unsupported Accept'); return; }
     let body = '';
@@ -227,15 +278,25 @@ export function createMcpHttpServer(server, { host = '127.0.0.1', port = 0, auth
     let rpc;
     try { rpc = parseRpcLine(body.trim()); } catch (error) { response.writeHead(400, { 'content-type': 'application/json' }); response.end(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: null, error: rpcError(error.code || -32700, error.message) })); return; }
     const requestedSession = String(request.headers['mcp-session-id'] || '');
-    if (rpc.method !== 'initialize' && sessionId && requestedSession !== sessionId) {
+    if (rpc.method !== 'initialize' && (!requestedSession || !sessions.has(requestedSession))) {
       response.writeHead(404); response.end('Unknown MCP session'); return;
+    }
+    if (rpc.method !== 'initialize' && sessionRegistry) {
+      try { sessionRegistry.assertSession(requestedSession); } catch (error) { response.writeHead(401, { 'content-type': 'application/json' }); response.end(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: rpc.id ?? null, error: rpcError(error.code, error.message) })); return; }
     }
     try {
       const result = await server.handle(rpc);
       if (rpc.id === undefined) { response.writeHead(202); response.end(); return; }
       const headers = { 'content-type': accepts.includes('text/event-stream') ? 'text/event-stream' : 'application/json' };
       if (rpc.method === 'initialize') {
-        sessionId = `mcp_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        const sessionId = `mcp_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        sessions.set(sessionId, { createdAt: Date.now(), principal: principalResolver?.(request) || null });
+        if (sessionRegistry) {
+          const principal = principalResolver?.(request);
+          if (!principal) { response.writeHead(401); response.end('Unauthorized'); return; }
+          const registered = sessionRegistry.createSession(principal, { sessionId, source: 'mcp' });
+          sessions.set(sessionId, { ...sessions.get(sessionId), registered });
+        }
         headers['mcp-session-id'] = sessionId;
       }
       response.writeHead(200, headers);

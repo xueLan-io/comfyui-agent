@@ -107,7 +107,7 @@ export function ComfyUIProvider({ children, floating = false }) {
     let active = true;
     setWorkflowManifest(null);
     setGenerationControls({ settings: {}, nodeOverrides: {}, outputNodeIds: null });
-    if (floating || !connected || !selectedFile) return () => { active = false; };
+    if (!connected || !selectedFile) return () => { active = false; };
 
     const inspectKey = `${workflowDir}\u0000${selectedFile}`;
     if (inspectedWorkflowRef.current === inspectKey) return () => { active = false; };
@@ -126,7 +126,7 @@ export function ComfyUIProvider({ children, floating = false }) {
         if (active) setWorkflowManifest({ workflowName: selectedFile, error: error.message || '工作流检查失败' });
       });
     return () => { active = false; };
-  }, [connected, floating, selectedFile, workflowDir]);
+  }, [connected, selectedFile, workflowDir]);
 
   useEffect(() => {
     if (selectedFile && !floating) void window.electronAPI.projectUpdateState({ workflow: selectedFile });

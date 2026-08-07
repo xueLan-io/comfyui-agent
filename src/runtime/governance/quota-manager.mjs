@@ -1,0 +1,6 @@
+export class QuotaManager {
+  constructor({ limits = {}, clock = () => Date.now() } = {}) { this.limits = limits; this.clock = clock; this.used = new Map(); this.reservations = new Map(); }
+  reserveQuota(context, requested = {}) { const key = `${context.principalId}:${context.tenantId}`; const current = this.used.get(key) || {}; for (const [name, amount] of Object.entries(requested)) if ((current[name] || 0) + amount > (this.limits[name] ?? Infinity)) throw Object.assign(new Error(`Quota exceeded: ${name}`), { code: 'QUOTA_EXCEEDED' }); const id = `quota_${this.clock()}_${Math.random().toString(36).slice(2, 8)}`; this.reservations.set(id, { id, key, requested, context }); return this.reservations.get(id); }
+  commitQuota(reservation, actual = reservation?.requested || {}) { const item = this.reservations.get(reservation?.id); if (!item) return null; const current = this.used.get(item.key) || {}; for (const [name, amount] of Object.entries(actual)) current[name] = (current[name] || 0) + Math.max(0, amount); this.used.set(item.key, current); this.reservations.delete(item.id); return current; }
+  releaseQuota(reservation) { if (!reservation?.id) return false; return this.reservations.delete(reservation.id); }
+}

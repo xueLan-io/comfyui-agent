@@ -124,6 +124,26 @@ test('diagnose classifies an explicit ComfyUI error', async () => {
   assert.equal(result.result.failure.retryable, true);
 });
 
+test('doctor reports local runtime and independent ComfyUI health checks', async () => {
+  const calls = [];
+  const result = await runCli(['doctor', '--workflow-dir', 'D:\\workflows'], {
+    client: {},
+    system: {
+      async execute(input) {
+        calls.push(input.action);
+        return input.action === 'status'
+          ? { action: 'status', reachable: true, queue: { running: 0, pending: 0 } }
+          : { action: 'device', reachable: true, device: { devices: [] } };
+      },
+    },
+  });
+
+  assert.equal(result.exitCode, EXIT.ok);
+  assert.equal(result.result.healthy, true);
+  assert.equal(result.result.workflowDirectory, 'D:\\workflows');
+  assert.deepEqual(calls.sort(), ['device', 'status']);
+});
+
 test('workflow errors produce a non-zero preflight exit code', async () => {
   const result = await runCli([
     'workflow', 'validate',
