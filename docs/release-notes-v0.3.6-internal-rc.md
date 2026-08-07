@@ -1,4 +1,4 @@
-# ComfyMuse v0.3.5 Internal RC
+# ComfyMuse v0.3.6 Internal RC
 
 Status: internal release candidate. Not approved for public distribution.
 
