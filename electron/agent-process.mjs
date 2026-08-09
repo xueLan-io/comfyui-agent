@@ -45,6 +45,8 @@ export class AgentProcessClient {
       getActiveProject: () => this.getActiveProject(),
       getState: () => this.cache.sessionManager,
       getSessionState: () => this.cache.sessionManager.sessionState || null,
+      setSessionState: patch => this.call('session.setState', [patch]),
+      flush: () => this.call('session.flush'),
       renameProject: (...args) => this.call('session.renameProject', args),
       renameSession: (...args) => this.call('session.renameSession', args),
     };

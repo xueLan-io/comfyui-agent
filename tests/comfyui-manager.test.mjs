@@ -93,3 +93,31 @@ test('serializes managed startup across manager instances', async t => {
   assert.equal(second._acquireStartupLock().acquired, true);
   second._releaseStartupLock();
 });
+
+test('cleans up a failed startup process and releases its lock', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'comfy-agent-timeout-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const lockPath = join(root, 'comfyui-startup.lock');
+  const manager = new ComfyUIManager({ startupLockPath: lockPath });
+  manager.portableRoot = root;
+  manager.checkHealth = async () => false;
+  manager._spawnProcess = () => { manager.process = { pid: 42 }; };
+  manager.killTree = () => true;
+  const state = await manager.ensureStarted({ timeoutMs: 1 });
+  assert.equal(state.status, 'error');
+  assert.equal(manager.process, null);
+  assert.equal(manager.startupLockHeld, false);
+});
+
+test('changing the startup lock path releases the old lock', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'comfy-agent-lock-change-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const firstPath = join(root, 'first.lock');
+  const secondPath = join(root, 'second.lock');
+  const manager = new ComfyUIManager({ startupLockPath: firstPath });
+  assert.equal(manager._acquireStartupLock().acquired, true);
+  manager.setStartupLockPath(secondPath);
+  assert.equal(manager.startupLockHeld, false);
+  assert.equal(manager._acquireStartupLock().acquired, true);
+  manager._releaseStartupLock();
+});

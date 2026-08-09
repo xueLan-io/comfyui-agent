@@ -14,9 +14,12 @@ function Cover({ cover }) {
   return src ? <img src={src} alt="" draggable="false" onDragStart={event => event.preventDefault()} /> : <span className="floating-preset-placeholder">PRESET</span>;
 }
 
-function PresetDetailPages({ preset, tagTranslations, language, copied, copy, onAdjust, onGenerate, onReset, onHorizontalSwipe }) {
+function PresetDetailPages({ preset, tagTranslations, language, copied, copy, onAdjust, onGenerate, onReset, onHorizontalSwipe, onHorizontalRelease }) {
+  const { t } = useI18n();
   const pagesRef = useRef(null);
   const gestureRef = useRef(null);
+
+  useEffect(() => () => { gestureRef.current = null; }, []);
 
   function goPage(page) {
     pagesRef.current?.scrollTo({ top: page * pagesRef.current.clientHeight, behavior: 'smooth' });
@@ -51,31 +54,32 @@ function PresetDetailPages({ preset, tagTranslations, language, copied, copy, on
     gestureRef.current = null;
     event.currentTarget.releasePointerCapture?.(event.pointerId);
     if (gesture.axis === 'y' && gesture.moved && pagesRef.current) pagesRef.current.scrollTo({ top: Math.round(pagesRef.current.scrollTop / pagesRef.current.clientHeight) * pagesRef.current.clientHeight, behavior: 'smooth' });
+    if (gesture.axis === 'x' && gesture.moved) onHorizontalRelease?.();
   }
 
   return <div className="floating-preset-detail-pages" ref={pagesRef} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp}>
     <article className="floating-preset-detail-page floating-preset-overview-page">
       <div className="floating-preset-cover"><Cover cover={preset.cover} /></div>
       <div className="floating-preset-card-title"><span className="section-kicker">PRESET CARD</span><h2>{preset.title}</h2></div>
-      <p className="floating-preset-description">{preset.description || '暂无描述'}</p>
-       <div className="floating-preset-tags floating-preset-tags-large">{presetTagNodes(preset.tags, tagTranslations, language) || <span>未设置标签</span>}</div>
-      <span className="floating-preset-swipe-hint">向上滑动查看提示词与参数</span>
-      <div className="floating-preset-actions"><button type="button" className="btn btn-primary" onClick={() => onAdjust(preset)}>调整后生成</button><button type="button" className="btn" onClick={() => onGenerate(preset)}>立即生成</button></div>
+      <p className="floating-preset-description">{preset.description || t('floatPresetNoDescription')}</p>
+       <div className="floating-preset-tags floating-preset-tags-large">{presetTagNodes(preset.tags, tagTranslations, language) || <span>{t('floatPresetNoTags')}</span>}</div>
+      <span className="floating-preset-swipe-hint">{t('floatPresetSwipeHint')}</span>
+      <div className="floating-preset-actions"><button type="button" className="btn btn-primary" onClick={() => onAdjust(preset)}>{t('floatPresetAdjustGenerate')}</button><button type="button" className="btn" onClick={() => onGenerate(preset)}>{t('floatPresetGenerateNow')}</button></div>
     </article>
     <article className="floating-preset-detail-page floating-preset-prompt-page">
-      <div className="floating-preset-info-heading"><span>DETAILS</span><button type="button" className="btn" onClick={() => goPage(0)}><Icon name="chevronDown" size={12} />返回封面</button></div>
-         <div className="floating-preset-tags floating-preset-tags-large">{presetTagNodes(preset.tags, tagTranslations, language) || <span>未设置标签</span>}</div>
-      <div className="floating-preset-copy-heading"><h3>正向提示词</h3><button type="button" className="btn btn-small" onClick={() => void copy(preset.positive, `${preset.id}-positive`)}>{copied === `${preset.id}-positive` ? '已复制' : '复制'}</button></div>
-      <pre className="floating-preset-scroll-text">{preset.positive || '未设置'}</pre>
-      <div className="floating-preset-copy-heading"><h3>负向提示词</h3><button type="button" className="btn btn-small" onClick={() => void copy(preset.negative, `${preset.id}-negative`)} disabled={!preset.negative}>{copied === `${preset.id}-negative` ? '已复制' : '复制'}</button></div>
-      <pre className="floating-preset-scroll-text">{preset.negative || '未设置'}</pre>
-      <button type="button" className="btn floating-preset-reset" onClick={() => onReset(preset)}>恢复此卡默认状态</button>
+      <div className="floating-preset-info-heading"><span>DETAILS</span><button type="button" className="btn" onClick={() => goPage(0)}><Icon name="chevronDown" size={12} />{t('floatPresetBackToCover')}</button></div>
+         <div className="floating-preset-tags floating-preset-tags-large">{presetTagNodes(preset.tags, tagTranslations, language) || <span>{t('floatPresetNoTags')}</span>}</div>
+      <div className="floating-preset-copy-heading"><h3>{t('floatPresetPositive')}</h3><button type="button" className="btn btn-small" onClick={() => void copy(preset.positive, `${preset.id}-positive`)}>{copied === `${preset.id}-positive` ? t('floatCopied') : t('floatCopy')}</button></div>
+      <pre className="floating-preset-scroll-text">{preset.positive || t('floatPresetNotSet')}</pre>
+      <div className="floating-preset-copy-heading"><h3>{t('floatPresetNegative')}</h3><button type="button" className="btn btn-small" onClick={() => void copy(preset.negative, `${preset.id}-negative`)} disabled={!preset.negative}>{copied === `${preset.id}-negative` ? t('floatCopied') : t('floatCopy')}</button></div>
+      <pre className="floating-preset-scroll-text">{preset.negative || t('floatPresetNotSet')}</pre>
+      <button type="button" className="btn floating-preset-reset" onClick={() => onReset(preset)}>{t('floatPresetResetCard')}</button>
     </article>
   </div>;
 }
 
 export default function FloatingPresetView({ onBack, onAdjust, onGenerate, onReset }) {
-  const { language } = useI18n();
+  const { language, t } = useI18n();
   const [presets, setPresets] = useState([]);
   const [search, setSearch] = useState('');
   const [index, setIndex] = useState(0);
@@ -86,12 +90,19 @@ export default function FloatingPresetView({ onBack, onAdjust, onGenerate, onRes
   const pagesRef = useRef(null);
   const gestureRef = useRef(null);
 
+  useEffect(() => () => { gestureRef.current = null; }, []);
+
   async function refresh() {
     setLoading(true);
     setError('');
-    try { setPresets(await window.electronAPI.globalPresetsList()); } catch (requestError) { setError(requestError.message || '加载预设失败'); } finally { setLoading(false); }
+    try { setPresets(await window.electronAPI.globalPresetsList()); } catch (requestError) { setError(requestError.message || t('floatPresetLoadFailed')); } finally { setLoading(false); }
   }
   useEffect(() => { void refresh(); }, []);
+  useEffect(() => {
+    const refreshOnSave = () => void refresh();
+    window.addEventListener('comfy-agent:preset-saved', refreshOnSave);
+    return () => window.removeEventListener('comfy-agent:preset-saved', refreshOnSave);
+  }, []);
   const visible = presets.filter(preset => `${preset.title} ${preset.description} ${preset.positive} ${preset.negative} ${(preset.tags || []).join(' ')}`.toLowerCase().includes(search.trim().toLowerCase()));
   useEffect(() => { setIndex(current => Math.min(current, Math.max(visible.length - 1, 0))); }, [search, visible.length]);
   useEffect(() => { if (visible.length && pagesRef.current) pagesRef.current.scrollTo({ left: index * pagesRef.current.clientWidth, behavior: 'auto' }); }, [index, visible.length]);
@@ -136,14 +147,14 @@ export default function FloatingPresetView({ onBack, onAdjust, onGenerate, onRes
     if (next !== index) setIndex(Math.max(0, Math.min(next, visible.length - 1)));
   }
 
-  return <section className="floating-preset-view" aria-label="悬浮窗预设卡">
-    <header className="quick-generate-header"><div><span className="section-kicker">PRESET CARDS</span><strong>预设卡</strong></div><div className="quick-generate-header-actions"><button type="button" className="quick-generate-main" onClick={onBack}><Icon name="chevronLeft" size={13} /><span>返回</span></button><button type="button" className="quick-generate-close" onClick={onBack}><Icon name="close" size={15} /></button></div></header>
-    <label className="floating-preset-search"><Icon name="search" size={13} /><input value={search} onChange={event => setSearch(event.target.value)} placeholder="搜索预设、提示词或标签" /></label>
-    {error && <div className="floating-preset-error">{error}<button type="button" className="btn" onClick={() => void refresh()}>重试</button></div>}
-    {loading ? <div className="floating-preset-empty">正在加载预设...</div> : !visible.length ? <div className="floating-preset-empty">还没有匹配的预设卡</div> : <>
-      <div className="floating-preset-browser-heading"><span>{index + 1} / {visible.length} · 左右切换预设</span><div><button type="button" className="btn btn-icon" onClick={() => scrollToPreset(index - 1)} disabled={index === 0} aria-label="上一张预设"><Icon name="chevronLeft" size={13} /></button><button type="button" className="btn btn-icon" onClick={() => scrollToPreset(index + 1)} disabled={index === visible.length - 1} aria-label="下一张预设"><Icon name="chevronRight" size={13} /></button></div></div>
+  return <section className="floating-preset-view" aria-label={t('floatPresetViewAria')}>
+    <header className="quick-generate-header"><div><span className="section-kicker">PRESET CARDS</span><strong>{t('floatPresetCards')}</strong></div><div className="quick-generate-header-actions"><button type="button" className="quick-generate-main" onClick={onBack}><Icon name="chevronLeft" size={13} /><span>{t('floatBack')}</span></button><button type="button" className="quick-generate-close" onClick={onBack}><Icon name="close" size={15} /></button></div></header>
+    <label className="floating-preset-search"><Icon name="search" size={13} /><input value={search} onChange={event => setSearch(event.target.value)} placeholder={t('floatPresetSearchPlaceholder')} /></label>
+    {error && <div className="floating-preset-error">{error}<button type="button" className="btn" onClick={() => void refresh()}>{t('floatRetry')}</button></div>}
+    {loading ? <div className="floating-preset-empty">{t('floatPresetLoading')}</div> : !visible.length ? <div className="floating-preset-empty">{t('floatPresetNoMatch')}</div> : <>
+      <div className="floating-preset-browser-heading"><span>{t('floatPresetBrowserHint', { index: index + 1, total: visible.length })}</span><div><button type="button" className="btn btn-icon" onClick={() => scrollToPreset(index - 1)} disabled={index === 0} aria-label={t('floatPresetPrevious')}><Icon name="chevronLeft" size={13} /></button><button type="button" className="btn btn-icon" onClick={() => scrollToPreset(index + 1)} disabled={index === visible.length - 1} aria-label={t('floatPresetNext')}><Icon name="chevronRight" size={13} /></button></div></div>
        <div className="floating-preset-pages" ref={pagesRef} onScroll={handleScroll} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp}>
-           {visible.map(preset => <article className="floating-preset-page floating-preset-card-page" key={preset.id}><PresetDetailPages preset={preset} tagTranslations={tagTranslations} language={language} copied={copied} copy={copy} onAdjust={onAdjust} onGenerate={onGenerate} onReset={onReset} onHorizontalSwipe={delta => pagesRef.current?.scrollBy({ left: delta, behavior: 'auto' })} /></article>)}
+           {visible.map(preset => <article className="floating-preset-page floating-preset-card-page" key={preset.id}><PresetDetailPages preset={preset} tagTranslations={tagTranslations} language={language} copied={copied} copy={copy} onAdjust={onAdjust} onGenerate={onGenerate} onReset={onReset} onHorizontalSwipe={delta => pagesRef.current?.scrollBy({ left: delta, behavior: 'auto' })} onHorizontalRelease={() => { if (pagesRef.current) scrollToPreset(Math.round(pagesRef.current.scrollLeft / pagesRef.current.clientWidth)); }} /></article>)}
       </div>
     </>}
   </section>;

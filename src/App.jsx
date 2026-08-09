@@ -18,11 +18,12 @@ import PresetLibraryPage from './components/PresetLibraryPage.jsx';
 import ComfyUISetup from './components/ComfyUISetup.jsx';
 import Icon from './components/Icon.jsx';
 import QuickGenerateFloat from './components/QuickGenerateFloat.jsx';
+import ErrorFeedbackModal from './components/ErrorFeedbackModal.jsx';
 import { I18nProvider, useI18n } from './i18n/I18nContext.jsx';
 
 function AppLayout({ floating = false }) {
   const { showNodeControls, setShowNodeControls, workflowManifest, generationControls, setGenerationControls, comfyState } = useComfyUI();
-  const { showSettings, setShowSettings, showTrace, setShowTrace, trace, preview, setPreview, promptPreview, confirmPromptPreview, cancelPromptPreview, runLibraryGeneration, recoveryTasks, refreshRecoveryTasks, retryRecoveryTask, archiveRecoveryTask, archiveAllRecoveryTasks, policyConfirm, confirmPolicyOverride, cancelPolicyOverride } = useAgent();
+  const { showSettings, setShowSettings, showTrace, setShowTrace, trace, preview, setPreview, promptPreview, confirmPromptPreview, cancelPromptPreview, runLibraryGeneration, recoveryTasks, refreshRecoveryTasks, retryRecoveryTask, archiveRecoveryTask, archiveAllRecoveryTasks, policyConfirm, confirmPolicyOverride, cancelPolicyOverride, errorFeedback, setErrorFeedback, feedbackOpen, setFeedbackOpen } = useAgent();
   const { t } = useI18n();
   const [activeView, setActiveView] = useState('chat');
   const [promptLibraryMounted, setPromptLibraryMounted] = useState(false);
@@ -32,7 +33,12 @@ function AppLayout({ floating = false }) {
   const pendingLibraryGenerationRef = useRef(null);
   const [recoveryError, setRecoveryError] = useState('');
   const [expandedRecoveryTask, setExpandedRecoveryTask] = useState('');
+  const [appVersion, setAppVersion] = useState('');
   const setupDismissedRef = useRef(false);
+
+  useEffect(() => {
+    void window.electronAPI.appVersion?.().then(setAppVersion).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (comfyState.status === 'error' && !comfyState.portableRoot && !setupDismissedRef.current) {
@@ -142,6 +148,7 @@ function AppLayout({ floating = false }) {
       )}
 
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+      {feedbackOpen && errorFeedback && <ErrorFeedbackModal error={errorFeedback} version={appVersion} onClose={() => setFeedbackOpen(false)} />}
       {showSetup && <ComfyUISetup onClose={closeSetup} />}
       {showTrace && <TraceView trace={trace} onClose={() => setShowTrace(false)} />}
       {recoveryTasks.length > 0 && (

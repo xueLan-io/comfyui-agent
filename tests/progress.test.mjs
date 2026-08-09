@@ -3,7 +3,7 @@ import test from 'node:test';
 import { Agent } from '../src/agent/runtime/agent.mjs';
 import { AgentEventTypes, on } from '../src/agent/events/agent-events.mjs';
 
-test('agent state transitions emit progress for the conversation chain', () => {
+test('agent state transitions emit stage progress without fake percentages', () => {
   const agent = new Agent({ llmConfig: { provider: 'openai-compatible', model: 'test' } });
   const events = [];
   const unsubscribe = on(AgentEventTypes.PROGRESS, event => events.push(event));
@@ -16,8 +16,8 @@ test('agent state transitions emit progress for the conversation chain', () => {
   }
 
   assert.deepEqual(events.map(event => [event.scope, event.stage, event.percent]), [
-    ['agent', 'classifying', 5],
-    ['agent', 'planning', 15],
+    ['agent', 'classifying', null],
+    ['agent', 'planning', null],
     ['agent', 'completed', 100],
   ]);
 });

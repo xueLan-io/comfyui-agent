@@ -14,6 +14,8 @@ function conversationDefaults() {
 
 function sessionStateDefaults() {
   return {
+    revision: 1,
+    updatedAt: Date.now(),
     state: 'idle',
     phase: 'idle',
     lastIntent: '',
@@ -38,6 +40,7 @@ function sessionStateDefaults() {
     currentArtifactId: '',
     taskFailure: null,
     retryAction: null,
+    executionRecords: {},
     contextArchive: { version: 1, segments: [], archivedMessageIds: [] },
     sessionMemory: createSessionMemory(),
   };
@@ -227,7 +230,12 @@ export class SessionManager {
       delete current[field];
       delete project[field];
     }
-    this.sessionState = { ...this.sessionState, ...generation };
+    this.sessionState = {
+      ...this.sessionState,
+      ...generation,
+      revision: (this.sessionState.revision || 0) + 1,
+      updatedAt: Date.now(),
+    };
     if (!this.sessionStates[this.activeProjectId]) this.sessionStates[this.activeProjectId] = {};
     this.sessionStates[this.activeProjectId][this.activeSessionId] = this.getSessionState();
     Object.assign(project, current, { history: this.project.history });
@@ -238,11 +246,14 @@ export class SessionManager {
   _saveConversationMemory() {
     if (!this.conversations[this.activeProjectId]) this.conversations[this.activeProjectId] = {};
     this.conversations[this.activeProjectId][this.activeSessionId] = this.conversation.toJSON();
+    this.sessionState = { ...this.sessionState, revision: (this.sessionState.revision || 0) + 1, updatedAt: Date.now() };
+    if (!this.sessionStates[this.activeProjectId]) this.sessionStates[this.activeProjectId] = {};
+    this.sessionStates[this.activeProjectId][this.activeSessionId] = this.getSessionState();
     void this._persistConversations().catch(() => {});
   }
 
   _saveSessionMemory() {
-    this.sessionState = { ...this.sessionState, sessionMemory: this.sessionMemory.toJSON() };
+    this.sessionState = { ...this.sessionState, sessionMemory: this.sessionMemory.toJSON(), revision: (this.sessionState.revision || 0) + 1, updatedAt: Date.now() };
     if (!this.sessionStates[this.activeProjectId]) this.sessionStates[this.activeProjectId] = {};
     this.sessionStates[this.activeProjectId][this.activeSessionId] = this.getSessionState();
     void this._persistConversations().catch(() => {});
@@ -340,7 +351,7 @@ export class SessionManager {
     return this.getState();
   }
 
-  async createSession(title = '新会话', projectId = this.activeProjectId) {
+  async createSession(title = '新会话', projectId = this.activeProjectId, { activate = true } = {}) {
     const project = this.getProject(projectId);
     if (!project) throw new Error('项目不存在');
     const session = newSession(title.trim() || '新会话');
@@ -349,7 +360,8 @@ export class SessionManager {
     this.conversations[projectId][session.id] = [];
     if (!this.sessionStates[projectId]) this.sessionStates[projectId] = {};
     this.sessionStates[projectId][session.id] = sessionStateDefaults();
-    await this.activate(projectId, session.id);
+    if (activate) await this.activate(projectId, session.id);
+    else await this._persistAll();
     return session;
   }
 
@@ -412,7 +424,12 @@ export class SessionManager {
   }
 
   setSessionState(patch = {}) {
-    const next = { ...this.sessionState, ...patch };
+    const next = {
+      ...this.sessionState,
+      ...patch,
+      revision: (this.sessionState.revision || 0) + 1,
+      updatedAt: Date.now(),
+    };
     if (patch.phase && !patch.state) {
       const legacyState = {
         running: 'executing',
@@ -440,6 +457,15 @@ export class SessionManager {
     this.sessionStates[this.activeProjectId][this.activeSessionId] = this.getSessionState();
     void this._persistConversations().catch(() => {});
     return this.getSessionState();
+  }
+
+  appendExecutionEvent(event = {}) {
+    const turnId = event.turnId || this.sessionState.turnId || '';
+    if (!turnId) return this.getSessionState();
+    const records = { ...(this.sessionState.executionRecords || {}) };
+    const events = [...(records[turnId] || []), event].slice(-48);
+    records[turnId] = events;
+    return this.setSessionState({ executionRecords: records });
   }
 
   clearCurrentTask() {

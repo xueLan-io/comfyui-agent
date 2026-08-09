@@ -5,7 +5,11 @@ function busyError(active, preview) {
     : '当前已有生成任务或待确认预览，请先完成或取消它');
   error.code = 'GENERATION_BUSY';
   error.taskId = owner?.taskId || '';
+  error.requestId = owner?.requestId || '';
   error.source = owner?.source || '';
+  error.phase = owner?.phase || owner?.status || '';
+  error.projectId = owner?.owner?.projectId || '';
+  error.sessionId = owner?.owner?.sessionId || '';
   return error;
 }
 
@@ -24,6 +28,19 @@ export class ExecutionCoordinator {
 
   get isBusy() {
     return Boolean(this.active || this.preview);
+  }
+
+  getState() {
+    const entry = this.active || this.preview;
+    if (!entry) return { busy: false, phase: 'idle' };
+    return {
+      busy: true,
+      source: entry.source || '',
+      requestId: entry.requestId || '',
+      taskId: entry.taskId || '',
+      phase: entry.phase || entry.status || 'prepared',
+      owner: { ...(entry.owner || {}) },
+    };
   }
 
   assertAvailable() {
@@ -49,7 +66,7 @@ export class ExecutionCoordinator {
     return true;
   }
 
-  async execute({ source, taskId = '', owner, previewId = '', work, onResult, cancel, governance }) {
+  async execute({ source, requestId = '', turnId = '', taskId = '', owner, previewId = '', work, onResult, cancel, governance }) {
     if (this.active) throw busyError(this.active, this.preview);
     if (this.preview && !previewId) throw busyError(this.active, this.preview);
     if (previewId) {
@@ -68,6 +85,8 @@ export class ExecutionCoordinator {
 
     const entry = {
       source,
+      requestId,
+      turnId,
       taskId,
       owner: Object.freeze({ ...owner }),
       phase: 'running',
@@ -80,7 +99,9 @@ export class ExecutionCoordinator {
     entry.promise = workPromise;
     try {
       const result = await workPromise;
-      if (!entry.detached) await onResult?.(result, entry);
+      // A cancelled execution may still settle successfully after the remote
+      // interrupt. Never archive or publish that late result.
+      if (!entry.cancelRequested && !entry.detached) await onResult?.(result, entry);
       if (previewId) this.preview = null;
       return result;
     } catch (error) {
@@ -112,20 +133,30 @@ export class ExecutionCoordinator {
         entry.cancelPromise = null;
         throw error;
       }
+      let settled = false;
       try {
-        await Promise.race([
-          entry.promise,
-          new Promise(resolve => setTimeout(resolve, 5000)),
+        const outcome = await Promise.race([
+          entry.promise.then(() => 'settled', () => 'settled'),
+          new Promise(resolve => setTimeout(() => resolve('timeout'), 5000)),
         ]);
+        settled = outcome === 'settled';
       } catch (error) {
         if (!entry.cancelRequested) throw error;
       }
-      entry.phase = 'cancelled';
-      if (this.active === entry) {
-        entry.detached = true;
+      entry.phase = settled ? 'cancelled' : 'stopping';
+      // Keep the coordinator occupied until the original promise settles.
+      // Releasing this lock on timeout allows old observe/archive work to race
+      // with a new prompt and can target the wrong promptId.
+      if (this.active === entry && settled) {
         this.active = null;
       }
-      return { cancelled: true, taskId: entry.taskId };
+      return {
+        cancelled: true,
+        settled,
+        requestId: entry.requestId || '',
+        taskId: entry.taskId,
+        phase: entry.phase,
+      };
     })();
     return entry.cancelPromise;
   }

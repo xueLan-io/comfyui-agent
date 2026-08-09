@@ -33,4 +33,33 @@ test('service invoker requires confirmation and preserves preview identity', asy
   await assert.rejects(() => invoker.invoke({ serviceId: 'test-service', previewId: preview.previewId, requestId: preview.requestId, confirmation: false, owner }), error => error.code === 'CONFIRMATION_REQUIRED');
   const result = await invoker.invoke({ serviceId: 'test-service', previewId: preview.previewId, requestId: preview.requestId, confirmation: true, owner: preview.owner });
   assert.equal(result.state, 'queued');
+  assert.equal(invoker.previews.has(preview.previewId), false);
+});
+
+test('service invocation shares one in-flight side effect for concurrent callers', async () => {
+  let calls = 0;
+  let release;
+  const service = { manifest, invoke: async input => { calls++; await new Promise(resolve => { release = resolve; }); return { state: 'queued', digest: input.idempotencyKey }; } };
+  const registry = createServiceRegistry([service]);
+  const ledger = { begin() {}, update() {}, snapshot() { return null; } };
+  const invoker = new ServiceInvoker({ registry, ledger, clock: () => 1000 });
+  const owner = { principalId: 'p', projectId: 'x', sessionId: 's', permissions: ['read', 'execute'] };
+  const preview = await invoker.prepare({ serviceId: 'test-service', input: { prompt: 'cat' }, owner });
+  const input = { serviceId: 'test-service', previewId: preview.previewId, requestId: preview.requestId, confirmation: true, owner };
+  const first = invoker.invoke(input);
+  const second = invoker.invoke(input);
+  await new Promise(resolve => setImmediate(resolve));
+  release();
+  const results = await Promise.all([first, second]);
+  assert.equal(calls, 1);
+  assert.deepEqual(results[0], results[1]);
+});
+
+test('service status and result do not expose unknown or foreign service requests', () => {
+  const registry = createServiceRegistry([{ manifest, status: () => ({ state: 'queued' }), result: () => ({}) }]);
+  const ledger = { snapshot() { return null; } };
+  const invoker = new ServiceInvoker({ registry, ledger });
+  const owner = { principalId: 'p', projectId: 'x', sessionId: 's', permissions: ['read'] };
+  assert.deepEqual(invoker.status({ serviceId: 'test-service', requestId: 'missing', owner }), { code: 'REQUEST_NOT_FOUND' });
+  assert.deepEqual(invoker.result({ serviceId: 'test-service', requestId: 'missing', owner }), { code: 'REQUEST_NOT_FOUND' });
 });

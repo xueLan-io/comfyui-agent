@@ -254,7 +254,11 @@ export class ComfyUIClient {
     if (options.originalRef) form.append('original_ref', JSON.stringify(options.originalRef));
 
     const endpoint = kind === 'mask' && options.originalRef ? '/upload/mask' : '/upload/image';
-    const res = await this._fetch(`${this.baseUrl}${endpoint}`, { method: 'POST', body: form });
+    const res = await this._fetch(`${this.baseUrl}${endpoint}`, {
+      method: 'POST',
+      body: form,
+      signal: options.signal,
+    });
     if (!res.ok) {
       const text = await res.text();
       throw new Error(`ComfyUI upload error (${res.status}): ${text.slice(0, 300)}`);

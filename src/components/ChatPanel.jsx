@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useAgent } from '../contexts/AgentContext.jsx';
 import { useComfyUI } from '../contexts/ComfyUIContext.jsx';
 import AgentMessage from './AgentMessage.jsx';
@@ -13,7 +13,18 @@ import { useI18n } from '../i18n/I18nContext.jsx';
 import { progressTimeEstimate } from '../runtime/generation-time-estimate.mjs';
 
 function imageKey(image = {}) {
-  return `${image.type || ''}:${image.projectId || ''}:${image.subfolder || ''}:${image.filename || ''}`;
+  return JSON.stringify([
+    image.assetId,
+    image.path,
+    image.url,
+    image.type,
+    image.projectId,
+    image.sessionId,
+    image.taskId,
+    image.subfolder,
+    image.filename || image.name,
+    image.mediaType || image.kind,
+  ].map(value => value ?? ''));
 }
 
 function isCurrentResultMessage(message, currentMedia) {
@@ -33,6 +44,62 @@ function formatDuration(milliseconds) {
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
   return minutes > 0 ? `${minutes}:${String(remainder).padStart(2, '0')}` : `${remainder}s`;
+}
+
+function displayExecutionEvent(event = {}) {
+  if (event.type === 'agent:plan') return {
+    ...event,
+    stage: 'planning',
+    description: event.description || `已创建执行计划，共 ${(event.steps || []).length} 步`,
+    status: 'planning',
+  };
+  if (event.type === 'agent:tool-call') return {
+    ...event,
+    description: event.description || `正在调用 ${event.tool || '工具'}...`,
+    status: 'running',
+  };
+  if (event.type === 'agent:tool-result') return {
+    ...event,
+    description: event.description || `${event.tool || '工具'} 已完成`,
+    status: event.error ? 'error' : 'completed',
+  };
+  if (event.type === 'agent:error') return {
+    ...event,
+    description: event.description || event.message || '任务执行失败',
+    status: 'error',
+    error: event.error || event.message,
+  };
+  return event;
+}
+
+function graphStepsFor(events = []) {
+  const steps = new Map();
+  events.forEach((event, index) => {
+    const item = displayExecutionEvent(event);
+    if (!item.status || (!item.tool && item.stage !== 'planning')) return;
+    const key = item.stepId || item.tool || item.stage || `event-${index}`;
+    steps.set(key, { ...steps.get(key), ...item, _key: key, _order: steps.get(key)?._order ?? index });
+  });
+  return [...steps.values()].sort((a, b) => a._order - b._order);
+}
+
+function ExecutionThread({ events, progress, t }) {
+  const [open, setOpen] = useState(false);
+  const visibleEvents = events.map(displayExecutionEvent);
+  const steps = graphStepsFor(visibleEvents);
+  if (!visibleEvents.length) return null;
+  return (
+    <section className="execution-thread">
+      <button className="execution-thread-toggle" onClick={() => setOpen(value => !value)} aria-expanded={open}>
+        <span>{t('runtime')} · {steps.length} {t('steps')}</span>
+        <Icon name={open ? 'chevronDown' : 'chevronRight'} size={13} />
+      </button>
+      {open && <>
+        {steps.length > 0 && <ExecutionGraph steps={steps} progress={progress} />}
+        <ActivityTimeline events={visibleEvents} />
+      </>}
+    </section>
+  );
 }
 
 function ContextRing({ usage, t }) {
@@ -76,18 +143,39 @@ function ContextRing({ usage, t }) {
   );
 }
 
+function GenerationResultRecord({ record, onOpenImage, onError, onRegenerate, onEdit, onSave, onAdjust, onFeedback, t }) {
+  const parameters = record.parameters || record.settings || {};
+  const mediaItems = record.media || [];
+  return (
+    <section className="thread-section output-card generation-record" data-turn-id={record.turnId}>
+      <div className="thread-section-heading">
+        <div className="thread-section-title"><span className="section-kicker">{t('generationResults')}</span><strong>{t('executionSummary')}</strong><small className="output-source">{record.generationSource || ''}</small></div>
+        <span className="output-count">{mediaItems.length} {t('items')}</span>
+      </div>
+      <div className={`image-grid chat-output-grid ${outputGalleryClass(mediaItems.length)}`}>
+        {mediaItems.map((image, index) => <article key={`${image.filename || image.name || index}-${image.subfolder || ''}`} className="image-item"><ImageAsset image={image} onOpen={preview => onOpenImage?.({ ...preview, images: mediaItems, index })} onError={onError} /><div className="image-item-info"><span title={image.filename}>{image.filename || image.name || ''}</span><b>{String(index + 1).padStart(2, '0')}</b></div></article>)}
+      </div>
+      <div className="output-prompt"><span>{t('positiveLabel')}</span><code>{record.prompt || record.positive || ''}</code>{record.negative && <><span>{t('negativeLabel')}</span><code>{record.negative}</code></>}</div>
+      <details className="generation-record-parameters"><summary>{t('parameters')}</summary><pre>{JSON.stringify(parameters, null, 2)}</pre></details>
+      <div className="output-controls">
+        <div className="output-primary-actions"><button className="btn btn-primary" onClick={onRegenerate}><Icon name="refresh" size={14} /> {t('regenerate')}</button><button className="btn output-secondary-action" onClick={onEdit}><Icon name="edit" size={13} /> {t('editPrompt')}</button><button className="btn output-secondary-action" onClick={onSave}><Icon name="bookmark" size={13} /> {t('saveAsPreset')}</button><button className="btn btn-icon output-settings-action" onClick={onAdjust} title={t('adjustParameters')} aria-label={t('adjustParameters')}><Icon name="sliders" size={14} /></button></div>
+        <div className="output-feedback"><span>{t('feedback')}</span><button onClick={() => onFeedback('satisfied')}>{t('satisfied')}</button><button onClick={() => onFeedback('new_seed')}>{t('newSeed')}</button></div>
+      </div>
+    </section>
+  );
+}
+
 export default function ChatPanel({ active = true, onReady }) {
   const { t } = useI18n();
-  const [runtimeOpen, setRuntimeOpen] = useState(false);
-  const [outputOpen, setOutputOpen] = useState(true);
   const [chatAction, setChatAction] = useState('answer');
   const [imageOptions, setImageOptions] = useState({ size: 'auto', count: 1, quality: 'auto' });
   const [savePresetOpen, setSavePresetOpen] = useState(false);
+  const [savePresetRecord, setSavePresetRecord] = useState(null);
   const [presetFeedback, setPresetFeedback] = useState('');
   const {
     messages,
     activityEvents,
-    graphSteps,
+    executionRecords,
     images,
     media,
     removeAsset,
@@ -136,16 +224,23 @@ export default function ChatPanel({ active = true, onReady }) {
     percent: generationProgress?.percent,
     now,
   });
+  const executionByTurn = useMemo(() => {
+    const records = {};
+    for (const [turnId, events] of Object.entries(executionRecords || {})) records[turnId] = [...events];
+    for (const event of activityEvents) {
+      if (!event.turnId) continue;
+      const target = records[event.turnId] || (records[event.turnId] = []);
+      const duplicate = target.some(saved => saved.timestamp === event.timestamp && saved.type === event.type && saved.stepId === event.stepId && saved.status === event.status);
+      if (!duplicate) target.push(event);
+    }
+    return records;
+  }, [activityEvents, executionRecords]);
 
   useEffect(() => {
     if (status !== 'running' || !generationProgress?.timeEstimate) return undefined;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [status, generationProgress?.timeEstimate]);
-
-  useEffect(() => {
-    if (thinking) setRuntimeOpen(true);
-  }, [thinking]);
 
   useEffect(() => {
     if (active) onReady?.();
@@ -164,28 +259,32 @@ export default function ChatPanel({ active = true, onReady }) {
     inputRef.current?.focus();
   }
 
-  async function saveAsPreset() {
-    if (!lastGenerationRequest) return;
+  async function saveAsPreset(record) {
+    if (!record?.prompt && !record?.positive) return;
+    setSavePresetRecord(record);
     setSavePresetOpen(true);
   }
 
   async function createSavedPreset(form) {
+    const record = savePresetRecord || {};
+    const media = record.media || [];
     const resultRefs = form.saveResults ? media : [];
     const coverRef = form.useFirstAsCover ? resultRefs[0] : null;
     const saved = await window.electronAPI.globalPresetCreate({
       ...form,
-      source: generationSource === 'openai-image' ? 'cloud' : 'direct',
+      source: record.generationSource === 'openai-image' ? 'cloud' : 'direct',
       origin: 'chat',
-      workflow: selectedFile,
-      workflowName: selectedFile,
-      parameters: form.parameters || generationControls.settings || {},
-      nodeOverrides: generationControls.nodeOverrides || {},
-      outputNodeIds: generationControls.outputNodeIds || null,
+      workflow: record.workflowName || selectedFile,
+      workflowName: record.workflowName || selectedFile,
+      parameters: form.parameters || record.parameters || {},
+      nodeOverrides: record.nodeOverrides || {},
+      outputNodeIds: record.outputNodeIds || null,
       modelRequirements: workflowManifest?.modelRequirements || [],
       resultRefs,
       coverRef,
     });
     setSavePresetOpen(false);
+    setSavePresetRecord(null);
     const detail = { id: saved?.id || '', title: saved?.title || form.title, preset: saved };
     setPresetFeedback(t('presetSaved', { name: detail.title }));
     window.setTimeout(() => setPresetFeedback(''), 3500);
@@ -198,62 +297,25 @@ export default function ChatPanel({ active = true, onReady }) {
         <div ref={conversationRef} className="conversation" onScroll={handleConversationScroll}>
           {messages.length > 0 && <button className="btn btn-icon btn-clear conversation-clear" onClick={clearConversation} disabled={status === 'running'} title={status === 'running' ? t('stopCurrentTask') : t('clearConversation')}><Icon name="trash" /></button>}
           {messages.length === 0 && <div className="conversation-empty"><strong>{t('startCreation')}</strong></div>}
-          {messages.map((message, index) => (
-            <AgentMessage
-              key={`${message.ts || message.time || index}-${index}`}
-              msg={message}
-              onOpenImage={setPreview}
-              onImageError={removeAsset}
-              onEdit={() => handleEditMessage(index)}
-              hideImages={isCurrentResultMessage(message, media)}
-            />
-          ))}
+          {messages.map((message, index) => {
+            const record = message.media?.length > 0 && message.turnId
+              ? { ...message, prompt: message.prompt || message.positive || '', parameters: message.parameters || message.settings || {}, generationSource: message.generationSource || generationSource }
+              : null;
+            return <div key={`${message.ts || message.time || index}-${index}`} className="conversation-turn">
+              <AgentMessage msg={message} onOpenImage={setPreview} onImageError={removeAsset} onEdit={() => handleEditMessage(index)} hideImages={Boolean(record)} />
+              {message.role === 'user' && <ExecutionThread events={executionByTurn[message.turnId] || []} progress={generationProgress} t={t} />}
+              {record && <GenerationResultRecord record={record} onOpenImage={setPreview} onError={removeAsset} onRegenerate={() => handleRegenerate(record)} onEdit={() => { setInput(record.prompt); inputRef.current?.focus(); }} onSave={() => saveAsPreset(record)} onAdjust={() => setShowNodeControls(true)} onFeedback={type => type === 'new_seed' ? handleRegenerate(record, type) : recordFeedback(type)} t={t} />}
+            </div>;
+          })}
 
-          {messages.length > 0 && (graphSteps.length > 0 || activityEvents.length > 0 || thinking) && (
-            <section className="thread-section runtime-card">
-              <div className="thread-section-heading">
-               <div className="thread-section-title"><span className="section-kicker">{t('runtime')}</span><strong>{thinking ? t('processingRequest') : t('executionSummary')}</strong></div>
-                 <button className="collapse-toggle" onClick={() => setRuntimeOpen(open => !open)} aria-expanded={runtimeOpen} title={runtimeOpen ? t('collapseRuntime') : t('expandRuntime')}><span className="section-count">{graphSteps.length + activityEvents.length} {t('steps')}</span><span className="collapse-caret"><Icon name={runtimeOpen ? 'chevronDown' : 'chevronRight'} size={14} /></span></button>
-              </div>
-              {thinking && (
-                <div className="thinking-live">
-                   <div className="thinking-live-label"><span className="streaming-cursor" />{t('thinking')}</div>
-                  <pre ref={thinkingTextRef} className="thinking-live-text">{thinking.slice(-600)}</pre>
-                </div>
-              )}
-              {runtimeOpen && (
-                <>
-                   {graphSteps.length > 0 && <section className="activity-section"><div className="section-heading"><span>{t('executionGraph')}</span><span className="section-count">{graphSteps.length} {t('nodes')}</span></div><ExecutionGraph steps={graphSteps} /></section>}
-                   {activityEvents.length > 0 && <section className="activity-section timeline-section"><div className="section-heading"><span>{t('activityLog')}</span><span className="section-count">{activityEvents.length} {t('records')}</span></div><ActivityTimeline events={activityEvents} /></section>}
-                </>
-              )}
-            </section>
-          )}
+           {thinking && <section className="execution-thread execution-thread-live"><div className="thinking-live"><div className="thinking-live-label"><span className="streaming-cursor" />{t('thinking')}</div><pre ref={thinkingTextRef} className="thinking-live-text">{thinking.slice(-600)}</pre></div></section>}
 
-          {messages.length > 0 && media.length > 0 && !generationPending && (
-            <section className="thread-section output-card">
-              <div className="thread-section-heading">
-                 <div className="thread-section-title"><span className="section-kicker">{t('generationResults')}</span><strong>{t('sessionGeneration')}</strong>{generationSourceLabel && <small className="output-source">{generationSourceLabel}</small>}</div>
-                  <button className="collapse-toggle" onClick={() => setOutputOpen(open => !open)} aria-expanded={outputOpen} title={outputOpen ? t('collapseResults') : t('expandResults')}><span className="output-count">{media.length} {t('items')}</span><span className="collapse-caret"><Icon name={outputOpen ? 'chevronDown' : 'chevronRight'} size={14} /></span></button>
-              </div>
-              {outputOpen && (
-                <>
-                   <div className={`image-grid chat-output-grid ${outputGalleryClass(media.length)}`}>{media.map((image, index) => <article key={`${image.filename}-${image.subfolder || ''}-${index}`} className="image-item"><ImageAsset image={image} onOpen={preview => setPreview({ ...preview, images: media, index })} onError={removeAsset} /><div className="image-item-info"><span title={image.filename}>{image.filename}</span><b>{String(index + 1).padStart(2, '0')}</b></div></article>)}</div>
-                  <div className="output-controls">
-                      <div className="output-primary-actions"><button className="btn btn-primary" onClick={handleRegenerate} disabled={status === 'running' || !lastGenerationRequest}><Icon name="refresh" size={14} /> {t('regenerate')}</button><button className="btn output-secondary-action" onClick={editLastPrompt} disabled={!lastGenerationRequest}><Icon name="edit" size={13} /> {t('editPrompt')}</button><button className="btn output-secondary-action" onClick={saveAsPreset} disabled={!lastGenerationRequest}><Icon name="bookmark" size={13} /> {t('saveAsPreset')}</button><button className="btn btn-icon output-settings-action" onClick={() => setShowNodeControls(true)} title={t('adjustParameters')} aria-label={t('adjustParameters')}><Icon name="sliders" size={14} /></button></div>
-                     <div className="output-feedback"><span>{t('feedback')}</span><button onClick={() => recordFeedback('satisfied')}>{t('satisfied')}</button><button onClick={() => recordFeedback('new_seed')}>{t('newSeed')}</button></div>
-                    {presetFeedback && <div className="preset-save-feedback" role="status" aria-live="polite"><Icon name="check" size={13} />{presetFeedback}</div>}
-                  </div>
-                </>
-              )}
-            </section>
-          )}
           <div ref={msgEndRef} />
         </div>
       </div>
 
       <div className="chat-input-area">
-          {status === 'running' && (
+            {['preparing', 'queued', 'executing', 'archiving', 'running'].includes(status) && activityEvents.length === 0 && (
             <div className="generation-progress-chat" role="status" aria-live="polite">
                <div className="generation-progress-meta">
                 <span>{generationProgress?.percentScope === 'node' && generationProgress?.nodePercent !== null
@@ -263,9 +325,9 @@ export default function ChatPanel({ active = true, onReady }) {
                </div>
                {timeProgress && (
                  <div className="generation-time-estimate">
-                   <span>已用 {formatDuration(timeProgress.elapsedMs)}</span>
-                   <strong>预计剩余 {formatDuration(timeProgress.remainingMs)}</strong>
-                   <small>{timeProgress.confidence === 'calibrated' ? '已按实际采样进度校正' : '预估时长，首个采样进度后会校正'}</small>
+                   <span>{t('chatTimeElapsed', { time: formatDuration(timeProgress.elapsedMs) })}</span>
+                   <strong>{t('chatTimeRemaining', { time: formatDuration(timeProgress.remainingMs) })}</strong>
+                   <small>{timeProgress.confidence === 'calibrated' ? t('chatTimeCalibrated') : t('chatTimeEstimate')}</small>
                  </div>
                )}
                <div className="generation-progress-track">
@@ -335,7 +397,7 @@ export default function ChatPanel({ active = true, onReady }) {
             )}
           </div>
       </div>
-       {savePresetOpen && <PresetSaveModal initial={{ title: lastGenerationRequest.slice(0, 28) || t('newPresetDefault'), positive: lastGenerationRequest, negative: lastGenerationNegative || '', workflow: selectedFile, parameters: generationControls.settings || {}, tags: '' }} onSave={createSavedPreset} onClose={() => setSavePresetOpen(false)} />}
+        {savePresetOpen && savePresetRecord && <PresetSaveModal initial={{ title: (savePresetRecord.prompt || savePresetRecord.positive || '').slice(0, 28) || t('newPresetDefault'), positive: savePresetRecord.prompt || savePresetRecord.positive || '', negative: savePresetRecord.negative || '', workflow: savePresetRecord.workflowName || selectedFile, parameters: savePresetRecord.parameters || {}, tags: '' }} onSave={createSavedPreset} onClose={() => { setSavePresetOpen(false); setSavePresetRecord(null); }} />}
     </aside>
   );
 }

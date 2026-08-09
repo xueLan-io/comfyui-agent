@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Agent } from '../src/agent/runtime/agent.mjs';
+import { AgentEventTypes, on, off } from '../src/agent/events/agent-events.mjs';
 
 test('character research preserves generation after search failure', async () => {
+  const events = [];
+  const listener = event => events.push(event);
+  on(AgentEventTypes.STEP, listener);
   const agent = Object.create(Agent.prototype);
   Object.assign(agent, {
     _taskId: 'task-research',
@@ -11,10 +15,16 @@ test('character research preserves generation after search failure', async () =>
     tools: { web: { async execute() { return { error: 'connection refused' }; } } },
   });
 
-  const context = await agent._researchCharacter('generate Hero character appearance', { allowNetwork: true });
-  assert.equal(context.researchStatus, 'search_failed');
-  assert.match(context.researchMessage, /未使用在线资料/);
-  assert.deepEqual(context.sources, []);
+  try {
+    const context = await agent._researchCharacter('generate Hero character appearance', { allowNetwork: true });
+    assert.equal(context.researchStatus, 'search_failed');
+    assert.match(context.researchMessage, /未使用在线资料/);
+    assert.deepEqual(context.sources, []);
+    assert.equal(events.at(-1).status, 'warning');
+    assert.equal(events.at(-1).researchStatus, 'search_failed');
+  } finally {
+    off(AgentEventTypes.STEP, listener);
+  }
 });
 
 test('disabled character research returns an explicit offline status', async () => {

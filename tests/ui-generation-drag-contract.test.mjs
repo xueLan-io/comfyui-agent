@@ -27,14 +27,13 @@ test('drag payloads preserve preset and phrase semantics', async () => {
   const quick = await source('src/components/QuickGenerateFloat.jsx');
   assert.match(quick, /quick-generate-pages/);
   assert.match(quick, /quick-generation-editor/);
-  assert.match(quick, /视频生成/);
+  assert.match(quick, /t\('floatVideoGeneration'\)/);
   assert.match(quick, /isMiniMaxH3Workflow\(workflowManifest\)/);
   assert.doesNotMatch(quick, /setGenerationPage\(\/minimax/);
   assert.doesNotMatch(quick, /视频生成<\/button>\n.*disabled=/);
   assert.match(presets, /target: 'preset'/);
   assert.match(prompts, /content: item\.prompt/);
   assert.match(quick, /tabRef\.current/);
-  assert.match(quick, /restored\.phase === 'complete'/);
   assert.match(quick, /payload\.content \|\| payload\.positive/);
 });
 
@@ -56,4 +55,60 @@ test('preset saving uses current media and persisted asset recipes', async () =>
   assert.match(assets, /positive: image\.positive \|\| prompt\.positive/);
   assert.match(main, /positive: result\.compiledPrompt\?\.positive \|\| result\.positive/);
   assert.match(main, /positive: edits\.positive \|\| preview\?\.positive/);
+});
+
+test('frontend keeps archived media renderable and session-scoped', async () => {
+  const context = await source('src/contexts/AgentContext.jsx');
+  const asset = await source('src/components/ImageAsset.jsx');
+  const main = await source('electron/main.mjs');
+  const session = await source('src/contexts/SessionContext.jsx');
+  assert.match(context, /const all = \[\.\.\.images, \.\.\.videos, \.\.\.supplied\]/);
+  assert.match(context, /task\.projectId === session\.activeProjectId[\s\S]*task\.sessionId === session\.activeSessionId/);
+  assert.match(asset, /if \(image\?\.previewUrl\) return image\.previewUrl/);
+  assert.match(main, /media: \[\.\.\.archived, \.\.\.archivedVideos\]/);
+  assert.match(main, /mediaType: 'image'/);
+  assert.match(session, /activationVersionRef/);
+});
+
+test('renderer failures have a visible fallback and Electron diagnostics', async () => {
+  const entry = await source('src/main.jsx');
+  const boundary = await source('src/components/RenderErrorBoundary.jsx');
+  const preload = await source('electron/preload.cjs');
+  const main = await source('electron/main.mjs');
+  assert.match(entry, /RenderErrorBoundary/);
+  assert.match(boundary, /componentDidCatch/);
+  assert.match(boundary, /tr\('reload'\)/);
+  assert.match(preload, /reportRendererError/);
+  assert.match(main, /did-fail-load/);
+  assert.match(main, /render-process-gone/);
+  assert.match(main, /ipcMain\.on\('renderer:error'/);
+});
+
+test('floating generation consumes AgentContext state instead of a second task store', async () => {
+  const quick = await source('src/components/QuickGenerateFloat.jsx');
+  const context = await source('src/contexts/AgentContext.jsx');
+  assert.match(quick, /generationResult\?\.media/);
+  assert.match(quick, /generationProgress \|\| null/);
+  assert.doesNotMatch(quick, /TASK_STORAGE_PREFIX/);
+  assert.doesNotMatch(quick, /agentMonitorTask|monitorRecoveryTask/);
+  assert.doesNotMatch(quick, /const \[task, setTask\]/);
+  assert.match(context, /monitorRecoveryTask/);
+});
+
+test('floating direct generation reaches the main conversation and new sessions can be created while busy', async () => {
+  const main = await source('electron/main.mjs');
+  const agent = await source('src/contexts/AgentContext.jsx');
+  const sessionManager = await source('src/agent/runtime/session-manager.mjs');
+  const runtimeAgent = await source('src/agent/runtime/agent.mjs');
+  assert.match(main, /channel === 'direct:status' \|\| channel === 'direct:progress'/);
+  assert.match(main, /status: 'completed',[\s\S]*taskId,[\s\S]*result: archived/);
+  assert.match(main, /agent\.createSession\(title, projectId, \{ activate \}\)/);
+  assert.match(main, /GENERATION_OWNER_MISMATCH/);
+  const directStart = main.indexOf("ipcMain.handle('direct:prepare'");
+  const directEnd = main.indexOf("ipcMain.handle('direct:get-preview'", directStart);
+  assert.ok(directStart >= 0 && directEnd > directStart);
+  assert.doesNotMatch(main.slice(directStart, directEnd), /agent\.useSession\(/);
+  assert.match(sessionManager, /async createSession\(title = '新会话', projectId = this\.activeProjectId, \{ activate = true \} = \{\}\)/);
+  assert.match(runtimeAgent, /async createSession\(title, projectId, \{ activate = true \} = \{\}\)/);
+  assert.match(agent, /directTaskId: taskId/);
 });

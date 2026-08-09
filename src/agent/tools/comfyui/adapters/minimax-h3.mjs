@@ -28,7 +28,7 @@ function findH3Node(workflow) {
 }
 
 function activeNodes(workflow) {
-  const active = (workflow.nodes || []).filter(node => node.mode === 0);
+  const active = (workflow.nodes || []).filter(node => node.mode === undefined || node.mode === 0);
   return active.length > 0 ? active : workflow.nodes || [];
 }
 

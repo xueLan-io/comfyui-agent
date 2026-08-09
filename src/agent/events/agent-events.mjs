@@ -19,6 +19,7 @@ export const AgentEventTypes = {
 
 let projectId = '';
 let sessionId = '';
+let turnId = '';
 let traceCounter = 0;
 
 export function initSession(projectOrSessionId = '', activeSessionId = '') {
@@ -41,10 +42,15 @@ export function nextTraceId() {
   return `trace_${traceCounter}_${Date.now()}`;
 }
 
+export function initTurn(activeTurnId = '') {
+  turnId = activeTurnId || '';
+}
+
 export function emit(type, data = {}) {
   const event = createEvent(type, {
     projectId,
     sessionId,
+    turnId,
     traceId: data.traceId || '',
     ...data,
   });

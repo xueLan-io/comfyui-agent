@@ -1,31 +1,40 @@
 import { useEffect, useState } from 'react';
+import { useI18n } from '../i18n/I18nContext.jsx';
 
 export function isVideoImage(image = {}) {
   return image.mediaType === 'video' || /\.(mp4|webm|mov|mkv|avi)$/i.test(image.filename || '');
 }
 
 export default function ImageAsset({ image, compact = false, onOpen, onError }) {
+  const { t } = useI18n();
   const [state, setState] = useState({ status: 'loading', src: '' });
 
   useEffect(() => {
     let active = true;
     setState({ status: 'loading', src: '' });
-    window.electronAPI.comfyUIImageData(image)
-      .then(src => active && setState({ status: 'ready', src }))
+    const load = async () => {
+      if (image?.previewUrl) return image.previewUrl;
+      return window.electronAPI.comfyUIImageData(image);
+    };
+    load()
+      .then(src => {
+        if (!src) throw new Error('Image preview returned no data');
+        if (active) setState({ status: 'ready', src });
+      })
       .catch(() => {
         if (!active) return;
         setState({ status: 'error', src: '' });
         onError?.(image);
       });
     return () => { active = false; };
-  }, [image.filename, image.subfolder, image.type, image.projectId, image.createdAt, onError]);
+  }, [image.previewUrl, image.filename, image.subfolder, image.type, image.projectId, image.sessionId, image.createdAt, onError]);
 
   if (state.status !== 'ready') {
-    return <div className={`image-loading${state.status === 'error' ? ' error' : ''}`}>{state.status === 'error' ? '预览失败' : '载入中...'}</div>;
+    return <div className={`image-loading${state.status === 'error' ? ' error' : ''}`}>{state.status === 'error' ? t('assetPreviewFailed') : t('assetLoading')}</div>;
   }
 
   return (
-      <button className={`image-preview-trigger${compact ? ' compact' : ''}`} onClick={() => onOpen?.({ image, src: state.src })} onDragStart={event => event.preventDefault()} title="查看大图" draggable="false">
+      <button className={`image-preview-trigger${compact ? ' compact' : ''}`} onClick={() => onOpen?.({ image, src: state.src })} onDragStart={event => event.preventDefault()} title={t('assetViewLarge')} draggable="false">
       {isVideoImage(image) ? (
          <video src={state.src} muted preload="metadata" aria-label={image.filename} draggable="false" onDragStart={event => event.preventDefault()} />
       ) : (

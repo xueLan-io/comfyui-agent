@@ -16,13 +16,16 @@ const appPackage = JSON.parse(readFileSync(join(app, 'package.json'), 'utf8'));
 if (appPackage.version !== packageJson.version) throw new Error('Packaged app version does not match package.json');
 
 rmSync(staging, { recursive: true, force: true });
-mkdirSync(join(staging, 'resources'), { recursive: true });
-cpSync(app, join(staging, 'resources', 'app'), { recursive: true });
-if (existsSync(output)) rmSync(output, { force: true });
+try {
+  mkdirSync(join(staging, 'resources'), { recursive: true });
+  cpSync(app, join(staging, 'resources', 'app'), { recursive: true });
+  if (existsSync(output)) rmSync(output, { force: true });
 
-const command = `Compress-Archive -Path '${join(staging, '*').replaceAll("'", "''")}' -DestinationPath '${output.replaceAll("'", "''")}' -Force`;
-execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { stdio: 'inherit' });
-rmSync(staging, { recursive: true, force: true });
+  const command = `Compress-Archive -Path '${join(staging, '*').replaceAll("'", "''")}' -DestinationPath '${output.replaceAll("'", "''")}' -Force`;
+  execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { stdio: 'inherit' });
+} finally {
+  rmSync(staging, { recursive: true, force: true });
+}
 
 console.log(`Created update package: ${output}`);
 console.log('Install by extracting it over the existing dist-portable directory.');

@@ -51,6 +51,19 @@ test('session changes reject an active Agent task', async () => {
   );
 });
 
+test('creating a background session does not interrupt an active Agent task', async () => {
+  const agent = await createAgent();
+  const projectId = agent.sessionManager.activeProjectId;
+  const activeSessionId = agent.sessionManager.activeSessionId;
+  agent._running = true;
+
+  const state = await agent.createSession('Background', projectId, { activate: false });
+
+  assert.equal(agent.sessionManager.activeSessionId, activeSessionId);
+  assert.equal(agent._running, true);
+  assert.ok(state.project.sessions.some(session => session.title === 'Background'));
+});
+
 test('deleting the active session rejects an active Agent task', async () => {
   const agent = await createAgent();
   const projectId = agent.sessionManager.activeProjectId;

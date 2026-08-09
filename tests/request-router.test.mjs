@@ -255,6 +255,29 @@ test('intent router includes attached image data when classifying a visual reque
   assert.equal(request.messages[1].content.at(-1).image_url.url, 'data:image/png;base64,abc');
 });
 
+test('intent router lets the language model interpret an attached image before applying edit rules', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'comfy-router-visual-intent-'));
+  const imagePath = join(directory, 'reference.png');
+  await writeFile(imagePath, 'image');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let called = false;
+  const router = new IntentRouter({
+    isConfigured: true,
+    async chat() {
+      called = true;
+      return { content: JSON.stringify({ intent: 'chat', action: 'reply', confidence: 0.9, target: 'none' }) };
+    },
+  }, { imageDataUrl: async () => 'data:image/png;base64,abc' });
+
+  const result = await router.route('把这张图改得更好看', {
+    attachedMedia: { images: [{ path: imagePath }] },
+  });
+
+  assert.equal(called, true);
+  assert.equal(result.intent, 'chat');
+  assert.equal(result.action, 'reply');
+});
+
 test('intent router forwards modeHint and the active strategy preference', async () => {
   let request;
   const router = new IntentRouter({

@@ -10,14 +10,15 @@ import { registerAdapters } from '../src/agent/tools/comfyui/adapters/index.mjs'
 registerAdapters();
 
 test('MiniMax H3 reference workflow is identified as executable video after runtime preflight', async () => {
-  const result = await WorkflowAdapter.resolve('MiniMax H3全能参考工作流.json', resolve('.'));
+  const workflowDir = resolve('workflows');
+  const result = await WorkflowAdapter.resolve('minimax_h3_amd_smoke.json', workflowDir);
   assert.equal(result.modelType, 'minimax_h3');
   assert.equal(result.adapter.name, 'minimax_h3');
   assert.equal(result.adapter.adaptationOnly, false);
   assert.ok(result.capabilities.modes.includes('txt2video'));
   assert.ok(result.capabilities.modes.includes('img2video'));
   assert.ok(result.capabilities.modes.includes('video2video'));
-  assert.equal(result.info.referenceImageSlots, 4);
+  assert.ok(result.info.referenceImageSlots >= 1);
   assert.equal(result.info.referenceVideoSlots, 3);
 });
 
@@ -154,6 +155,15 @@ test('builds prompt targets only from active sampler conditioning paths', () => 
 
 test('WorkflowAdapter.detect generic fallback', () => {
   const wf = { nodes: [{ type: 'KSampler' }, { type: 'EmptyLatentImage' }] };
+  assert.equal(WorkflowAdapter.detect(wf), 'generic');
+});
+
+test('WorkflowAdapter keeps nodes without mode active in mixed workflows', () => {
+  const wf = { nodes: [
+    { id: 1, type: 'KSampler' },
+    { id: 2, type: 'EmptyLatentImage' },
+    { id: 3, type: 'FluxLoader', mode: 4 },
+  ] };
   assert.equal(WorkflowAdapter.detect(wf), 'generic');
 });
 

@@ -155,7 +155,7 @@ export class Planner {
         throw error;
       }
 
-      const normalized = normalizePlan(parsed);
+      const normalized = this._withExecutionContext(normalizePlan(parsed), context);
       this.fallbackPlan = normalized;
 
       emit(AgentEventTypes.PLAN, { stage: 'complete', plan: normalized });
@@ -308,11 +308,22 @@ export class Planner {
       }
     }
     this._applyWorkflowContext(template, userMessage, context);
-    const normalized = normalizePlan(template);
+    const normalized = this._withExecutionContext(normalizePlan(template), context);
     const validation = validatePlan(normalized, { tools: this.tools, context, maxSteps: this.maxSteps });
     if (!validation.valid) throw new Error(`Plan validation failed: ${validation.errors.join('; ')}`);
     emit(AgentEventTypes.PLAN, { stage: 'complete', plan: normalized, message: `Using ${skill.name} skill plan` });
     return normalized;
+  }
+
+  _withExecutionContext(plan, context = {}) {
+    if (!plan) return plan;
+    return {
+      ...plan,
+      metadata: {
+        ...(plan.metadata || {}),
+        ...(context.executionContext ? { executionContext: structuredClone(context.executionContext) } : {}),
+      },
+    };
   }
 
   _buildPlanPrompt(userMessage, context) {

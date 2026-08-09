@@ -27,9 +27,11 @@ export function ComfyUIProvider({ children, floating = false }) {
   const [workflowFiles, setWorkflowFiles] = useState([]);
   const [selectedFile, setSelectedFile] = useState('');
   const [workflowManifest, setWorkflowManifest] = useState(null);
-  const [generationControls, setGenerationControls] = useState({ settings: {}, nodeOverrides: {}, outputNodeIds: null });
+  const [inspectingWorkflow, setInspectingWorkflow] = useState(false);
+  const [generationControls, setGenerationControlsState] = useState(() => project?.generationControls || { settings: {}, nodeOverrides: {}, outputNodeIds: null });
   const [showNodeControls, setShowNodeControls] = useState(false);
   const inspectedWorkflowRef = useRef('');
+  const inspectVersionRef = useRef(0);
   const [favoriteWorkflows, setFavoriteWorkflows] = useState(() => {
     try { return JSON.parse(window.localStorage.getItem('comfyui-agent.favorite-workflows') || '[]'); } catch { return []; }
   });
@@ -38,6 +40,18 @@ export function ComfyUIProvider({ children, floating = false }) {
   });
 
   const connected = comfyState.status === 'ready';
+
+  const setGenerationControls = useCallback(next => {
+    setGenerationControlsState(previous => {
+      const value = typeof next === 'function' ? next(previous) : next;
+      void window.electronAPI.projectUpdateState({ generationControls: value }).catch(() => {});
+      return value;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (project?.generationControls) setGenerationControlsState(project.generationControls);
+  }, [project?.generationControls]);
 
   useEffect(() => {
     window.localStorage.setItem('comfyui-agent.favorite-workflows', JSON.stringify(favoriteWorkflows));
@@ -104,32 +118,43 @@ export function ComfyUIProvider({ children, floating = false }) {
   }, []);
 
   useEffect(() => {
+    if (!connected) inspectedWorkflowRef.current = '';
+  }, [connected]);
+
+  useEffect(() => {
     let active = true;
-    setWorkflowManifest(null);
-    setGenerationControls({ settings: {}, nodeOverrides: {}, outputNodeIds: null });
+    const inspectVersion = ++inspectVersionRef.current;
     if (!connected || !selectedFile) return () => { active = false; };
 
     const inspectKey = `${workflowDir}\u0000${selectedFile}`;
     if (inspectedWorkflowRef.current === inspectKey) return () => { active = false; };
     inspectedWorkflowRef.current = inspectKey;
+    setInspectingWorkflow(true);
 
     if (workflowFiles.length > 0 && !workflowFiles.includes(selectedFile)) {
       setWorkflowManifest({ workflowName: selectedFile, missing: true, error: '工作流不存在' });
+      setInspectingWorkflow(false);
       return () => { active = false; };
     }
 
     window.electronAPI.agentInspectWorkflow(selectedFile)
       .then(manifest => {
-        if (active) setWorkflowManifest(manifest || { workflowName: selectedFile, error: '工作流检查失败' });
+        if (active && inspectVersion === inspectVersionRef.current) {
+          setWorkflowManifest(manifest || { workflowName: selectedFile, error: '工作流检查失败' });
+          setInspectingWorkflow(false);
+        }
       })
       .catch(error => {
-        if (active) setWorkflowManifest({ workflowName: selectedFile, error: error.message || '工作流检查失败' });
+        if (active && inspectVersion === inspectVersionRef.current) {
+          setWorkflowManifest({ workflowName: selectedFile, error: error.message || '工作流检查失败' });
+          setInspectingWorkflow(false);
+        }
       });
     return () => { active = false; };
   }, [connected, selectedFile, workflowDir]);
 
   useEffect(() => {
-    if (selectedFile && !floating) void window.electronAPI.projectUpdateState({ workflow: selectedFile });
+    if (selectedFile) void window.electronAPI.projectUpdateState({ workflow: selectedFile }).catch(() => {});
   }, [floating, selectedFile]);
 
   const handleShowWorkflowDir = useCallback(async () => {
@@ -192,6 +217,7 @@ export function ComfyUIProvider({ children, floating = false }) {
     recentWorkflows,
     toggleFavoriteWorkflow,
     workflowManifest,
+    inspectingWorkflow,
     generationControls,
     setGenerationControls,
     showNodeControls,

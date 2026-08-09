@@ -1,5 +1,6 @@
 import { createPortal } from 'react-dom';
 import { useEffect, useRef, useState } from 'react';
+import { useI18n } from '../i18n/I18nContext.jsx';
 
 const LONG_PRESS_MS = 700;
 const DRAG_TIMEOUT_MS = 5000;
@@ -141,9 +142,10 @@ export function useFloatingCardDrag(payload) {
   };
 }
 
-export function DragGhost({ dragging, dragPoint, label = '拖入悬浮窗' }) {
+export function DragGhost({ dragging, dragPoint, label }) {
+  const { t } = useI18n();
   if (!dragging) return null;
   const style = dragPoint ? { left: dragPoint.x, top: dragPoint.y } : undefined;
-  const ghost = <div className="floating-card-drag-ghost" style={style} aria-live="polite"><strong>{label}</strong><span>松开载入</span></div>;
+  const ghost = <div className="floating-card-drag-ghost" style={style} aria-live="polite"><strong>{label || t('floatDragToFloat')}</strong><span>{t('floatReleaseHint')}</span></div>;
   return document.body ? createPortal(ghost, document.body) : ghost;
 }

@@ -16,10 +16,10 @@ test('normalizes fractional progress values without treating percentages as frac
   assert.equal(normalizeProgressEvent({ percent: 50 }).percent, 50);
 });
 
-test('retains the last known percentage when an event has no numeric progress', () => {
+test('marks a progress event without numeric progress as indeterminate', () => {
   const progress = normalizeProgressEvent({ stage: 'node', nodeType: 'KSampler' }, { percent: 42 });
-  assert.equal(progress.percent, 42);
-  assert.equal(progress.indeterminate, false);
+  assert.equal(progress.percent, null);
+  assert.equal(progress.indeterminate, true);
   assert.equal(progress.message, '正在执行 KSampler');
 });
 

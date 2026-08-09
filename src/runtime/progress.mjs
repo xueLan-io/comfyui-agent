@@ -11,7 +11,7 @@ function firstNumber(values) {
   return null;
 }
 
-function normalizePercent(data, previousPercent = null) {
+function normalizePercent(data) {
   const direct = firstNumber([data.percent, data.progress]);
   const current = firstNumber([data.value, data.current, data.step]);
   const total = firstNumber([data.max, data.total, data.steps]);
@@ -21,7 +21,6 @@ function normalizePercent(data, previousPercent = null) {
     percent = (current / total) * 100;
   }
   if (percent !== null && percent >= 0 && percent <= 1 && direct !== null) percent *= 100;
-  if (percent === null) percent = previousPercent;
   return percent === null ? null : Math.max(0, Math.min(100, Math.round(percent)));
 }
 
@@ -29,11 +28,11 @@ export function normalizeProgressEvent(event = {}, previous = null) {
   const data = event && typeof event === 'object' ? event : {};
   const current = firstNumber([data.value, data.current, data.step]);
   const total = firstNumber([data.max, data.total, data.steps]);
-  const nodePercent = normalizePercent({ percent: data.nodePercent, value: data.value, max: data.max }, previous?.nodePercent ?? null);
+  const nodePercent = normalizePercent({ percent: data.nodePercent, value: data.value, max: data.max });
   const overallPercent = data.overallPercent !== undefined
-    ? normalizePercent({ percent: data.overallPercent }, previous?.overallPercent ?? null)
+    ? normalizePercent({ percent: data.overallPercent })
     : null;
-  const percent = overallPercent ?? normalizePercent(data, previous?.percent ?? null);
+  const percent = overallPercent ?? normalizePercent(data);
   const node = data.nodeType || data.node || data.nodeId || '';
   const message = data.message || (node ? `正在执行 ${node}` : data.stage === 'retrying' ? '正在重试' : '正在生成');
 

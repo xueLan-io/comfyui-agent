@@ -47,6 +47,7 @@ const agentMethods = new Set([
   'createSession',
   'deleteSession',
   'useSession',
+  'recoverTasks',
 ]);
 
 let agent;
@@ -98,8 +99,11 @@ function publishState() {
 function wireEvents() {
   for (const eventType of EVENT_TYPES) {
     on(eventType, data => {
-      send({ type: 'event', eventType, data });
+      if (['agent:step', 'agent:tool-call', 'agent:tool-result', 'agent:error', 'agent:plan'].includes(eventType)) {
+        agent.sessionManager.appendExecutionEvent({ ...data, type: eventType });
+      }
       publishState();
+      send({ type: 'event', eventType, data });
     });
   }
 }
@@ -116,12 +120,20 @@ async function invoke(method, args = []) {
   if (method === 'session.getConversation') return agent.conversation.toJSON();
   if (method === 'session.renameProject') return agent.sessionManager.renameProject(...args);
   if (method === 'session.renameSession') return agent.sessionManager.renameSession(...args);
+  if (method === 'session.setState') {
+    agent.sessionManager.setSessionState(args[0] || {});
+    return agent.sessionManager.getSessionState();
+  }
+  if (method === 'session.flush') {
+    await agent.sessionManager.flush();
+    return true;
+  }
   if (method === 'project.set') {
-    agent.project.set(args[0], args[1]);
+    await agent.project.set(args[0], args[1]);
     return agent.project.get(args[0]);
   }
   if (method === 'project.update') {
-    for (const [field, value] of Object.entries(args[0] || {})) agent.project.set(field, value);
+    for (const [field, value] of Object.entries(args[0] || {})) await agent.project.set(field, value);
     return agent.sessionManager.getState();
   }
   if (method === 'task.get') return agent.taskManager.get(args[0]);
@@ -140,7 +152,11 @@ async function invoke(method, args = []) {
 
 async function start(config = {}) {
   ComfyUITool.setClient(new ComfyUIClient({ baseUrl: config.comfyBaseUrl || 'http://127.0.0.1:8188' }));
-  configureSkills({ systemEnabled: config.skills?.system, custom: config.skills?.custom });
+  configureSkills({
+    systemEnabled: config.skills?.system,
+    custom: config.skills?.custom,
+    external: config.skills?.external,
+  });
   agent = new Agent({
     llmConfig: config.llm || {},
     researchConfig: config.research || {},

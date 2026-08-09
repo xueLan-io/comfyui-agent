@@ -51,6 +51,7 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
     workflowFiles,
     workflowDir,
     workflowManifest,
+    inspectingWorkflow,
     generationControls,
     setShowNodeControls,
     handleShowWorkflowDir,
@@ -66,6 +67,9 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
     setPromptMode,
     status,
     statusMsg,
+    errorFeedback,
+    setErrorFeedback,
+    setFeedbackOpen,
   } = useAgent();
   const controlChangeCount = countControlChanges(generationControls);
   const promptProfile = workflowManifest?.promptProfile;
@@ -112,9 +116,9 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
     if (!result) return;
     const failed = (result.results || []).filter(item => item.status !== 'imported');
     if (result.imported?.length > 0 && failed.length === 0) {
-      showImportFeedback('ok', `已导入 ${result.imported.length} 个工作流`);
+      showImportFeedback('ok', t('wsImported', { n: result.imported.length }));
     } else if (result.imported?.length > 0) {
-      showImportFeedback('warn', `导入 ${result.imported.length} 个，${failed.length} 个失败：${failed.map(item => `${workflowDisplayName(item.name)} ${item.error || ''}`).join('、')}`);
+      showImportFeedback('warn', t('wsImportedFailed', { n: result.imported.length, failed: failed.length, items: failed.map(item => `${workflowDisplayName(item.name)} ${item.error || ''}`).join('、') }));
     } else if (failed.length > 0) {
       showImportFeedback('error', failed.map(item => `${workflowDisplayName(item.name)} ${item.error || ''}`).join('、'));
     }
@@ -125,7 +129,7 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
       const result = await window.electronAPI.selectWorkflowFiles();
       applyImportResult(result);
     } catch (error) {
-      showImportFeedback('error', error.message || '导入失败');
+      showImportFeedback('error', error.message || t('wsImportFailed'));
     }
   };
 
@@ -136,13 +140,13 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
     try {
       const paths = files.map(file => window.electronAPI.getPathForFile(file)).filter(Boolean);
       if (paths.length === 0) {
-        showImportFeedback('error', '无法读取拖入的文件');
+        showImportFeedback('error', t('wsCantReadDropped'));
         return;
       }
       const result = await importWorkflows(paths);
       applyImportResult(result);
     } catch (error) {
-      showImportFeedback('error', error.message || '导入失败');
+      showImportFeedback('error', error.message || t('wsImportFailed'));
     }
   };
 
@@ -165,20 +169,20 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
     const next = renameValue.trim();
     if (!next || !selectedFile) return;
     if (!/\.json$/i.test(next)) {
-      showImportFeedback('error', '文件名必须以 .json 结尾');
+      showImportFeedback('error', t('wsJsonRequired'));
       return;
     }
     if (/[\\/]/.test(next)) {
-      showImportFeedback('error', '文件名不能包含路径分隔符');
+      showImportFeedback('error', t('wsNoPathSeparators'));
       return;
     }
     try {
       await renameWorkflow(selectedFile, next);
       setRenameOpen(false);
       setMenuOpen(false);
-      showImportFeedback('ok', `已重命名为 ${next}`);
+      showImportFeedback('ok', t('wsRenamed', { name: next }));
     } catch (error) {
-      showImportFeedback('error', error.message || '重命名失败');
+      showImportFeedback('error', error.message || t('wsRenameFailed'));
     }
   };
 
@@ -193,9 +197,9 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
       await deleteWorkflow(name);
       setConfirmDelete(false);
       setMenuOpen(false);
-      showImportFeedback('ok', `已删除 ${workflowDisplayName(name)}`);
+      showImportFeedback('ok', t('wsDeleted', { name: workflowDisplayName(name) }));
     } catch (error) {
-      showImportFeedback('error', error.message || '删除失败');
+      showImportFeedback('error', error.message || t('wsDeleteFailed'));
     }
   };
 
@@ -284,6 +288,7 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
             </div>
           )}
             <p className="workflow-import-hint">{t('importHint')}</p>
+           {inspectingWorkflow && <div className="workflow-manifest-summary workflow-inspecting"><span>{t('wsInspecting')}</span></div>}
            {workflowManifest && <div className="workflow-manifest-summary"><span>{workflowManifest.modelType || workflowManifest.promptProfile?.family || t('genericWorkflow')}</span><span>{workflowManifest.nodeCount || 0} {t('nodes')}</span><span>{t('positive')} {positiveTargetCount} · {t('negative')} {negativeTargetCount}</span><span>{workflowManifest.capabilities?.modes?.join(' / ') || 'txt2img'}</span></div>}
            {importFeedback && <div className={`workflow-import-feedback ${importFeedback.type}`}><Icon name={importFeedback.type === 'ok' ? 'check' : 'circleAlert'} size={13} /><span>{importFeedback.text}</span></div>}
            {dragOver && <div className="workflow-drop-overlay"><Icon name="upload" size={20} /><span>{t('releaseToImport')}</span></div>}
@@ -303,7 +308,7 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
            {workflowManifest && <p className="prompt-template-summary">{promptProfile?.supportsNegative === false ? t('promptOnlyPositive') : t('promptTargetsSummary', { positive: positiveTargetCount, negative: negativeTargetCount })}</p>}
         </section>
 
-       {(status === 'error' || status === 'cancelled') && <div className={`status-bar ${status}`}><span className="status-indicator" /><span>{statusMsg || t(statusText[status])}</span></div>}
+        {(status === 'error' || status === 'cancelled') && <div className={`status-bar ${status}`}><span className="status-indicator" /><span>{statusMsg || t(statusText[status])}</span>{status === 'error' && <button className="btn btn-feedback" onClick={() => { setErrorFeedback({ error: statusMsg || t('wsRunFailed'), status }); setFeedbackOpen(true); }}><Icon name="circleAlert" size={13} />{t('wsSendFeedback')}</button>}</div>}
 
       </div>}
     </section>

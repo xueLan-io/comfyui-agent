@@ -9,6 +9,13 @@
   "links": [[1,1,0,2,0,"IMAGE"],[2,2,0,3,0,"IMAGE"]],
   "groups": [],
   "config": {},
-  "extra": {},
-  "version": 0.4
+  "version": 0.4,
+  "extra": {
+    "comfyAgent": {
+      "capabilities": {
+        "promptRequired": false,
+        "modes": ["upscale"]
+      }
+    }
+  }
 }

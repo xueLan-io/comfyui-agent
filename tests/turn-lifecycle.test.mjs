@@ -53,20 +53,20 @@ test('intent protocol normalizes query and confirmation fields', () => {
   assert.equal(decision.sourceTurnId, 'turn_1');
 });
 
-test('handleTurn keeps modeHint as a preference and writes one user message per turn', async () => {
+test('handleTurn suggests generation from the creative conversation without creating a preview', async () => {
   const agent = fakeTurnAgent([
     { intent: 'chat', action: 'reply', target: 'none', missing: [], confidence: 0.9 },
     { intent: 'generate', action: 'prepare', target: 'new', missing: [], confidence: 0.9 },
   ]);
 
   const reply = await agent.handleTurn({ text: 'explain the workflow', modeHint: 'generate' });
-  const preview = await agent.handleTurn({ text: 'make a cat', modeHint: 'answer' });
+  const suggestion = await agent.handleTurn({ text: 'make a cat', modeHint: 'answer' });
   const messages = agent.conversation.toJSON();
 
   assert.equal(reply.action, 'reply');
-  assert.equal(preview.action, 'prepare');
+  assert.equal(suggestion.action, 'suggest');
   assert.equal(messages.filter(message => message.role === 'user').length, 2);
-  assert.equal(messages.filter(message => message.role === 'agent').length, 1);
+  assert.equal(messages.filter(message => message.role === 'agent').length, 2);
   assert.equal(messages[0].modeHint, 'generate');
   assert.equal(messages[2].modeHint, 'answer');
 });

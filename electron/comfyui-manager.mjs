@@ -110,6 +110,7 @@ export class ComfyUIManager {
   }
 
   setStartupLockPath(filePath) {
+    if (this.startupLockHeld && this.startupLockPath && this.startupLockPath !== filePath) this._releaseStartupLock();
     this.startupLockPath = filePath || '';
     if (this.startupLockPath) {
       try { mkdirSync(dirname(this.startupLockPath), { recursive: true }); } catch {}
@@ -223,6 +224,7 @@ export class ComfyUIManager {
     }
 
     const detail = this.logTail.at(-1);
+    if (this.process) this.stopOwned();
     this._setState('error', detail ? `ComfyUI 启动失败：${detail}` : 'ComfyUI 启动超时');
     return this.getState();
   }

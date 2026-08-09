@@ -26,7 +26,7 @@ test('coordinator keeps the execution lock until work settles after cancellation
     error => error.code === 'GENERATION_BUSY',
   );
   release();
-  assert.deepEqual(await cancelling, { cancelled: true, taskId: 'task-1' });
+  assert.deepEqual(await cancelling, { cancelled: true, settled: true, requestId: '', taskId: 'task-1', phase: 'cancelled' });
   assert.deepEqual(await execution, { cancelled: true });
   assert.deepEqual(cancelCalls, ['cancel']);
   assert.equal(coordinator.isBusy, false);
@@ -75,7 +75,7 @@ test('preview is consumed only after successful execution', async () => {
   assert.equal(coordinator.getPreview('preview-2'), null);
 });
 
-test('coordinator detaches a stuck execution after cancellation timeout', async () => {
+test('coordinator keeps a stuck execution locked after cancellation timeout', async () => {
   const coordinator = new ExecutionCoordinator();
   const execution = coordinator.execute({
     source: 'direct',
@@ -91,7 +91,50 @@ test('coordinator detaches a stuck execution after cancellation timeout', async 
 
   assert.equal(result.cancelled, true);
   assert.ok(Date.now() - started >= 4900);
-  assert.equal(coordinator.isBusy, false);
-  await coordinator.execute({ source: 'direct', owner: {}, work: async () => ({ recovered: true }) });
+  assert.equal(coordinator.isBusy, true);
+  await assert.rejects(
+    () => coordinator.execute({ source: 'direct', owner: {}, work: async () => ({ recovered: true }) }),
+    error => error.code === 'GENERATION_BUSY',
+  );
+  // The unresolved promise is intentionally retained to prove the lock is
+  // not released while remote observe/archive work is still alive.
+  void execution;
+});
+
+test('busy errors expose the active request owner and cancellation reports stopping', async () => {
+  const coordinator = new ExecutionCoordinator();
+  const execution = coordinator.execute({
+    source: 'direct',
+    requestId: 'request-1',
+    taskId: 'task-1',
+    owner: { projectId: 'project-1', sessionId: 'session-1' },
+    work: async () => new Promise(() => {}),
+    cancel: async () => {},
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  await assert.rejects(
+    () => coordinator.execute({ source: 'ai', owner: {}, work: async () => ({}) }),
+    error => error.code === 'GENERATION_BUSY'
+      && error.requestId === 'request-1'
+      && error.projectId === 'project-1'
+      && error.sessionId === 'session-1',
+  );
+  const result = await coordinator.cancel({ source: 'direct', taskId: 'task-1' });
+  assert.deepEqual(result, {
+    cancelled: true,
+    settled: false,
+    requestId: 'request-1',
+    taskId: 'task-1',
+    phase: 'stopping',
+  });
+  assert.deepEqual(coordinator.getState(), {
+    busy: true,
+    source: 'direct',
+    requestId: 'request-1',
+    taskId: 'task-1',
+    phase: 'stopping',
+    owner: { projectId: 'project-1', sessionId: 'session-1' },
+  });
   void execution;
 });

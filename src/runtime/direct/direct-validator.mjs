@@ -16,7 +16,9 @@ export function validateDirectRequest(request, workflow) {
     || (profile.positiveTargets || []).length;
 
   if (!request.positive.trim()) addCheck(checks, 'positive_prompt', 'error', 'Positive prompt cannot be empty');
-  if (promptTargetCount === 0) addCheck(checks, 'positive_prompt', 'error', 'Current workflow has no usable positive prompt input');
+  const promptRequired = workflow?.capabilities?.promptRequired !== false
+    && workflow?.promptProfile?.promptRequired !== false;
+  if (promptTargetCount === 0 && promptRequired) addCheck(checks, 'positive_prompt', 'error', 'Current workflow has no usable positive prompt input');
   if (workflow?.modelReady === false) {
     const missing = (workflow.missingModels || []).map(item => item.value).filter(Boolean).join(', ');
     addCheck(checks, 'models', 'error', `Workflow model files are missing${missing ? `: ${missing}` : ''}`);

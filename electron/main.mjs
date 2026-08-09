@@ -6,7 +6,7 @@ import { join, dirname, extname, isAbsolute, relative, resolve, basename } from 
 import { fileURLToPath } from 'url';
 import { readFile, readdir, stat, writeFile, mkdir, copyFile, unlink, rename, rm, realpath, lstat, mkdtemp } from 'fs/promises';
 import { createWriteStream, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { ComfyUITool, on, AgentEventTypes, configureSkills, skillManifest, createCustomSkill, SKILLS, CloudPolicyBlockedError, CloudPolicyRouter, createMcpHttpServer, createWebMcpServer } from '../src/agent/index.mjs';
 import { externalSkillConfig, loadExternalSkillFile, normalizeExternalSkill } from '../src/agent/skills/external.mjs';
 import { LLMProvider, resolveLLMRouting } from '../src/agent/llm/provider.mjs';
@@ -27,7 +27,7 @@ import { importWorkflowFiles, collectWorkflowFiles, deleteWorkflowFile, renameWo
 import { directGenerationRequest } from '../src/runtime/generation-contract.mjs';
 import { traceError, validateTaskTrace, assertTraceOwner } from '../src/runtime/trace-contract.mjs';
 import { verifyUpdateManifest } from '../src/runtime/update-signature.mjs';
-import { RequestLedger } from './request-ledger.mjs';
+import { RequestLedger, RequestStates } from './request-ledger.mjs';
 import { listGlobalPresets, createGlobalPreset, updateGlobalPreset, deleteGlobalPreset, copyGlobalPreset, markPresetUsed, rateGlobalPreset, composeGlobalPresets, replacePresetModel, copyPresetCover, importGlobalPreset, FORMAT, VERSION, assertInside } from '../src/runtime/global-presets.mjs';
 import { createPolicyEngine } from '../src/runtime/governance/policy-engine.mjs';
 import { AdmissionController } from '../src/runtime/governance/admission-controller.mjs';
@@ -445,6 +445,7 @@ function syncProjectPreferences() {
 
 async function commitCopies(comfyRoot, files, finalDir, subfolder) {
   const staged = [];
+  const usedNames = new Set();
   for (const file of files) {
     if (!file.filename || file.type === 'project') continue;
     const sourceBase = resolve(comfyRoot, ['input', 'temp'].includes(file.type) ? file.type : 'output');
@@ -456,7 +457,14 @@ async function commitCopies(comfyRoot, files, finalDir, subfolder) {
     const canonicalRelative = relative(sourceRoot, sourcePath);
     if (canonicalRelative.startsWith('..') || isAbsolute(canonicalRelative)) continue;
     if ((await lstat(source)).isSymbolicLink()) continue;
-    staged.push({ filename: basename(file.filename), source: sourcePath });
+    const originalName = basename(file.filename);
+    const extension = extname(originalName);
+    const stem = originalName.slice(0, originalName.length - extension.length);
+    let filename = originalName;
+    let suffix = 1;
+    while (usedNames.has(filename)) filename = `${stem}_${suffix++}${extension}`;
+    usedNames.add(filename);
+    staged.push({ filename, source: sourcePath });
   }
   if (staged.length === 0) return [];
   if (existsSync(finalDir) && staged.every(entry => existsSync(join(finalDir, entry.filename)))) {
@@ -477,29 +485,53 @@ async function commitCopies(comfyRoot, files, finalDir, subfolder) {
 }
 
 async function archiveProjectResult(result, owner = {}) {
-  if (owner.projectId && agent?.sessionManager.activeProjectId !== owner.projectId) {
-    throw new Error('Generation owner session is no longer active');
+  const mediaKey = item => JSON.stringify([
+    item?.path || item?.url || item?.filename || item?.name || '',
+    item?.subfolder || '',
+    item?.type || '',
+    item?.mediaType || item?.kind || '',
+    item?.assetId || '',
+  ]);
+  const uniqueMedia = items => [...new Map((items || []).map(item => [mediaKey(item), item])).values()];
+  result = {
+    ...result,
+    images: uniqueMedia(result?.images),
+    videos: uniqueMedia(result?.videos),
+  };
+  const existingTask = result.taskId ? agent?.taskManager?.get(result.taskId) : null;
+  if (existingTask?.archiveStatus === 'archived' && existingTask.result?.archiveStatus === 'archived') {
+    return existingTask.result;
   }
-  if (owner.sessionId && agent?.sessionManager.activeSessionId !== owner.sessionId) {
-    throw new Error('Generation owner session is no longer active');
+  const sessionManager = agent?.sessionManager;
+  const project = sessionManager?.getProject(owner.projectId || sessionManager?.activeProjectId);
+  if (!project?.dir) {
+    return { ...result, archiveStatus: 'archive_failed', rawResultAvailable: true, retryable: true, archiveError: 'Project directory is unavailable' };
   }
-  if (result?.source === 'direct' && agent?.project && result.compiledPrompt) {
-    await agent.project.set('lastPrompt', result.compiledPrompt.positive || '');
-    await agent.project.set('lastCompiledPrompt', {
+  const projectMemory = owner.projectId && owner.projectId === sessionManager?.activeProjectId
+    ? agent.project
+    : null;
+  if (result?.source === 'direct' && projectMemory && result.compiledPrompt) {
+    await projectMemory.set('lastPrompt', result.compiledPrompt.positive || '');
+    await projectMemory.set('lastCompiledPrompt', {
       positive: result.compiledPrompt.positive || '',
       negative: result.compiledPrompt.negative || '',
       tags: [],
       narrative: '',
       constraints: {},
     });
-    await agent.project.set('lastGenerationSource', result.source);
+    await projectMemory.set('lastGenerationSource', result.source);
   }
-  if ((!result?.images?.length && !result?.videos?.length) || !comfyManager.portableRoot) return result;
-  const project = agent?.sessionManager.getProject(owner.projectId || agent?.sessionManager.activeProjectId);
-  if (owner.projectId && agent?.sessionManager.activeProjectId !== owner.projectId) {
-    throw new Error('Generation owner session is no longer active');
+  if (!result?.images?.length && !result?.videos?.length) {
+    const settled = { ...result, archiveStatus: 'skipped', media: [] };
+    if (existingTask) {
+      agent.taskManager.settleComplete(result.taskId, { result: settled });
+      await agent.taskManager.persist();
+    }
+    return settled;
   }
-  if (!project?.dir) return result;
+  if (!comfyManager.portableRoot) {
+    return { ...result, archiveStatus: 'archive_failed', rawResultAvailable: true, retryable: true, archiveError: 'ComfyUI portable root is unavailable' };
+  }
   const ownerSessionId = owner.sessionId || agent?.sessionManager.activeSessionId;
   const taskId = result.taskId || '';
   const imageDir = join(project.dir, 'images', taskId);
@@ -511,6 +543,8 @@ async function archiveProjectResult(result, owner = {}) {
   );
   const archived = imageEntries.map(entry => ({
     ...entry,
+    mediaType: 'image',
+    assetId: entry.assetId || `asset_${result.taskId || taskId || Date.now()}_${entry.filename}`,
     projectId: project.id,
     sessionId: ownerSessionId,
     source: result.source || 'direct',
@@ -528,6 +562,8 @@ async function archiveProjectResult(result, owner = {}) {
   );
   const archivedVideos = videoEntries.map(entry => ({
     ...entry,
+    mediaType: 'video',
+    assetId: entry.assetId || `asset_${result.taskId || taskId || Date.now()}_${entry.filename}`,
     projectId: project.id,
     sessionId: ownerSessionId,
     source: result.source || 'direct',
@@ -538,6 +574,7 @@ async function archiveProjectResult(result, owner = {}) {
   }));
   if (result.isVideoWorkflow && (result.videos?.length || 0) === 0 && (result.images?.length || 0) > 1) {
     try {
+      await mkdir(videoDir, { recursive: true });
       const { composeVideo } = await import('../src/agent/video/video-compose.mjs');
       const frameFiles = readdirSync(imageDir)
         .filter(name => /\.(png|jpe?g|webp)$/i.test(name))
@@ -553,10 +590,16 @@ async function archiveProjectResult(result, owner = {}) {
           filename: videoFilename,
           subfolder: join('videos', taskId),
           type: 'project',
+          mediaType: 'video',
+          assetId: `asset_${taskId}_${videoFilename}`,
           projectId: project.id,
           sessionId: ownerSessionId,
-          source: result.source || 'direct',
-        });
+           source: result.source || 'direct',
+           positive: result.compiledPrompt?.positive || result.positive || '',
+           negative: result.compiledPrompt?.negative || result.negative || '',
+           workflowName: result.workflowName || result.workflow?.name || '',
+           parameters: result.settings || result.parameters || {},
+         });
       }
      } catch (error) {
        const failure = new Error(`帧序列合成失败：${error.message}`, { cause: error });
@@ -565,8 +608,9 @@ async function archiveProjectResult(result, owner = {}) {
      }
   }
   if (archived.length === 0 && archivedVideos.length === 0) return result;
-  if (archived.length > 0) await agent.project.set('lastImages', archived);
-  const existingAssets = (agent.project.get('assets') || []).filter(asset => asset.taskId !== taskId);
+   if (projectMemory && archived.length > 0) await projectMemory.set('lastImages', archived);
+   if (projectMemory && archivedVideos.length > 0) await projectMemory.set('lastVideos', archivedVideos);
+   const existingAssets = (project.assets || []).filter(asset => asset.taskId !== taskId);
   const assets = [...existingAssets, ...archived.map(image => ({
     ...image,
     taskId,
@@ -577,9 +621,26 @@ async function archiveProjectResult(result, owner = {}) {
     taskId,
     createdAt: Date.now(),
   }))];
-  await agent.project.set('assets', assets);
-  const archivedResult = { ...result, images: archived };
-  if (archivedVideos.length > 0) archivedResult.videos = archivedVideos;
+   project.assets = assets;
+   if (projectMemory) await projectMemory.set('assets', assets);
+  const archivedResult = {
+    ...result,
+    images: archived,
+    videos: archivedVideos,
+    media: [...archived, ...archivedVideos],
+  };
+  if (projectMemory) {
+    await projectMemory.set('lastResult', archivedResult);
+    await projectMemory.set('lastImages', archived);
+  }
+  if (existingTask) {
+    agent.taskManager.update(result.taskId, { archiveStatus: 'archived', result: archivedResult });
+    await agent.taskManager.persist();
+  }
+  if (sessionManager?.activeProjectId === project.id && sessionManager?.activeSessionId === ownerSessionId) {
+    sessionManager.setSessionState({ lastTaskId: result.taskId, taskStatus: 'completed', currentArtifactId: archived[0]?.assetId || archivedVideos[0]?.assetId || '', lastResult: archivedResult });
+    await sessionManager.flush();
+  }
   await persistTaskTrace(result.taskId, archivedResult);
   return archivedResult;
 }
@@ -741,7 +802,7 @@ async function restartEmbeddedMcp() {
 }
 
 function directTaskId(requestId = '') {
-  return `direct_task_${requestId}_${Math.random().toString(36).slice(2, 8)}`;
+  return `direct_task_${requestId}_${randomUUID()}`;
 }
 
 async function createDirectTask(preview) {
@@ -750,6 +811,7 @@ async function createDirectTask(preview) {
   await agent.taskManager.create({
     id: taskId,
     requestId: preview.requestId,
+    turnId: preview.turnId || '',
     kind: 'direct_run',
     message: preview.positive || '',
     workflowName: preview.workflow?.name || '',
@@ -780,7 +842,13 @@ function completeDirectTask(taskId, result = {}, error = null) {
   const state = error ? (error.stage === 'archive' ? 'archive_failed' : 'failed') : result.cancelled ? 'cancelled' : 'completed';
   if (!error && !result.cancelled && task.state === 'executing') updateDirectTask(taskId, 'observing', { promptId: result.promptId || task.promptId || '' });
   if (task.state !== state) updateDirectTask(taskId, state, { promptId: result.promptId || task.promptId || '' });
-  agent.taskManager.complete(taskId, { result, error });
+  if (error?.stage === 'archive') {
+    agent.taskManager.update(taskId, { archiveStatus: 'archive_failed', status: 'archive_failed', state: 'archive_failed', result, error, lastError: error.message || 'Archive failed' });
+  } else if (!error && !result.cancelled) {
+    agent.taskManager.settleComplete(taskId, { result });
+  } else {
+    agent.taskManager.complete(taskId, { result, error });
+  }
   void agent.taskManager.persist();
   void persistTaskTrace(taskId, result).catch(() => {});
 }
@@ -881,12 +949,44 @@ function sendToRenderer(channel, data) {
   const owner = data && typeof data === 'object' ? data : {};
   const active = executionOwner();
   windowRegistry.send(channel, data, metadata => {
+    // Direct tasks can be owned by the floating window while the main
+    // renderer is still hydrating its session. Let each renderer apply its
+    // project/session/task filter instead of dropping the event here.
+    if (channel === 'direct:status' || channel === 'direct:progress') return true;
     if (owner.tenantId && owner.tenantId !== active.tenantId) return false;
     if (owner.projectId && active.projectId && owner.projectId !== active.projectId) return false;
     if (owner.sessionId && active.sessionId && owner.sessionId !== active.sessionId) return false;
     return true;
   });
 }
+
+function rendererKind(window) {
+  return window === floatingWindow ? 'floating' : 'main';
+}
+
+function attachRendererDiagnostics(window, kind) {
+  window.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame || errorCode === -3 || String(validatedURL || '').startsWith('data:text/html')) return;
+    console.error(`[renderer:${kind}] load failed ${errorCode}: ${errorDescription} (${validatedURL})`);
+    window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<h1>ComfyUI Agent ${kind} window failed to load</h1><p>${errorDescription || '资源加载失败'}</p><p>请检查应用资源或开发服务器，然后重新打开窗口。</p>`)}`);
+  });
+  window.webContents.on('render-process-gone', (_event, details) => {
+    console.error(`[renderer:${kind}] process gone`, details);
+  });
+  window.webContents.on('unresponsive', () => {
+    console.error(`[renderer:${kind}] unresponsive`);
+  });
+}
+
+ipcMain.on('renderer:error', (event, details = {}) => {
+  const source = BrowserWindow.fromWebContents(event.sender);
+  console.error(`[renderer:${rendererKind(source)}]`, {
+    message: details.message || 'unknown renderer error',
+    stack: details.stack || '',
+    componentStack: details.componentStack || '',
+    reportedKind: details.kind || '',
+  });
+});
 
 function showMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) createWindow();
@@ -928,6 +1028,7 @@ function showFloatingWindow({ focus = true } = {}) {
     show: focus,
     webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false },
   });
+  attachRendererDiagnostics(floatingWindow, 'floating');
   windowRegistry.register('floating', floatingWindow.webContents, { kind: 'floating' });
   floatingWindow.setBackgroundColor('#00000000');
   floatingWindow.setAlwaysOnTop(true, 'floating');
@@ -1015,6 +1116,7 @@ function createWindow() {
   mainWindow.on('close', () => {
     if (!quitRequested && floatingWindow && !floatingWindow.isDestroyed()) floatingWindow.destroy();
   });
+  attachRendererDiagnostics(mainWindow, 'main');
   mainWindow.on('closed', () => {
     windowRegistry.unregister('main');
     mainWindow = null;
@@ -1094,6 +1196,12 @@ ipcMain.handle('floating:move', (_, { deltaX = 0, deltaY = 0 } = {}) => {
   return next;
 });
 ipcMain.handle('app:version', () => app.getVersion());
+ipcMain.handle('app:open-external', async (_, { url = '' } = {}) => {
+  const target = String(url).trim();
+  if (!/^https:\/\/github\.com\/xueLan-io\/comfyui-agent\/issues\/new(?:\?|$)/i.test(target)) throw new Error('仅允许打开项目 GitHub 反馈页面');
+  await shell.openExternal(target);
+  return true;
+});
 ipcMain.handle('app:update-check', () => checkForUpdate());
 ipcMain.handle('app:update-download', (_, manifest) => downloadUpdate(manifest));
 ipcMain.handle('app:update-install', () => installUpdate());
@@ -1176,6 +1284,8 @@ ipcMain.handle('floating:drag-cancel', (_, { dragId } = {}) => {
 
 function initAgent(config) {
   const llmConfig = config.llm || {};
+  const previousProjectId = agent?.sessionManager?.activeProjectId || '';
+  const previousSessionId = agent?.sessionManager?.activeSessionId || '';
   for (const unsubscribe of agentEventUnsubscribers) unsubscribe();
   agentEventUnsubscribers = [];
     agent = new AgentProcessClient({
@@ -1193,12 +1303,16 @@ function initAgent(config) {
       void persistTaskTrace(data.taskId).catch(() => {});
     }
   });
-  bindAgentEvent(AgentEventTypes.STEP, (data) => sendToRenderer('agent:step', data));
-  bindAgentEvent(AgentEventTypes.TOOL_CALL, (data) => sendToRenderer('agent:tool-call', data));
-  bindAgentEvent(AgentEventTypes.TOOL_RESULT, (data) => sendToRenderer('agent:tool-result', data));
+  const forwardExecutionEvent = (channel, data) => {
+    sendToRenderer(channel, data);
+    sendToRenderer('project:state', agent.sessionManager.getState());
+  };
+  bindAgentEvent(AgentEventTypes.STEP, (data) => forwardExecutionEvent('agent:step', data));
+  bindAgentEvent(AgentEventTypes.TOOL_CALL, (data) => forwardExecutionEvent('agent:tool-call', data));
+  bindAgentEvent(AgentEventTypes.TOOL_RESULT, (data) => forwardExecutionEvent('agent:tool-result', data));
   bindAgentEvent(AgentEventTypes.MESSAGE, (data) => sendToRenderer('agent:message', data));
-  bindAgentEvent(AgentEventTypes.ERROR, (data) => sendToRenderer('agent:error', data));
-  bindAgentEvent(AgentEventTypes.PLAN, (data) => sendToRenderer('agent:plan', data));
+  bindAgentEvent(AgentEventTypes.ERROR, (data) => forwardExecutionEvent('agent:error', data));
+  bindAgentEvent(AgentEventTypes.PLAN, (data) => forwardExecutionEvent('agent:plan', data));
   bindAgentEvent(AgentEventTypes.TASK, (data) => sendToRenderer('agent:task', data));
   bindAgentEvent(AgentEventTypes.TRACE, (data) => sendToRenderer('agent:trace', data));
   bindAgentEvent(AgentEventTypes.PROGRESS, (data) => sendToRenderer('agent:progress', data));
@@ -1212,8 +1326,8 @@ function initAgent(config) {
     comfyRoot: comfyManager.portableRoot ? join(comfyManager.portableRoot, 'ComfyUI') : '',
     userDataPath: app.getPath('userData'),
     comfyBaseUrl: comfyManager.baseUrl,
-     projectId: agent?.sessionManager?.activeProjectId || '',
-     sessionId: agent?.sessionManager?.activeSessionId || '',
+      projectId: previousProjectId,
+      sessionId: previousSessionId,
     skills: config.skills || {},
   });
   return started.then(async result => {
@@ -1223,13 +1337,21 @@ function initAgent(config) {
 }
 
 function bindAgentEvent(type, handler) {
-  agentEventUnsubscribers.push(on(type, handler));
+  agentEventUnsubscribers.push(on(type, data => {
+    const task = data?.taskId ? agent?.taskManager?.get?.(data.taskId) : null;
+    // Request-scoped events must retain their original owner. Do not infer one
+    // from the mutable active session, which can have changed since submission.
+    const owner = {
+      projectId: data?.projectId || task?.projectId || '',
+      sessionId: data?.sessionId || task?.sessionId || '',
+    };
+    handler({ ...data, ...owner });
+  }));
 }
 
 function startAgent(config) {
   if (agentReadyPromise) return agentReadyPromise;
   if (agent?.isAlive) return Promise.resolve(agent);
-  if (agent) agent = null;
 
   const promise = initAgent(config)
     .then(() => {
@@ -1273,7 +1395,7 @@ async function recoverAgentTasks() {
       if (task) {
         agent.taskManager.update(item.taskId, { state: 'archive_failed', status: 'archive_failed', lastError: error.message, error: error.message });
         await agent.taskManager.persist();
-        if (task.requestId) requestLedger.fail(task.requestId, error);
+        if (task.requestId) requestLedger.archiveFailed(task.requestId, task.result || null, error);
       }
     }
   }
@@ -1876,6 +1998,8 @@ ipcMain.handle('agent:run', async (_, { message, workflowName, clientId, control
   const owner = executionOwner();
   return executionCoordinator.execute({
     source: 'ai',
+    requestId,
+    turnId: turn.turnId || '',
     owner,
     work: async () => {
       const options = generationOptions(clientId, controls);
@@ -1900,13 +2024,16 @@ ipcMain.handle('agent:prepare', async (_, { message, workflowName, clientId, con
   if (comfyState.status !== 'ready') throw new Error(comfyState.message || 'ComfyUI is not ready');
   const owner = executionOwner();
   const requestId = controls.requestId || `ai_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const turnId = controls.turnId || '';
   const fingerprint = JSON.stringify({ source: 'ai', message, workflowName, controls });
-  const existing = requestLedger.begin(requestId, { source: 'ai', fingerprint, ...owner });
+  const existing = requestLedger.begin(requestId, { source: 'ai', fingerprint, turnId, ...owner });
   if (existing?.state === 'completed') return existing.result || existing.preview;
   if (existing?.state === 'executing') return requestLedger.snapshot(requestId);
   if (existing.preview) return existing.preview;
   return executionCoordinator.execute({
     source: 'ai',
+    requestId,
+    turnId,
     owner,
     work: async entry => {
        const options = { ...generationOptions(clientId, controls), requestId };
@@ -1914,7 +2041,7 @@ ipcMain.handle('agent:prepare', async (_, { message, workflowName, clientId, con
         ? await agent.prepareWithWorkflow(message, workflowName, options)
         : await agent.prepareGeneration(message, options);
       if (preview?.previewId) {
-        requestLedger.update(requestId, { state: 'prepared', taskId: agent.taskId, previewId: preview.previewId, preview });
+        requestLedger.update(requestId, { state: 'prepared', taskId: agent.taskId, turnId, previewId: preview.previewId, preview });
         executionCoordinator.registerPreview({
           source: 'ai',
           previewId: preview.previewId,
@@ -1935,13 +2062,16 @@ ipcMain.handle('agent:generate', async (_, { message, workflowName, clientId, co
   if (comfyState.status !== 'ready') throw new Error(comfyState.message || 'ComfyUI is not ready');
   const owner = executionOwner();
   const requestId = controls.requestId || `ai_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const turnId = controls.turnId || '';
   const fingerprint = JSON.stringify({ source: 'ai', message, workflowName, controls });
-  const existing = requestLedger.begin(requestId, { source: 'ai', fingerprint, ...owner });
+  const existing = requestLedger.begin(requestId, { source: 'ai', fingerprint, turnId, ...owner });
   if (existing?.state === 'completed') return existing.result || existing.preview;
   if (existing?.state === 'executing') return requestLedger.snapshot(requestId);
   if (existing.preview) return existing.preview;
   return executionCoordinator.execute({
     source: 'ai',
+    requestId,
+    turnId,
     owner,
     work: async entry => {
         const preview = await agent.prepareGeneration(message, {
@@ -1953,7 +2083,7 @@ ipcMain.handle('agent:generate', async (_, { message, workflowName, clientId, co
         workflowName,
       });
       if (preview?.previewId) {
-        requestLedger.update(requestId, { state: 'prepared', taskId: agent.taskId, previewId: preview.previewId, preview });
+        requestLedger.update(requestId, { state: 'prepared', taskId: agent.taskId, turnId, previewId: preview.previewId, preview });
         executionCoordinator.registerPreview({
           source: 'ai',
           previewId: preview.previewId,
@@ -1969,6 +2099,7 @@ ipcMain.handle('agent:generate', async (_, { message, workflowName, clientId, co
 });
 
 ipcMain.handle('direct:prepare', async (_, { request = {} } = {}) => {
+  await startAgent(getStoredConfig());
   const normalized = directGenerationRequest({
     ...request,
     projectId: request.projectId || agent?.sessionManager.activeProjectId,
@@ -1979,8 +2110,9 @@ ipcMain.handle('direct:prepare', async (_, { request = {} } = {}) => {
   if (agent && normalized.projectId && normalized.sessionId
     && (normalized.projectId !== agent.sessionManager.activeProjectId
       || normalized.sessionId !== agent.sessionManager.activeSessionId)) {
-    await agent.useSession(normalized.projectId, normalized.sessionId);
-    if (agent) sendToRenderer('project:state', agent.sessionManager.getState());
+    const error = new Error('生成请求所属会话已变化，请先切换到目标会话后再生成');
+    error.code = 'GENERATION_OWNER_MISMATCH';
+    throw error;
   }
   const owner = executionOwner(normalized);
   sendToRenderer('direct:status', {
@@ -1998,6 +2130,8 @@ ipcMain.handle('direct:prepare', async (_, { request = {} } = {}) => {
       source: 'direct',
       requestId: normalized.requestId,
       ...owner,
+      taskId: normalized.requestId,
+      phase: 'preparing',
       status: 'failed',
       uiStatus: 'error',
       message,
@@ -2014,7 +2148,7 @@ ipcMain.handle('direct:prepare', async (_, { request = {} } = {}) => {
     nodeOverrides: normalized.nodeOverrides,
     media: normalized.media,
   });
-  const existing = requestLedger.begin(normalized.requestId, { source: 'direct', fingerprint, ...owner });
+    const existing = requestLedger.begin(normalized.requestId, { source: 'direct', fingerprint, turnId: normalized.turnId || '', ...owner });
   if (existing.preview) return existing.preview;
   if (['completed', 'failed', 'cancelled'].includes(existing.state)) {
     const error = new Error('该请求已经结束，不能使用相同 requestId 重新提交');
@@ -2022,16 +2156,22 @@ ipcMain.handle('direct:prepare', async (_, { request = {} } = {}) => {
     error.requestId = normalized.requestId;
     throw error;
   }
-  if (existing.state === 'executing' || existing.state === 'observing') {
+    if (existing.state === 'executing' || existing.state === 'observing') {
     const error = new Error('该请求仍在执行或等待恢复，拒绝重复提交');
     error.code = 'REQUEST_IN_PROGRESS';
     error.requestId = normalized.requestId;
     throw error;
-  }
-  service.setWorkflowDir(owner.workflowDir);
+    }
+   requestLedger.update(normalized.requestId, { state: RequestStates.PREPARING, ...owner });
+   if (agent?.sessionManager.activeProjectId === owner.projectId && agent?.sessionManager.activeSessionId === owner.sessionId) {
+     agent.sessionManager.setSessionState({ requestId: normalized.requestId, turnId: normalized.turnId || '', taskStatus: 'preparing', state: 'preparing' });
+   }
+   service.setWorkflowDir(owner.workflowDir);
   const prepareAbortController = new AbortController();
   return executionCoordinator.execute({
     source: 'direct',
+    requestId: normalized.requestId,
+    turnId: normalized.turnId || '',
     taskId: normalized.requestId,
     owner,
     cancel: async () => {
@@ -2049,18 +2189,42 @@ ipcMain.handle('direct:prepare', async (_, { request = {} } = {}) => {
           uiStatus: 'preparing',
           message: '正在读取工作流和检查节点...',
         });
-        preview = await service.prepare(normalized, { sandboxInput: directSandboxInput() });
+        // Preparing a workflow is expected to be quick. Do not leave the UI
+        // waiting forever when a worker or workflow inspection call wedges.
+        let prepareTimer;
+        try {
+          preview = await Promise.race([
+            service.prepare(normalized, { sandboxInput: directSandboxInput(), signal: prepareAbortController.signal }),
+            new Promise((_, reject) => {
+              prepareTimer = setTimeout(() => {
+                prepareAbortController.abort();
+                const error = new Error('生成准备超时（30 秒），请检查 ComfyUI 连接后重试');
+                error.code = 'REQUEST_TIMEOUT';
+                reject(error);
+              }, 30_000);
+            }),
+          ]);
+        } finally {
+          clearTimeout(prepareTimer);
+        }
         if (entry.cancelRequested || prepareAbortController.signal.aborted) {
           service.discardPreview(preview.previewId);
           throw Object.assign(new Error('Direct generation cancelled'), { code: 'GENERATION_CANCELLED' });
         }
         preview.taskId = await createDirectTask(preview);
-        requestLedger.update(normalized.requestId, { state: 'prepared', taskId: preview.taskId, previewId: preview.previewId, preview });
+        requestLedger.update(normalized.requestId, { state: RequestStates.PREPARED, taskId: preview.taskId, previewId: preview.previewId, preview });
+        if (agent?.sessionManager.activeProjectId === owner.projectId && agent?.sessionManager.activeSessionId === owner.sessionId) {
+          agent.sessionManager.setSessionState({ requestId: normalized.requestId, turnId: normalized.turnId || '', lastTaskId: preview.taskId, taskStatus: 'prepared', state: 'awaiting_confirmation' });
+        }
         await agent?.recordConversationMessage?.('user', normalized.positive || '', {
           intent: 'generate',
           action: 'prepare',
           turnId: normalized.turnId || '',
-          attachments: [...(normalized.media?.images || []), ...(normalized.media?.videos || [])],
+           attachments: [
+             ...(normalized.media?.images || []),
+             ...(normalized.media?.masks || []),
+             ...(normalized.media?.videos || []),
+           ],
         });
         if (agent) sendToRenderer('project:state', agent.sessionManager.getState());
         executionCoordinator.registerPreview({
@@ -2089,6 +2253,8 @@ ipcMain.handle('direct:prepare', async (_, { request = {} } = {}) => {
           source: 'direct',
           requestId: normalized.requestId,
           ...owner,
+          taskId: preview?.taskId || normalized.requestId,
+          phase: 'preparing',
           status: 'failed',
           uiStatus: 'error',
           message: error.message || '工作流检查失败',
@@ -2107,12 +2273,14 @@ ipcMain.handle('direct:get-preview', async (_, { previewId } = {}) => {
 });
 
 ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options = {} } = {}) => {
+  await startAgent(getStoredConfig());
   const comfyState = await comfyManager.ensureStarted();
   if (comfyState.status !== 'ready') throw new Error(comfyState.message || 'ComfyUI is not ready');
   const service = ensureDirectService();
   const preview = service.getPreview(previewId);
   if (!preview) throw new Error('Direct generation preview expired; prepare it again');
-  const owner = executionOwner(preview);
+  assertPreviewOwner(preview);
+  const owner = executionOwner();
   const requestId = preview.requestId || '';
     const taskId = preview.taskId || requestId;
   assertConfirmationBinding({ confirmation: options.confirmation, expectedDigest: preview.requestDigest, requestId, previewId });
@@ -2123,6 +2291,8 @@ ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options
   const abortController = new AbortController();
   return executionCoordinator.execute({
     source: 'direct',
+    requestId,
+    turnId: preview.turnId || '',
     taskId,
     owner,
     previewId,
@@ -2132,12 +2302,17 @@ ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options
     },
     work: async entry => {
       const generationStartedAt = Date.now();
-      requestLedger.update(requestId, { state: 'executing', taskId, previewId, ...owner });
+      let archivePhase = false;
+       requestLedger.update(requestId, { state: RequestStates.EXECUTING, taskId, previewId, ...owner });
+       if (agent?.sessionManager.activeProjectId === owner.projectId && agent?.sessionManager.activeSessionId === owner.sessionId) {
+         agent.sessionManager.setSessionState({ requestId, turnId: preview.turnId || '', lastTaskId: taskId, taskStatus: 'executing', state: 'executing' });
+       }
       updateDirectTask(taskId, 'executing', { currentStep: 'comfyui', currentAttempt: 1 });
       sendToRenderer('direct:status', {
         source: 'direct',
         requestId,
         ...directContext,
+        taskId,
         status: 'running',
         uiStatus: 'running',
         message: '\u6b63\u5728\u6267\u884c\u539f\u6587\u63d0\u793a\u8bcd',
@@ -2186,19 +2361,36 @@ ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options
             constraints: preview?.constraints || {},
           },
         });
-         let archived;
-         try {
-           archived = await archiveProjectResult(taskResult, owner);
-         } catch (error) {
-           completeDirectTask(taskId, {}, { message: error.message, stage: 'archive' });
+          let archived;
+           try {
+             archivePhase = true;
+             archived = await archiveProjectResult(taskResult, owner);
+            if (archived.archiveStatus === 'archive_failed') {
+               const archiveError = new Error(archived.archiveError || '生成结果归档失败');
+               archiveError.code = 'ARCHIVE_FAILED';
+              archiveError.failureType = 'archive';
+              archiveError.stage = 'archive';
+              archiveError.archiveResult = archived;
+              completeDirectTask(taskId, archived, { message: archiveError.message, stage: 'archive' });
+              requestLedger.update(requestId, { state: 'archive_failed', result: archived, error: { message: archiveError.message, code: archiveError.code } });
+              throw archiveError;
+            }
+          } catch (error) {
+         completeDirectTask(taskId, error.archiveResult || {}, { message: error.message, stage: 'archive' });
            requestLedger.update(requestId, { state: 'archive_failed', error: { message: error.message, code: error.code || 'ARCHIVE_FAILED' } });
            throw error;
          }
         completeDirectTask(taskId, archived);
         requestLedger.complete(requestId, archived);
-        await agent?.recordConversationMessage?.('agent', 'Generated ' + (archived.images?.length || 0) + ' image(s).', {
+        const completionMessageId = `direct:${requestId}:completed`;
+        await agent?.recordConversationMessage?.('agent', 'Generated ' + ((archived.media || archived.images || []).length || 0) + ' media item(s).', {
           kind: 'completed',
+          messageId: completionMessageId,
+          directTaskId: taskId,
+          requestId,
           images: archived.images || [],
+          videos: archived.videos || [],
+          media: archived.media || [...(archived.images || []), ...(archived.videos || [])],
           prompt: edits.positive || preview.positive || '',
           negative: edits.negative || preview.negative || '',
           turnId: preview.turnId || '',
@@ -2208,23 +2400,28 @@ ipcMain.handle('direct:run-prepared', async (_, { previewId, edits = {}, options
           source: 'direct',
           requestId,
           ...directContext,
-           status: 'completed',
+          taskId,
+          status: 'completed',
            uiStatus: 'complete',
            message: '\u76f4\u63a5\u751f\u6210\u5df2\u5b8c\u6210',
+           messageId: completionMessageId,
+           directTaskId: taskId,
            result: archived,
         });
         return archived;
       } catch (error) {
-        const status = entry.cancelRequested ? 'cancelled' : 'failed';
+         const archiveFailed = archivePhase || error?.code === 'ARCHIVE_FAILED' || error?.failureType === 'archive';
+         const status = archiveFailed ? 'archive_failed' : entry.cancelRequested ? 'cancelled' : 'failed';
         sendToRenderer('direct:status', {
           source: 'direct',
           requestId,
           ...directContext,
+          taskId,
           status,
-          uiStatus: status === 'cancelled' ? 'idle' : 'error',
-          message: status === 'cancelled' ? '\u76f4\u63a5\u751f\u6210\u5df2\u53d6\u6d88' : error.message,
-        });
-        if (entry.cancelRequested) {
+           uiStatus: status === 'cancelled' ? 'idle' : 'error',
+           message: status === 'cancelled' ? '\u76f4\u63a5\u751f\u6210\u5df2\u53d6\u6d88' : error.message,
+         });
+         if (entry.cancelRequested && !archiveFailed) {
           const cancelled = { cancelled: true, taskId, source: 'direct' };
           completeDirectTask(taskId, cancelled);
           requestLedger.update(requestId, { state: 'cancelled', result: cancelled });
@@ -2253,14 +2450,19 @@ ipcMain.handle('direct:cancel', async () => {
   const entry = executionCoordinator.active;
   const result = await executionCoordinator.cancel({ source: 'direct', taskId: entry?.taskId || '' });
   if (result.cancelled && entry) {
+    if (entry.requestId) requestLedger.update(entry.requestId, {
+      state: result.settled ? 'cancelled' : 'stopping',
+      taskId: entry.taskId,
+      result: result.settled ? { cancelled: true, taskId: entry.taskId } : null,
+    });
     sendToRenderer('direct:status', {
       source: 'direct',
-      requestId: entry.taskId,
+      requestId: entry.requestId || entry.taskId,
       taskId: entry.taskId,
       ...entry.owner,
-      status: 'cancelled',
-      uiStatus: 'idle',
-      message: '\u76f4\u63a5\u751f\u6210\u5df2\u53d6\u6d88',
+      status: result.settled ? 'cancelled' : 'stopping',
+      uiStatus: result.settled ? 'idle' : 'stopping',
+      message: result.settled ? '\u76f4\u63a5\u751f\u6210\u5df2\u53d6\u6d88' : '\u53d6\u6d88\u8bf7\u6c42\u5df2\u53d1\u9001\uff0c\u6b63\u5728\u7b49\u5f85\u540e\u53f0\u4efb\u52a1\u6536\u5c3e',
     });
   }
   return result;
@@ -2333,7 +2535,7 @@ ipcMain.handle('agent:send', async (_, { message, workflowName, workflowManifest
 
 ipcMain.handle('agent:turn', async (_, turn = {}) => {
   await startAgent(getStoredConfig());
-  const owner = executionOwner({ sessionId: turn.sessionId });
+  const owner = executionOwner({ projectId: turn.projectId, sessionId: turn.sessionId });
   const requestId = turn.requestId || '';
   if (requestId) {
     const existing = requestLedger.get(requestId);
@@ -2364,6 +2566,7 @@ ipcMain.handle('agent:turn', async (_, turn = {}) => {
           recordConfirmation: turn.recordConfirmation !== false,
            confirmation: turn.confirmation || {},
            allowPolicyOverride: turn.allowPolicyOverride === true,
+           skipUserMessage: turn.skipUserMessage === true,
            executionPolicy: turn.executionPolicy || undefined,
         });
       } catch (error) {
@@ -2387,7 +2590,7 @@ ipcMain.handle('agent:turn', async (_, turn = {}) => {
         return result;
       }
       if (requestId && response?.action === 'prepare' && response.preview?.previewId) {
-        requestLedger.begin(requestId, { source: 'ai', previewId: response.preview.previewId, ...owner });
+        requestLedger.begin(requestId, { source: 'ai', turnId: turn.turnId || '', previewId: response.preview.previewId, ...owner });
         requestLedger.update(requestId, { state: 'prepared', taskId: response.preview.taskId || agent.taskId, previewId: response.preview.previewId, preview: response.preview });
       }
       return response;
@@ -2402,12 +2605,40 @@ ipcMain.handle('agent:get-request-status', async (_, { requestId = '' } = {}) =>
   return entry;
 });
 
+ipcMain.handle('agent:list-request-status', async (_, { projectId = '', sessionId = '', activeOnly = false } = {}) => {
+  await startAgent(getStoredConfig());
+  const activeOwner = executionOwner();
+  if ((projectId && activeOwner.projectId !== projectId) || (sessionId && activeOwner.sessionId !== sessionId)) {
+    const error = new Error('请求状态所属会话已变化');
+    error.code = 'GENERATION_OWNER_MISMATCH';
+    throw error;
+  }
+  const owner = { ...activeOwner };
+  return requestLedger.list({
+    projectId: owner.projectId,
+    sessionId: owner.sessionId,
+    ...(activeOnly ? { states: [
+      RequestStates.CREATED,
+      RequestStates.QUEUED,
+      RequestStates.PREPARING,
+      RequestStates.PREPARED,
+      RequestStates.EXECUTING,
+      RequestStates.OBSERVING,
+      RequestStates.STOPPING,
+      RequestStates.TIMED_OUT,
+      RequestStates.ARCHIVE_FAILED,
+    ] } : {}),
+  });
+});
+
 ipcMain.handle('agent:run-prepared', async (_, { previewId, edits = {} }) => {
   if (!agent) throw new Error('Agent is not initialized');
   const comfyState = await comfyManager.ensureStarted();
   if (comfyState.status !== 'ready') throw new Error(comfyState.message || 'ComfyUI is not ready');
   const pending = executionCoordinator.getPreview(previewId);
-  const owner = pending?.owner || executionOwner();
+  if (!pending) throw Object.assign(new Error('Agent generation preview expired; prepare it again'), { code: 'PREVIEW_NOT_FOUND' });
+  assertPreviewOwner(pending.owner);
+  const owner = executionOwner();
   return executionCoordinator.execute({
     source: 'ai',
     taskId: pending?.taskId || agent.taskId,
@@ -2484,7 +2715,12 @@ ipcMain.handle('agent:list-tasks', async () => {
   return [];
 });
 
-ipcMain.handle('agent:get-trace', async (_, { taskId }) => readTaskTrace(taskId));
+ipcMain.handle('agent:get-trace', async (_, { taskId }) => {
+  const task = agent?.taskManager?.get(taskId);
+  if (!task) throw traceError('task_not_found', 'Task not found');
+  assertOwnerMatch(task, currentGovernanceOwner());
+  return readTaskTrace(taskId);
+});
 
 ipcMain.handle('agent:recover-tasks', async () => recoverAgentTasks());
 
@@ -2687,9 +2923,17 @@ ipcMain.handle('sessions:list', async (_, { projectId } = {}) => {
 });
 
 ipcMain.handle('sessions:create', async (_, { title, projectId } = {}) => {
-  if (executionCoordinator.isBusy) throw new Error('当前会话仍有直接生成任务或待确认预览，请先取消后再切换会话');
-  await runGovernedIpcMutation({ action: 'session.write', input: { title, projectId }, projectId, execute: () => agent.createSession(title, projectId) });
-  return agent.sessionManager.getState();
+  await startAgent(getStoredConfig());
+  const activate = !executionCoordinator.isBusy;
+  await runGovernedIpcMutation({
+    action: 'session.write',
+    input: { title, projectId, activate },
+    projectId,
+    execute: () => agent.createSession(title, projectId, { activate }),
+  });
+  const state = agent.sessionManager.getState();
+  sendToRenderer('project:state', state);
+  return state;
 });
 
 ipcMain.handle('sessions:delete', async (_, { sessionId, projectId } = {}) => {
@@ -2703,7 +2947,8 @@ ipcMain.handle('sessions:rename', async (_, { sessionId, title, projectId } = {}
 
 ipcMain.handle('session:activate', async (_, { projectId, sessionId }) => {
   if (executionCoordinator.isBusy) throw new Error('当前会话仍有直接生成任务或待确认预览，请先取消后再切换会话');
-  const state = await runGovernedIpcMutation({ action: 'session.write', input: { projectId, sessionId }, projectId, sessionId, execute: () => agent.useSession(projectId, sessionId) });
+  const activateSession = (targetProjectId, targetSessionId) => agent.useSession(targetProjectId, targetSessionId);
+  const state = await runGovernedIpcMutation({ action: 'session.write', input: { projectId, sessionId }, projectId, sessionId, execute: () => activateSession(projectId, sessionId) });
   sendToRenderer('project:state', state);
   return state;
 });
@@ -2750,7 +2995,6 @@ ipcMain.handle('image:generate', async (_, { prompt, size = 'auto', count = 1, q
     scope: 'llm-policy',
     stage: state,
     policyState: state,
-    percent: state === 'reviewing' ? 8 : state === 'cloud_allowed' || state === 'user_override' ? 12 : state === 'blocked' ? 100 : undefined,
     message: state === 'reviewing' ? '正在审查内容（将发送到云端模型）' : state === 'cloud_allowed' ? '内容审查通过，正在发送到云端模型' : state === 'user_override' ? '已通过手动确认，正在发送到云端模型' : state === 'blocked' ? '内容包含禁止项，已停止发送' : state === 'local_fallback' ? '内容需在本地模型处理，已切换本地模型' : '',
     taskId,
     projectId: owner.projectId,
@@ -2922,17 +3166,35 @@ ipcMain.handle('llm:media-policy', async (_, { allowMediaToCloud }) => {
   return publicLLM(llm);
 });
 
-ipcMain.handle('llm:test', async (_, { providerId, modelId }) => {
+ipcMain.handle('llm:test', async (_, { provider, modelId }) => {
+  if (!provider?.baseUrl) throw new Error('请先填写 API 地址');
   const llm = prefStore.get('llm');
-  const selected = llm.providers.find(item => item.id === providerId);
-  const imageModel = selected?.models?.find(item => item.id === modelId && item.kind === 'image');
+  const existing = llm.providers.find(item => item.id === provider.id);
+  // 测试使用编辑框中的当前配置，不保存；Key 留空时回退到已保存的 Key。
+  const apiKey = provider.apiKey || existing?.apiKey || existing?._encryptedApiKey || '';
+  const imageModel = (provider.models || []).find(item => item.id === modelId && item.kind === 'image');
   if (imageModel) {
     throw new Error('生图模型测试可能产生费用，请直接使用工具栏进行一次受控生成');
   }
-  const testConfig = { ...llm, active: { providerId, modelId, reasoningEffort: llm.active.reasoningEffort, strategy: 'manual' } };
-  const provider = new LLMProvider(testConfig);
-  if (!provider.isConfigured) throw new Error('请先填写模型连接信息');
-  const result = await provider.chat({ messages: [{ role: 'user', content: 'Reply with OK only.' }], maxTokens: 8 });
+  const testConfig = {
+    providers: [{
+      id: provider.id,
+      type: provider.type || 'openai-compatible',
+      baseUrl: normalizeHttpUrl(provider.baseUrl, 'API 地址'),
+      apiKey,
+      headers: normalizeHeaders(provider.headers),
+      models: Array.isArray(provider.models) ? provider.models : [],
+    }],
+    active: {
+      providerId: provider.id,
+      modelId: modelId || provider.models?.find(item => item.kind !== 'image')?.id || '',
+      reasoningEffort: llm.active?.reasoningEffort || 'medium',
+      strategy: 'manual',
+    },
+  };
+  const testProvider = new LLMProvider(testConfig);
+  if (!testProvider.isConfigured) throw new Error('请先填写模型连接信息');
+  const result = await testProvider.chat({ messages: [{ role: 'user', content: 'Reply with OK only.' }], maxTokens: 8 });
   return { ok: true, message: result.content || 'OK' };
 });
 
@@ -3229,7 +3491,7 @@ ipcMain.handle('comfyui:recent-images', async () => getRecentImages());
 
 ipcMain.handle('project:assets', async (_, projectId) => {
   const requestedProjectId = typeof projectId === 'string' ? projectId : projectId?.projectId;
-  assertOwnerMatch({ projectId: requestedProjectId || executionOwner().projectId }, currentGovernanceOwner());
+  assertOwnerMatch(executionOwner({ projectId: requestedProjectId || executionOwner().projectId }), currentGovernanceOwner());
   return getProjectAssets(requestedProjectId);
 });
 

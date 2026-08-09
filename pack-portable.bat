@@ -78,54 +78,16 @@ if errorlevel 1 (
     echo ComfyUI client packaging failed
     exit /b 1
 )
-copy /y "electron\main.mjs" "%APPDIR%\electron\" >nul
-if errorlevel 1 (
-    echo Electron main process packaging failed
-    exit /b 1
-)
-copy /y "electron\preload.cjs" "%APPDIR%\electron\" >nul
-if errorlevel 1 (
-    echo Electron preload packaging failed
-    exit /b 1
-)
-copy /y "electron\comfyui-manager.mjs" "%APPDIR%\electron\" >nul
-if errorlevel 1 (
-    echo ComfyUI manager packaging failed
-    exit /b 1
-)
-copy /y "electron\agent-process.mjs" "%APPDIR%\electron\" >nul
-if errorlevel 1 (
-    echo Agent process packaging failed
-    exit /b 1
-)
-copy /y "electron\agent-worker.mjs" "%APPDIR%\electron\" >nul
-if errorlevel 1 (
-    echo Agent worker packaging failed
-    exit /b 1
-)
-copy /y "electron\execution-coordinator.mjs" "%APPDIR%\electron\" >nul
-if errorlevel 1 (
-    echo Execution coordinator packaging failed
+rem Copy the complete Electron runtime. Keeping a hand-maintained file list here
+rem causes new imports to be omitted from portable builds.
+xcopy /e /i /q "electron" "%APPDIR%\electron" >nul
+if errorlevel 2 (
+    echo Electron runtime packaging failed
     exit /b 1
 )
 if exist "%OUTDIR%\electron.exe" move /y "%OUTDIR%\electron.exe" "%OUTDIR%\ComfyMuse.exe" >nul
 if errorlevel 1 (
     echo ComfyMuse runtime rename failed
-    exit /b 1
-)
-copy /y "electron\request-ledger.mjs" "%APPDIR%\electron\" >nul
-if errorlevel 1 (
-    echo Request ledger packaging failed
-    exit /b 1
-)
-copy /y "electron\job-object-host.ps1" "%APPDIR%\electron\" >nul
-if errorlevel 1 (
-    echo Job host packaging failed
-    exit /b 1
-)
-copy /y "electron\icon.ico" "%APPDIR%\electron\" >nul
-if errorlevel 1 (
-    echo Application icon packaging failed
     exit /b 1
 )
 xcopy /e /i /q "dist" "%APPDIR%\dist" >nul

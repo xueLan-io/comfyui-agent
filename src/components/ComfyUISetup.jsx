@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react';
 import { useComfyUI } from '../contexts/ComfyUIContext.jsx';
 import Icon from './Icon.jsx';
-
-const DOWNLOAD_KINDS = [
-  { id: 'nvidia', label: 'NVIDIA 显卡版', description: '适合大部分独立显卡用户' },
-  { id: 'amd', label: 'AMD 显卡版', description: 'A 卡用户，需启用 HIP' },
-  { id: 'cpu', label: '纯 CPU 版', description: '无独显时应急，速度较慢' },
-];
+import { useI18n } from '../i18n/I18nContext.jsx';
 
 export default function ComfyUISetup({ onClose }) {
+  const { t } = useI18n();
   const { comfyState, connected, refreshWorkflows } = useComfyUI();
+  const DOWNLOAD_KINDS = [
+    { id: 'nvidia', label: t('setupNvidiaLabel'), description: t('setupNvidiaDesc') },
+    { id: 'amd', label: t('setupAmdLabel'), description: t('setupAmdDesc') },
+    { id: 'cpu', label: t('setupCpuLabel'), description: t('setupCpuDesc') },
+  ];
   const [baseUrl, setBaseUrl] = useState(comfyState.baseUrl || 'http://127.0.0.1:8188');
   const [downloadKind, setDownloadKind] = useState('nvidia');
   const [busy, setBusy] = useState('');
@@ -26,11 +27,11 @@ export default function ComfyUISetup({ onClose }) {
     try {
       const state = await window.electronAPI.comfyUISelectRoot();
       if (state.portableRoot) {
-        setMessage({ status: 'ok', text: '已指定目录，正在启动...' });
+        setMessage({ status: 'ok', text: t('setupStarting') });
         await window.electronAPI.comfyUIStart();
         await refreshWorkflows();
       } else {
-        setMessage({ status: '', text: '未选择目录' });
+        setMessage({ status: '', text: t('setupNoFolder') });
       }
     } catch (error) {
       setMessage({ status: 'error', text: error.message });
@@ -55,7 +56,7 @@ export default function ComfyUISetup({ onClose }) {
   async function startDownload() {
     setBusy('download');
     setMessage({ status: '', text: '' });
-    setDownload({ phase: 'download', percent: 0, message: '准备下载...' });
+    setDownload({ phase: 'download', percent: 0, message: t('setupPreparingDownload') });
     try {
       const state = await window.electronAPI.comfyUIDownloadPortable(downloadKind);
       if (state?.cancelled) return;
@@ -73,10 +74,10 @@ export default function ComfyUISetup({ onClose }) {
 
   return (
     <div className="modal-overlay" onClick={() => !busy && !downloading && onClose()}>
-      <section className="settings-panel comfy-setup" onClick={event => event.stopPropagation()} aria-label="ComfyUI 连接设置">
+      <section className="settings-panel comfy-setup" onClick={event => event.stopPropagation()} aria-label={t('setupAria')}>
         <div className="modal-header">
-          <h2>ComfyUI 连接设置</h2>
-          <button className="btn btn-icon" onClick={onClose} disabled={busy || downloading} title="关闭"><Icon name="close" /></button>
+          <h2>{t('setupTitle')}</h2>
+          <button className="btn btn-icon" onClick={onClose} disabled={busy || downloading} title={t('close')}><Icon name="close" /></button>
         </div>
         <div className="settings-content">
           <div className={`comfy-setup-status ${comfyState.status}`}>
@@ -84,26 +85,26 @@ export default function ComfyUISetup({ onClose }) {
             <span>{comfyState.message || comfyState.status}</span>
             {comfyState.portableRoot && <code className="comfy-setup-root">{comfyState.portableRoot}</code>}
           </div>
-          {connected && <p className="settings-muted">ComfyUI 已就绪，可直接开始使用。也可以随时修改下方连接方式。</p>}
+          {connected && <p className="settings-muted">{t('setupReadyNote')}</p>}
 
           <div className="comfy-setup-options">
             <div className="comfy-setup-option">
               <span className="comfy-setup-option-icon"><Icon name="folder" size={18} /></span>
               <div className="comfy-setup-option-body">
-                <strong>使用本机已有的 ComfyUI</strong>
-                <p>选择已解压的 ComfyUI portable 根目录（包含 python_embeded 和 ComfyUI 文件夹），本程序会代为启动。</p>
-                <button className="btn" onClick={pickFolder} disabled={busy !== ''}>{busy === 'folder' ? '选择中...' : '选择目录'}</button>
+                <strong>{t('setupUseLocalTitle')}</strong>
+                <p>{t('setupUseLocalDesc')}</p>
+                <button className="btn" onClick={pickFolder} disabled={busy !== ''}>{busy === 'folder' ? t('setupSelecting') : t('setupSelectFolder')}</button>
               </div>
             </div>
 
             <div className="comfy-setup-option">
               <span className="comfy-setup-option-icon"><Icon name="workflow" size={18} /></span>
               <div className="comfy-setup-option-body">
-                <strong>连接已运行的 ComfyUI</strong>
-                <p>ComfyUI 已在别处启动（本机或局域网其他机器）时填写地址。</p>
+                <strong>{t('setupConnectTitle')}</strong>
+                <p>{t('setupConnectDesc')}</p>
                 <div className="settings-row comfy-setup-url">
                   <input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="http://127.0.0.1:8188" disabled={busy !== ''} />
-                  <button className="btn" onClick={connectUrl} disabled={busy !== ''}>{busy === 'connect' ? '连接中...' : '连接'}</button>
+                  <button className="btn" onClick={connectUrl} disabled={busy !== ''}>{busy === 'connect' ? t('setupConnecting') : t('setupConnect')}</button>
                 </div>
               </div>
             </div>
@@ -111,13 +112,13 @@ export default function ComfyUISetup({ onClose }) {
             <div className="comfy-setup-option">
               <span className="comfy-setup-option-icon"><Icon name="refresh" size={18} /></span>
               <div className="comfy-setup-option-body">
-                <strong>下载 ComfyUI portable</strong>
-                <p>从官方源下载便携版并自动安装，不含模型权重（约 1~2 GB，需联网）。</p>
+                <strong>{t('setupDownloadTitle')}</strong>
+                <p>{t('setupDownloadDesc')}</p>
                 <div className="settings-row comfy-setup-url">
                   <select value={downloadKind} onChange={event => setDownloadKind(event.target.value)} disabled={busy !== ''}>
                     {DOWNLOAD_KINDS.map(kind => <option key={kind.id} value={kind.id}>{kind.label} · {kind.description}</option>)}
                   </select>
-                  <button className="btn btn-primary" onClick={startDownload} disabled={busy !== '' || downloading}>{busy === 'download' ? '下载中...' : '下载并安装'}</button>
+                  <button className="btn btn-primary" onClick={startDownload} disabled={busy !== '' || downloading}>{busy === 'download' ? t('setupDownloading') : t('setupDownloadInstall')}</button>
                 </div>
                 {showProgress && <div className="comfy-setup-download">
                   {download.phase === 'download' && download.percent >= 0 && (
@@ -131,7 +132,7 @@ export default function ComfyUISetup({ onClose }) {
 
           {message.text && <p className={`provider-status ${message.status || 'info'}`}>{message.text}</p>}
           <div className="settings-actions comfy-setup-actions">
-            <button className="btn" onClick={onClose} disabled={busy !== '' || downloading}>{connected ? '完成' : '稍后再说'}</button>
+            <button className="btn" onClick={onClose} disabled={busy !== '' || downloading}>{connected ? t('setupDone') : t('setupLater')}</button>
           </div>
         </div>
       </section>

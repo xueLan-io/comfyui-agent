@@ -72,7 +72,7 @@ export function normalizeExternalSkill(value, source = '') {
         tool: 'comfyui',
         skill: value.id,
         input: {
-          workflowName: context.workflowName || target.workflowName || '',
+          workflowName: target.workflowName || '',
           workflowDir: context.workflowDir || '',
           prompts: [],
           images: context.images || [],

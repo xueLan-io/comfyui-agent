@@ -189,9 +189,9 @@ export default function AssetLibraryPage({ onBack }) {
     if (!metadata.positive.trim()) { window.alert(t('noPositivePrompt')); return; }
     try {
       const saved = await window.electronAPI.globalPresetCreate({
-        title: title.trim(), description: `来自历史记录 · ${selected.length} 张结果`,
+        title: title.trim(), description: t('assetFromHistory', { n: selected.length }),
         ...metadata, workflowName: metadata.workflow, resultRefs: selected,
-        coverRef: selected[0], tags: ['历史记录'], origin: 'asset-library',
+        coverRef: selected[0], tags: [t('assetHistoryTag')], origin: 'asset-library',
       });
       window.dispatchEvent(new CustomEvent('comfy-agent:preset-saved', { detail: { id: saved?.id || '', title: title.trim() } }));
       window.alert(t('presetSavedAndOpened', { name: title.trim() }));

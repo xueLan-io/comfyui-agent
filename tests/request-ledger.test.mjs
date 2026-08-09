@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { RequestLedger } from '../electron/request-ledger.mjs';
+import { RequestLedger, RequestStates } from '../electron/request-ledger.mjs';
 
 test('request ledger returns the existing entry for duplicate requests', () => {
   const ledger = new RequestLedger();
@@ -49,4 +49,17 @@ test('request ledger persists and reloads entries', async () => {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('request ledger lists session-owned active entries and rejects unknown states', () => {
+  const ledger = new RequestLedger();
+  ledger.begin('active-1', { source: 'direct', projectId: 'project-1', sessionId: 'session-1' });
+  ledger.update('active-1', { state: RequestStates.EXECUTING });
+  ledger.begin('complete-1', { source: 'direct', projectId: 'project-1', sessionId: 'session-1' });
+  ledger.complete('complete-1', { taskId: 'task-1' });
+  ledger.begin('foreign-1', { source: 'direct', projectId: 'project-2', sessionId: 'session-2' });
+
+  assert.deepEqual(ledger.list({ projectId: 'project-1', sessionId: 'session-1', states: [RequestStates.EXECUTING] }).map(item => item.requestId), ['active-1']);
+  assert.equal(ledger.snapshot('active-1').revision, 2);
+  assert.throws(() => ledger.update('active-1', { state: 'unknown' }), error => error.code === 'REQUEST_STATE_INVALID');
 });

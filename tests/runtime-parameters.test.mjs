@@ -15,6 +15,8 @@ test('runtime request rejects invalid bounded values and shapes', () => {
   assert.throws(() => normalizeRuntimeParameters({ workflowName: 'x.json', workflowDir: 'x', nodeOverrides: { '1': [] } }), /nodeOverrides/);
   assert.throws(() => normalizeRuntimeParameters({ workflowName: 'x.json', workflowDir: 'x', settings: { frames: 0 } }), /frames/);
   assert.throws(() => normalizeRuntimeParameters({ workflowName: 'x.json', workflowDir: 'x', settings: { fps: 241 } }), /fps/);
+  assert.throws(() => normalizeRuntimeParameters({ workflowName: 'x.json', workflowDir: 'x', settings: { steps: 10.5 } }), /integer/);
+  assert.throws(() => normalizeRuntimeParameters({ workflowName: 'x.json', workflowDir: 'x', settings: { width: 640.5 } }), /integer/);
 });
 
 test('runtime request canonicalizes top-level video controls into settings', () => {

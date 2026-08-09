@@ -199,7 +199,9 @@ export const ComfyUITool = {
       throw error;
     }
     const promptOverrides = injectExecutionPrompts(prompt, compiledPrompt, resolved.promptProfile);
-    if (executionPrompts.length > 0 && !promptOverrides.some(item => item.polarity === 'positive')) {
+    const promptRequired = resolved.capabilities?.promptRequired !== false
+      && resolved.promptProfile?.promptRequired !== false;
+    if (executionPrompts.length > 0 && promptRequired && !promptOverrides.some(item => item.polarity === 'positive')) {
       const error = new Error('The workflow has no injectable positive prompt input');
       error.failureType = 'prompt_not_injected';
       error.replan = true;
@@ -254,7 +256,9 @@ export const ComfyUITool = {
     let progressSocket = null;
     for (let attempt = 0; attempt < 3 && !progressSocket; attempt++) {
       if (input.signal?.aborted) throw new Error('Generation cancelled');
-      progressSocket = await client.openProgressSocket(clientId, prompt, input.onProgress, input.signal);
+      progressSocket = typeof client.openProgressSocket === 'function'
+        ? await client.openProgressSocket(clientId, prompt, input.onProgress, input.signal)
+        : null;
       if (!progressSocket && attempt < 2) await new Promise(resolve => setTimeout(resolve, 500));
     }
     let promptId;
@@ -323,6 +327,15 @@ export const ComfyUITool = {
         promptId,
       });
       return normalizeGenerationResult(executionResult);
+    } catch (error) {
+      // Once /prompt returned a prompt id, any later failure has an existing
+      // remote execution. Retrying execute() would submit a second prompt.
+      if (promptId) {
+        error.promptId = error.promptId || promptId;
+        error.failureType = error.failureType || 'observe_unknown';
+        error.retryable = false;
+      }
+      throw error;
     } finally {
       progressSocket?.close();
     }
@@ -339,7 +352,12 @@ export const ComfyUITool = {
         const filePath = input.sandboxInput ? resolveSandboxFile(input.sandboxInput, item.path) : item.path;
         if (!existsSync(filePath)) throw new Error(`Media file not found: ${filePath}`);
         const name = item.name || basename(filePath);
-        const ref = await client.uploadMedia(kind, name, await readFile(filePath), { type: 'input', ...options });
+        if (input.signal?.aborted) throw Object.assign(new Error('Generation cancelled'), { code: 'GENERATION_CANCELLED' });
+        const ref = await client.uploadMedia(kind, name, await readFile(filePath), {
+          type: 'input',
+          signal: input.signal,
+          ...options,
+        });
         refs.push({ name: ref.name, subfolder: ref.subfolder || '', type: ref.type || 'input' });
       }
       return refs;

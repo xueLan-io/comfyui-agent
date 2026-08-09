@@ -49,7 +49,7 @@ export function assessPromptReadiness({ request = '', intent = 'generate', media
   if (intent === 'refine' && !lastPrompt && !hasMedia(media, lastImages)) missing.push('previous_generation');
 
   if (intent === 'refine' && !hasRefinementDirection(text)) missing.push('refinement_direction');
-  if (intent === 'edit' && !text.replace(/(?:把这张图|这张图|参考图|图生图|img2img|改成|换成|重绘|修改|处理|一下|风格|油画|水彩)/gi, '').trim()) {
+  if (intent === 'edit' && !hasMedia(media, lastImages) && !text.replace(/(?:把这张图|这张图|参考图|图生图|img2img|改成|换成|重绘|修改|处理|一下|风格|油画|水彩)/gi, '').trim()) {
     missing.push('new_value');
   }
 

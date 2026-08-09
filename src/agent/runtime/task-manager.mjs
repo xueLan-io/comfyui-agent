@@ -64,7 +64,7 @@ export class TaskManager {
     for (const task of this.tasks) this._byId.set(task.id, task);
   }
 
-  create({ id, kind, message = '', workflowName = '', traceId = '', intent = '', projectId = '', sessionId = '', requestId = '' }) {
+  create({ id, kind, message = '', workflowName = '', traceId = '', intent = '', projectId = '', sessionId = '', requestId = '', turnId = '' }) {
     const task = {
       schemaVersion: TASK_SCHEMA_VERSION,
       id,
@@ -76,6 +76,7 @@ export class TaskManager {
       state: 'queued',
       traceId,
       requestId: requestId || id,
+      turnId,
       projectId,
       sessionId,
       currentStep: '',
@@ -238,6 +239,7 @@ export class TaskManager {
       taskSchemaVersion: task.schemaVersion || 1,
       taskId: task.taskId || task.id,
       requestId: task.requestId || task.id,
+      turnId: task.turnId || '',
       traceId: task.traceId || '',
       projectId: task.projectId || '',
       sessionId: task.sessionId || '',

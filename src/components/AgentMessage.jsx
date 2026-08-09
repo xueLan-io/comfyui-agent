@@ -36,7 +36,6 @@ export default function AgentMessage({ msg, onOpenImage, onEdit, onImageError, h
 
   return (
     <div className={`msg ${isUser ? 'user' : 'agent'}`}>
-      <div className="msg-avatar">{isUser ? 'U' : 'A'}</div>
       <div className="msg-bubble">
         <div className="msg-text" aria-busy={msg.streaming || undefined}>
           {displayContent}

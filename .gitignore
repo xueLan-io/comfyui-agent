@@ -3,12 +3,19 @@ dist/
 dist-portable/
 releases/
 artifacts/
+.release-update-staging/
 prompts_collected/
 *.zip
 *.log
 *.sig
 *.exe
 .env
+.env.*
+!.env.example
+manifest-*.json
+SHA256SUMS.txt
+*.pfx
+*.cer
 .DS_Store
 
 # External reference templates/workflow

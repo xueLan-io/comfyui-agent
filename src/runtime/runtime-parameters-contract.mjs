@@ -13,6 +13,7 @@ function clone(value) {
 function number(value, name) {
   const result = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
   if (typeof result !== 'number' || !Number.isFinite(result)) throw new Error(`Invalid ${name}: expected a finite number`);
+  if (['seed', 'steps', 'width', 'height', 'batch', 'frames', 'fps'].includes(name) && !Number.isInteger(result)) throw new Error(`Invalid ${name}: expected an integer`);
   const [min, max] = LIMITS[name] || [-Infinity, Infinity];
   if (result < min || result > max) throw new Error(`Invalid ${name}: must be between ${min} and ${max}`);
   return result;

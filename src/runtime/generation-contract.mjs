@@ -1,7 +1,10 @@
-import { randomUUID } from 'node:crypto';
-
 const SOURCES = new Set(['direct', 'ai']);
 const VIDEO_EXTENSIONS = /\.(?:mp4|webm|mov|mkv|avi|gif)$/i;
+
+function randomUUID() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `id_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}_${Math.random().toString(36).slice(2)}`;
+}
 
 function copyObject(value) {
   return value && typeof value === 'object' ? structuredClone(value) : {};
@@ -11,7 +14,8 @@ export function normalizeGenerationResult(result = {}) {
   const explicitImages = Array.isArray(result.images) ? result.images : [];
   const explicitVideos = Array.isArray(result.videos) ? result.videos : [];
   const suppliedMedia = Array.isArray(result.media) ? result.media : [];
-  const media = [...explicitImages, ...explicitVideos, ...suppliedMedia].filter((item, index, items) => {
+  const all = [...explicitImages, ...explicitVideos, ...suppliedMedia];
+  const media = all.filter((item, index, items) => {
     const key = mediaKey(item, index);
     return items.findIndex((candidate, candidateIndex) => mediaKey(candidate, candidateIndex) === key) === index;
   });

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { isVideoImage } from './ImageAsset.jsx';
 import Icon from './Icon.jsx';
+import { useI18n } from '../i18n/I18nContext.jsx';
 
 export default function AssetPreviewModal({ preview, onClose }) {
+  const { t } = useI18n();
   const [current, setCurrent] = useState(preview);
   const [scale, setScale] = useState(.75);
   const [fitScale, setFitScale] = useState(.75);
@@ -72,7 +74,8 @@ export default function AssetPreviewModal({ preview, onClose }) {
   });
 
   function handleWheel(event) {
-    if (video || event.target.closest('button, video')) return;
+    const isVideo = isVideoImage(current?.image);
+    if (isVideo || event.target.closest('button, video')) return;
     event.preventDefault();
     const body = event.currentTarget.getBoundingClientRect();
     const point = {
@@ -154,19 +157,19 @@ export default function AssetPreviewModal({ preview, onClose }) {
 
   return (
     <div className="modal-overlay image-preview-overlay" onClick={onClose}>
-      <section className="image-preview-panel" onClick={event => event.stopPropagation()} aria-label="图片预览">
+      <section className="image-preview-panel" onClick={event => event.stopPropagation()} aria-label={t('previewImageTitle')}>
         <div className="modal-header image-preview-header">
-          <div className="image-preview-title"><h3>{current.image?.filename || '图片预览'}</h3><span>{current.image?.subfolder || current.image?.type || ''}</span></div>
+          <div className="image-preview-title"><h3>{current.image?.filename || t('previewImageTitle')}</h3><span>{current.image?.subfolder || current.image?.type || ''}</span></div>
           <div className="image-preview-actions">
             {items.length > 1 && <span className="preview-position">{index + 1} / {items.length}</span>}
-            {actionState === 'saved' && <span>已保存</span>}
-            {actionState === 'error' && <span className="error">操作失败</span>}
-             {!video && <button className="btn btn-icon" onClick={() => setCenteredScale(Math.max(.5, scale - .25))} title="缩小"><Icon name="minus" /></button>}
-             {!video && <button className="btn preview-zoom-value" onClick={resetView} title="恢复适应窗口并居中">{Math.round(scale * 100)}%</button>}
-             {!video && <button className="btn btn-icon" onClick={() => setCenteredScale(Math.min(3, scale + .25))} title="放大"><Icon name="plus" /></button>}
-            <button className="btn" onClick={showImage} disabled={actionState === 'showing'}>打开位置</button>
-            <button className="btn btn-primary" onClick={saveImage} disabled={actionState === 'saving'}>{actionState === 'saving' ? '保存中...' : '另存为'}</button>
-            <button className="btn btn-icon" onClick={onClose} title="关闭"><Icon name="close" /></button>
+            {actionState === 'saved' && <span>{t('previewSaved')}</span>}
+            {actionState === 'error' && <span className="error">{t('previewActionFailed')}</span>}
+             {!video && <button className="btn btn-icon" onClick={() => setCenteredScale(Math.max(.5, scale - .25))} title={t('previewZoomOut')}><Icon name="minus" /></button>}
+             {!video && <button className="btn preview-zoom-value" onClick={resetView} title={t('previewFitWindow')}>{Math.round(scale * 100)}%</button>}
+             {!video && <button className="btn btn-icon" onClick={() => setCenteredScale(Math.min(3, scale + .25))} title={t('previewZoomIn')}><Icon name="plus" /></button>}
+            <button className="btn" onClick={showImage} disabled={actionState === 'showing'}>{t('previewOpenLocation')}</button>
+            <button className="btn btn-primary" onClick={saveImage} disabled={actionState === 'saving'}>{actionState === 'saving' ? t('previewSaving') : t('previewSaveAs')}</button>
+            <button className="btn btn-icon" onClick={onClose} title={t('close')}><Icon name="close" /></button>
           </div>
         </div>
        <div
@@ -179,9 +182,9 @@ export default function AssetPreviewModal({ preview, onClose }) {
           onPointerUp={stopPanning}
           onPointerCancel={stopPanning}
         >
-          {items.length > 1 && <button className="preview-nav preview-nav-prev" onClick={() => void move(-1)} title="上一张"><Icon name="chevronLeft" size={20} /></button>}
-           <div className="image-preview-canvas" style={{ transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})` }}>{video ? <video src={current.src} controls /> : <img ref={imageRef} src={current.src} onLoad={calculateFitScale} alt={current.image?.filename || '预览图片'} />}</div>
-          {items.length > 1 && <button className="preview-nav preview-nav-next" onClick={() => void move(1)} title="下一张"><Icon name="chevronRight" size={20} /></button>}
+          {items.length > 1 && <button className="preview-nav preview-nav-prev" onClick={() => void move(-1)} title={t('previewPrev')}><Icon name="chevronLeft" size={20} /></button>}
+           <div className="image-preview-canvas" style={{ transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})` }}>{video ? <video src={current.src} controls /> : <img ref={imageRef} src={current.src} onLoad={calculateFitScale} alt={current.image?.filename || t('previewAlt')} />}</div>
+          {items.length > 1 && <button className="preview-nav preview-nav-next" onClick={() => void move(1)} title={t('previewNext')}><Icon name="chevronRight" size={20} /></button>}
         </div>
       </section>
     </div>

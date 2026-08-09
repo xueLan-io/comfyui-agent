@@ -4,6 +4,7 @@ import { useComfyUI } from './ComfyUIContext.jsx';
 import { useSession } from './SessionContext.jsx';
 import { buildPresetGenerationRequest, presetWorkflowName } from '../runtime/preset-generation.mjs';
 import { normalizeProgressEvent } from '../runtime/progress.mjs';
+import { normalizeGenerationResult } from '../runtime/generation-contract.mjs';
 
 const TOOL_LABELS = {
   comfyui: 'ComfyUI',
@@ -27,6 +28,13 @@ function timeStr() {
 
 function toolLabel(tool) {
   return TOOL_LABELS[tool] || tool || '';
+}
+
+function eventErrorText(data) {
+  if (!data) return '';
+  if (typeof data.error === 'string') return data.error;
+  if (data.error?.message) return data.error.message;
+  return data.message || '';
 }
 
 function buildGraphSteps(events) {
@@ -60,13 +68,44 @@ function mergeAssets(current, next) {
 }
 
 function assetKey(image = {}) {
-  return `${image.type || ''}:${image.projectId || ''}:${image.subfolder || ''}:${image.filename || ''}`;
+  return JSON.stringify([
+    image.assetId,
+    image.path,
+    image.url,
+    image.type,
+    image.projectId,
+    image.sessionId,
+    image.taskId,
+    image.subfolder,
+    image.filename || image.name,
+    image.mediaType || image.kind,
+  ].map(value => value ?? ''));
+}
+
+function messageKey(message = {}) {
+  return message.messageId || message.id || (message.turnId ? `${message.turnId}:${message.role || ''}` : '');
+}
+
+function mergeConversation(current = [], incoming = []) {
+  const merged = new Map();
+  for (const message of current) {
+    const key = messageKey(message);
+    merged.set(key || `current:${merged.size}`, message);
+  }
+  for (const message of incoming) {
+    const key = messageKey(message);
+    if (key) merged.set(key, { ...merged.get(key), ...message });
+    else merged.set(`incoming:${merged.size}`, message);
+  }
+  return [...merged.values()];
 }
 
 function resultMedia(result = {}) {
   const images = Array.isArray(result.images) ? result.images : [];
   const videos = Array.isArray(result.videos) ? result.videos : [];
-  return Array.isArray(result.media) && result.media.length > 0 ? result.media : [...images, ...videos];
+  const supplied = Array.isArray(result.media) ? result.media : [];
+  const all = [...images, ...videos, ...supplied];
+  return normalizeGenerationResult({ ...result, media: all }).media || [];
 }
 
 function messageAttachments(items = []) {
@@ -115,6 +154,7 @@ function newTurnId() {
 export function AgentProvider({ children }) {
   const { selectedFile, setSelectedFile, workflowManifest, generationControls } = useComfyUI();
   const session = useSession();
+  const sessionKeyRef = useRef('');
 
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -136,6 +176,7 @@ export function AgentProvider({ children }) {
   const [recoveryTasks, setRecoveryTasks] = useState([]);
   const [generationProgress, setGenerationProgress] = useState(null);
   const [generationResult, setGenerationResult] = useState(null);
+  const [generationTurn, setGenerationTurn] = useState(null);
   const [autoConfirmPreviewId, setAutoConfirmPreviewId] = useState('');
   const [generationSource, setGenerationSource] = useState('');
   const [preview, setPreview] = useState(null);
@@ -144,6 +185,12 @@ export function AgentProvider({ children }) {
   const [editingMessageIndex, setEditingMessageIndex] = useState(-1);
   const [policyConfirm, setPolicyConfirm] = useState(null);
   const [contextUsage, setContextUsage] = useState(null);
+  const [errorFeedback, setErrorFeedback] = useState(null);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+
+  const addActivityEvent = useCallback(event => {
+    setActivityEvents(previous => [...previous, { ...event, time: event.time || timeStr() }]);
+  }, []);
 
   const msgEndRef = useRef(null);
   const conversationRef = useRef(null);
@@ -156,9 +203,19 @@ export function AgentProvider({ children }) {
   const streamingUpdatesRef = useRef(new Map());
   const streamingFrameRef = useRef(0);
   const activeTaskIdRef = useRef('');
+  const activeDirectTaskIdRef = useRef('');
+  const activeDirectRequestIdRef = useRef('');
   const activeImageRequestIdRef = useRef('');
   const blockedTaskIdsRef = useRef(new Set());
+  const blockedTurnIdsRef = useRef(new Set());
+  const invalidPreviewIdsRef = useRef(new Set());
+  const confirmedPreviewIdsRef = useRef(new Set());
+  const activeTurnIdRef = useRef('');
+  const hydratedSessionKeyRef = useRef('');
+  const syncedSessionSnapshotRef = useRef('');
   const submissionLockRef = useRef(false);
+  const generationTokenRef = useRef(0);
+  const registeredDirectRequestsRef = useRef(new Set());
   const sessionInfoRef = useRef({ sessionId: '', projectId: '', title: '', messageCount: 0 });
   sessionInfoRef.current = {
     sessionId: session.activeSessionId,
@@ -166,6 +223,7 @@ export function AgentProvider({ children }) {
     title: session.projects.find(project => project.id === session.activeProjectId)?.sessions?.find(item => item.id === session.activeSessionId)?.title || '',
     messageCount: session.messages?.length || 0,
   };
+  sessionKeyRef.current = `${session.activeProjectId}:${session.activeSessionId}`;
   const thinkingUpdateRef = useRef(null);
   const thinkingFrameRef = useRef(0);
   const followConversationRef = useRef(true);
@@ -201,8 +259,11 @@ export function AgentProvider({ children }) {
   }, []);
 
   const refreshAssets = useCallback(async ({ replace = true } = {}) => {
-    if (!session.activeProjectId || !window.electronAPI.projectAssets) return [];
-    const projectAssets = await window.electronAPI.projectAssets(session.activeProjectId);
+    const projectId = session.activeProjectId;
+    const sessionKey = `${projectId}:${session.activeSessionId}`;
+    if (!projectId || !window.electronAPI.projectAssets) return [];
+    const projectAssets = await window.electronAPI.projectAssets(projectId);
+    if (sessionKeyRef.current !== sessionKey) return [];
     if (Array.isArray(projectAssets)) {
       if (replace) {
         setAssets(projectAssets);
@@ -215,12 +276,17 @@ export function AgentProvider({ children }) {
   }, [session.activeProjectId, session.activeSessionId]);
 
   const refreshRecoveryTasks = useCallback(async () => {
+    const sessionKey = `${session.activeProjectId}:${session.activeSessionId}`;
     if (!window.electronAPI.agentListTasks) return [];
     const tasks = await window.electronAPI.agentListTasks();
-    const recoverable = (tasks || []).filter(task => ['submit_unknown', 'observe_timeout', 'archive_failed', 'observing'].includes(task.state || task.status));
+    if (sessionKeyRef.current !== sessionKey) return [];
+    const recoverable = (tasks || []).filter(task =>
+      task.projectId === session.activeProjectId
+      && task.sessionId === session.activeSessionId
+      && ['submit_unknown', 'observe_timeout', 'archive_failed', 'observing'].includes(task.state || task.status));
     setRecoveryTasks(recoverable);
     return recoverable;
-  }, []);
+  }, [session.activeProjectId, session.activeSessionId]);
 
   const retryRecoveryTask = useCallback(async taskId => {
     const result = await window.electronAPI.agentRetryRecovery(taskId);
@@ -290,16 +356,49 @@ export function AgentProvider({ children }) {
 
   useEffect(() => {
     if (!session.activeSessionId) return;
+    const sessionKey = `${session.activeProjectId}:${session.activeSessionId}`;
+    const switchedSession = hydratedSessionKeyRef.current !== sessionKey;
     // Persisted session updates can arrive after a direct generation has started.
     // Do not hydrate the old snapshot over the live task in that window.
-    if (generationPending || submissionLockRef.current) return;
+      if (!switchedSession) {
+        const snapshotKey = [
+          // Result/media fields can change without changing message count or id.
+          // Use the persisted payload so a completion is rendered immediately.
+          JSON.stringify(session.messages || []),
+          session.sessionState?.lastTaskId || '',
+          session.sessionState?.taskStatus || session.sessionState?.state || '',
+          session.sessionState?.updatedAt || '',
+          session.sessionState?.preparedPreview?.previewId || '',
+          session.sessionState?.lastResult?.taskId || '',
+          JSON.stringify(session.project?.assets || []),
+      ].join('|');
+      if (syncedSessionSnapshotRef.current === snapshotKey) return undefined;
+      syncedSessionSnapshotRef.current = snapshotKey;
+      setMessages(previous => mergeConversation(previous, session.messages || []));
+      if (Array.isArray(session.project?.assets)) setAssets(previous => mergeAssets(previous, session.project.assets));
+      const persistedPreview = session.sessionState?.preparedPreview;
+      if (persistedPreview?.previewId && !promptPreview
+        && !invalidPreviewIdsRef.current.has(persistedPreview.previewId)
+        && !confirmedPreviewIdsRef.current.has(persistedPreview.previewId)) {
+        setPromptPreview(persistedPreview);
+        setGenerationPending(true);
+        setStatus('preview');
+      }
+      void refreshAssets({ replace: true }).catch(() => {});
+      void refreshRecoveryTasks().catch(() => {});
+      return undefined;
+    }
+    hydratedSessionKeyRef.current = sessionKey;
+    syncedSessionSnapshotRef.current = '';
     const storedState = session.sessionState || {};
-    const storedImages = Array.isArray(storedState.lastImages) ? storedState.lastImages : [];
     const source = storedState.lastGenerationSource || '';
+    activeTurnIdRef.current = storedState.turnId || '';
     setMessages(session.messages || []);
-    setImages(storedImages);
-    setVideos(Array.isArray(storedState.lastVideos) ? storedState.lastVideos : []);
-    setMedia(Array.isArray(storedState.lastMedia) ? storedState.lastMedia : storedImages);
+    // Historical media is rendered by its owning message, not as the live
+    // output for the newly hydrated turn.
+    setImages([]);
+    setVideos([]);
+    setMedia([]);
     setAssets(session.project?.assets || []);
     setLastGenerationRequest(storedState.lastPrompt || '');
     setLastGenerationNegative(storedState.lastCompiledPrompt?.negative || '');
@@ -308,18 +407,26 @@ export function AgentProvider({ children }) {
     setPromptMode(session.project?.promptMode || 'raw');
     if (session.project?.workflow) setSelectedFile(session.project.workflow);
     setActivityEvents([]);
-    setStatus(storedState.preparedPreview ? 'preview' : 'idle');
+    const taskActive = ['queued', 'executing', 'running', 'archiving', 'observing'].includes(storedState.taskStatus || storedState.state);
+    setStatus(storedState.preparedPreview ? 'preview' : taskActive ? (storedState.state || storedState.taskStatus || 'running') : 'idle');
     setStatusMsg('');
-    setGenerationPending(false);
+    setGenerationPending(Boolean(storedState.preparedPreview || taskActive));
     // A direct quick-generation preview is live state. Do not overwrite it with
     // the previous session snapshot while its prepare/run IPC is in flight.
     if (!generationPending && !submissionLockRef.current) {
-      setPromptPreview(storedState.preparedPreview || null);
+      const restoredPreview = storedState.preparedPreview;
+      setPromptPreview(restoredPreview?.previewId
+        && !invalidPreviewIdsRef.current.has(restoredPreview.previewId)
+        && !confirmedPreviewIdsRef.current.has(restoredPreview.previewId)
+        ? restoredPreview : null);
     }
     setPreview(null);
     setTrace(null);
     setGenerationProgress(null);
-    setGenerationResult(null);
+    const restoredResult = storedState.lastResult?.media?.length ? storedState.lastResult : null;
+    const restoredMedia = restoredResult ? resultMedia(restoredResult) : [];
+    setGenerationResult(restoredResult ? { ...restoredResult, media: restoredMedia } : null);
+    setGenerationTurn(restoredResult ? { turnId: storedState.turnId || restoredResult.turnId || '', taskId: storedState.lastTaskId || restoredResult.taskId || '', requestId: storedState.requestId || restoredResult.requestId || '', status: 'completed', positive: restoredResult.positive || restoredResult.compiledPrompt?.positive || storedState.lastPrompt || '', negative: restoredResult.negative || restoredResult.compiledPrompt?.negative || '', media: restoredMedia } : null);
     setThinking('');
     setAttachments([]);
     setEditingMessageIndex(-1);
@@ -329,7 +436,45 @@ export function AgentProvider({ children }) {
     void refreshAssets({ replace: true }).catch(() => {});
     void refreshRecoveryTasks().catch(() => {});
     return undefined;
-  }, [session.activeProjectId, session.activeSessionId, session.messages, session.project, setSelectedFile, refreshAssets, refreshRecoveryTasks]);
+  }, [session.activeProjectId, session.activeSessionId, session.messages, session.project, session.sessionState, setSelectedFile, refreshAssets, refreshRecoveryTasks, generationPending, generationResult, promptPreview]);
+
+  useEffect(() => {
+    const sessionKey = `${session.activeProjectId}:${session.activeSessionId}`;
+    if (!session.activeProjectId || !session.activeSessionId || !window.electronAPI.agentListRequestStatus) return undefined;
+    let disposed = false;
+    void window.electronAPI.agentListRequestStatus({
+      projectId: session.activeProjectId,
+      sessionId: session.activeSessionId,
+      activeOnly: true,
+    }).then(entries => {
+      if (disposed || sessionKeyRef.current !== sessionKey || !Array.isArray(entries)) return;
+      const entry = entries.find(item => item.source === 'direct') || entries[0];
+      for (const item of entries) registeredDirectRequestsRef.current.add(item.requestId);
+      if (!entry || entry.source !== 'direct') return;
+      if (entry.taskId) activeDirectTaskIdRef.current = entry.taskId;
+      activeDirectRequestIdRef.current = entry.requestId;
+      if (entry.state === 'stopping') {
+        setGenerationPending(true);
+        setGenerationProgress(null);
+        setStatus('stopping');
+        setStatusMsg('后台任务正在收尾，请稍候');
+        return;
+      }
+      if (['created', 'queued', 'preparing', 'prepared', 'executing', 'observing'].includes(entry.state)) {
+        setGenerationPending(true);
+        setStatus(entry.state === 'preparing' ? 'preparing' : entry.state === 'prepared' ? 'preview' : 'running');
+        setStatusMsg('正在恢复任务状态...');
+        return;
+      }
+      if (['timed_out', 'archive_failed'].includes(entry.state)) {
+        setGenerationPending(false);
+        setGenerationProgress(null);
+        setStatus('error');
+        setStatusMsg(entry.error?.message || '任务需要恢复处理');
+      }
+    }).catch(() => {});
+    return () => { disposed = true; };
+  }, [session.activeProjectId, session.activeSessionId, session.sessionState?.revision]);
 
   useEffect(() => {
     let lastSync = 0;
@@ -384,6 +529,8 @@ export function AgentProvider({ children }) {
 
     const isCurrentAgentEvent = data => {
       if (!isCurrentSessionEvent(data)) return false;
+      if (data.turnId && blockedTurnIdsRef.current.has(data.turnId)) return false;
+      if (data.turnId && activeTurnIdRef.current && data.turnId !== activeTurnIdRef.current) return false;
       if (data.taskId && blockedTaskIdsRef.current.has(data.taskId)) return false;
       if (data.taskId && !activeTaskIdRef.current) activeTaskIdRef.current = data.taskId;
       return !data.taskId || !activeTaskIdRef.current || data.taskId === activeTaskIdRef.current;
@@ -394,7 +541,7 @@ export function AgentProvider({ children }) {
       const messageIndex = previous.findIndex(message => message.streamingMessageId === data.messageId || message.messageId === data.messageId);
       if (messageIndex < 0) {
         const messageData = data.done ? data : { ...data, streamingMessageId: data.messageId };
-        return [...previous, {
+         return [...previous, {
           ...messageData,
           time: timeStr(),
           duration_ms: data.done ? elapsed : 0,
@@ -450,11 +597,19 @@ export function AgentProvider({ children }) {
       if (!isCurrentAgentEvent(data)) return;
       setStatus(data.uiStatus || data.status);
       setStatusMsg(data.message || '');
+      if (data.status === 'error' || data.status === 'failed' || data.uiStatus === 'error') {
+        setErrorFeedback(previous => previous || { error: data.message || '任务执行失败', status: data.status, taskId: data.taskId, traceId: data.traceId });
+        addActivityEvent({ ...data, type: 'error', description: data.message || '任务执行失败', status: 'error', error: eventErrorText(data) });
+      }
+      if (['preparing', 'queued', 'executing', 'running', 'archiving'].includes(data.status || data.uiStatus)) {
+        clearThinking();
+      }
       const terminal = ['completed', 'failed', 'error', 'cancelled', 'abandoned'].includes(data.status) || data.uiStatus === 'error';
       if (terminal) {
         clearQueuedProgress();
         setGenerationPending(false);
-        setGenerationProgress(null);
+        if (data.status === 'completed') setGenerationProgress(previous => normalizeProgressEvent({ ...previous, stage: 'completed', percent: 100, overallPercent: 100, message: data.message || '生成完成' }, previous));
+        else setGenerationProgress(null);
         terminateStreamingTask(data.taskId, data.status === 'completed' ? 'completed' : data.status);
       }
       if (data.taskId && terminal) {
@@ -472,23 +627,42 @@ export function AgentProvider({ children }) {
     const isCurrentDirectEvent = data => {
       if ((data.projectId || data.sessionId) && !isCurrentSessionEvent(data)) return false;
       if (!data.projectId || !data.sessionId) return false;
-      if (data.taskId && blockedTaskIdsRef.current.has(data.taskId)) return false;
+      const eventTaskId = data.taskId || data.requestId || '';
+      if (data.turnId && blockedTurnIdsRef.current.has(data.turnId)) return false;
+      if (data.turnId && activeTurnIdRef.current && data.turnId !== activeTurnIdRef.current) return false;
+      if (eventTaskId && blockedTaskIdsRef.current.has(eventTaskId)) return false;
       if (['running', 'completed', 'cancelled'].includes(data.status) && !data.taskId) return false;
       if (data.status === 'failed' && !data.taskId && data.phase !== 'preparing') return false;
-      if (data.taskId && !activeTaskIdRef.current) activeTaskIdRef.current = data.taskId;
-      return !data.taskId || !activeTaskIdRef.current || data.taskId === activeTaskIdRef.current;
+       // Events are delivered across renderer remounts and session switches.
+       // Ownership is verified above, so do not discard a valid event merely
+       // because this renderer did not originate the request.
+       if (data.requestId) registeredDirectRequestsRef.current.add(data.requestId);
+       if (!data.requestId && !activeDirectRequestIdRef.current) return false;
+      if (activeDirectRequestIdRef.current && data.requestId && data.requestId !== activeDirectRequestIdRef.current) return false;
+       if (data.taskId && !activeDirectTaskIdRef.current && !activeDirectRequestIdRef.current) return false;
+      if (data.taskId && activeDirectTaskIdRef.current && data.taskId !== activeDirectTaskIdRef.current) {
+        if (data.requestId === activeDirectRequestIdRef.current) activeDirectTaskIdRef.current = data.taskId;
+        else return false;
+      }
+      return true;
     };
 
     unsubs.push(window.electronAPI.onDirectStatus(data => {
       if (!isCurrentDirectEvent(data)) return;
       if (data.status === 'prepared' && data.preview?.previewId) {
+        if (invalidPreviewIdsRef.current.has(data.preview.previewId) || confirmedPreviewIdsRef.current.has(data.preview.previewId)) return;
         setPromptPreview({ ...data.preview, quickGenerate: data.preview.quickGenerate !== false });
         setGenerationPending(true);
         setStatus('preview');
       }
       setStatus(data.uiStatus || data.status);
       setStatusMsg(data.message || '');
+      if (data.status === 'error' || data.status === 'failed' || data.uiStatus === 'error') {
+        setErrorFeedback(previous => previous || { error: data.message || '任务执行失败', status: data.status, taskId: data.taskId, traceId: data.traceId });
+        addActivityEvent({ ...data, type: 'error', description: data.message || '任务执行失败', status: 'error', error: eventErrorText(data) });
+      }
       if (data.status === 'running' && data.timeEstimate) {
+        clearThinking();
         setGenerationProgress(previous => normalizeProgressEvent({
           ...previous,
           timeEstimate: data.timeEstimate,
@@ -499,15 +673,59 @@ export function AgentProvider({ children }) {
       if (data.status === 'completed' && data.result) {
         const result = data.result;
         const resultItems = resultMedia(result);
+        const taskId = data.taskId || data.requestId || '';
+        const messageId = data.messageId || (data.requestId ? `direct:${data.requestId}:completed` : taskId ? `direct:${taskId}:completed` : '');
         setGenerationResult({ ...result, media: resultItems });
-        setImages(result.images || []);
-        setVideos(result.videos || []);
-        setMedia(resultItems);
+        setGenerationTurn(previous => previous ? {
+          ...previous,
+          taskId: data.taskId || previous.taskId,
+          requestId: data.requestId || previous.requestId,
+          status: 'completed',
+          media: resultItems,
+          positive: data.positive || data.prompt || previous.positive,
+          negative: data.negative || previous.negative,
+          parameters: data.parameters || result.parameters || result.settings || previous.settings || {},
+        } : previous);
+        setImages(previous => mergeAssets(previous, result.images || []));
+        setVideos(previous => mergeAssets(previous, result.videos || []));
+        setMedia(previous => mergeAssets(previous, resultItems));
+        void refreshAssets({ replace: true }).catch(() => {});
+        setMessages(previous => {
+          if (messageId && previous.some(message => message.messageId === messageId)) return previous;
+          if (taskId && previous.some(message => message.directTaskId === taskId)) return previous;
+           return [...previous, {
+            role: 'agent',
+            content: `Generated ${resultItems.length} media item(s).`,
+            images: result.images || [],
+            videos: result.videos || [],
+            media: resultItems,
+              messageId,
+              directTaskId: taskId,
+               requestId: data.requestId || '',
+               turnId: data.turnId || '',
+               prompt: data.positive || data.prompt || '',
+               negative: data.negative || '',
+               workflowName: data.workflowName || result.workflowName || '',
+               parameters: data.parameters || result.parameters || result.settings || {},
+               nodeOverrides: data.nodeOverrides || result.nodeOverrides || {},
+               generationSource: 'direct',
+               time: timeStr(),
+           }];
+        });
       }
       if (['completed', 'failed', 'cancelled'].includes(data.status)) {
         clearQueuedProgress();
         setGenerationPending(false);
+        if (data.status === 'completed') setGenerationProgress(previous => normalizeProgressEvent({ ...previous, stage: 'completed', percent: 100, overallPercent: 100, message: data.message || '生成完成' }, previous));
+        else setGenerationProgress(null);
+      }
+      if (data.status === 'stopping') {
+        activeDirectRequestIdRef.current = data.requestId || activeDirectRequestIdRef.current;
+        activeDirectTaskIdRef.current = data.taskId || activeDirectTaskIdRef.current;
+        clearQueuedProgress();
+        setGenerationPending(true);
         setGenerationProgress(null);
+        setStatus('stopping');
       }
     }));
 
@@ -536,7 +754,7 @@ export function AgentProvider({ children }) {
       setActivityEvents(previous => [...previous, {
         ...data,
         description: `${toolLabel(data.tool)} 已完成`,
-        status: data.error ? 'error' : 'completed',
+        status: data.error && data.researchStatus ? 'warning' : (data.error ? 'error' : 'completed'),
         time: timeStr(),
       }]);
     }));
@@ -561,12 +779,25 @@ export function AgentProvider({ children }) {
 
     unsubs.push(window.electronAPI.onAgentError(data => {
       if (!isCurrentAgentEvent(data)) return;
-      setActivityEvents(previous => [...previous, {
+      setErrorFeedback({
+        error: data.message || data.error || '请求失败',
+        status: data.status || 'error',
+        taskId: data.taskId,
+        traceId: data.traceId,
+      });
+      addActivityEvent({
         ...data,
+        type: 'error',
         description: data.message,
         status: 'error',
-        time: timeStr(),
-      }]);
+        error: eventErrorText(data),
+      });
+      setGenerationPending(false);
+      setGenerationProgress(null);
+      clearQueuedProgress();
+      terminateStreamingTask(data.taskId, 'error');
+      setStatus('error');
+      setStatusMsg(formatAgentError(data));
     }));
 
     unsubs.push(window.electronAPI.onAgentPlan(data => {
@@ -610,11 +841,13 @@ export function AgentProvider({ children }) {
       streamingFrameRef.current = 0;
       streamingUpdatesRef.current.clear();
       activeTaskIdRef.current = '';
+      activeDirectTaskIdRef.current = '';
+      activeDirectRequestIdRef.current = '';
       if (thinkingFrameRef.current) window.cancelAnimationFrame(thinkingFrameRef.current);
       thinkingFrameRef.current = 0;
       thinkingUpdateRef.current = null;
     };
-  }, [session.activeProjectId, session.activeSessionId, terminateStreamingTask]);
+  }, [session.activeProjectId, session.activeSessionId, terminateStreamingTask, addActivityEvent, refreshAssets]);
 
   useEffect(() => {
     if (followConversationRef.current) {
@@ -641,13 +874,19 @@ export function AgentProvider({ children }) {
     pendingGenerationTurnIdRef.current = '';
     pendingGenerationIndexRef.current = -1;
     if (!turnId) return;
-    await window.electronAPI.agentRemoveConversationTurn?.(turnId)?.catch(() => {});
-    setMessages(previous => previous.filter(message => message.turnId !== turnId));
+    // Cancellation is terminal for this turn, but must preserve the user's
+    // original request and conversation context.
+    setMessages(previous => previous.map(message => (
+      message.turnId === turnId
+        ? { ...message, pendingGeneration: false, turnStatus: 'cancelled' }
+        : message
+    )));
   }, []);
 
   const runGeneration = useCallback(async (text, controlsOverride) => {
     if ((!text && attachments.length === 0) || status === 'running' || submissionLockRef.current) return;
     submissionLockRef.current = true;
+    const generationToken = ++generationTokenRef.current;
     if (!selectedFile) {
       setStatus('error');
       setStatusMsg('请先选择一个工作流');
@@ -660,7 +899,18 @@ export function AgentProvider({ children }) {
     setGenerationSource('ai');
     setLastGenerationRequest(text || IMAGE_ONLY_REQUEST);
     setLastGenerationNegative('');
-    activeTaskIdRef.current = '';
+    activeTaskIdRef.current = taskActive ? storedState.lastTaskId || '' : '';
+    if (taskActive && storedState.lastTaskId) {
+      setGenerationTurn(previous => previous || {
+        turnId: storedState.turnId || '',
+        taskId: storedState.lastTaskId,
+        requestId: storedState.requestId || '',
+        status: storedState.taskStatus || storedState.state || 'running',
+        positive: storedState.lastPrompt || '',
+        negative: storedState.lastCompiledPrompt?.negative || '',
+        media: [],
+      });
+    }
     setAutoConfirmPreviewId('');
     setPromptPreview(null);
     setPreview(null);
@@ -675,6 +925,8 @@ export function AgentProvider({ children }) {
     beginAgentTask();
     sendStartRef.current = Date.now();
     const turnId = newTurnId();
+    activeTurnIdRef.current = turnId;
+    setGenerationTurn({ turnId, taskId: '', requestId: '', status: 'preparing', positive: text || IMAGE_ONLY_REQUEST, negative: '', workflow: selectedFile, settings: controls.settings || {}, media: [] });
     pendingGenerationTurnIdRef.current = turnId;
     const attached = messageAttachments(attachments);
     setMessages(previous => {
@@ -695,6 +947,7 @@ export function AgentProvider({ children }) {
         projectId: session.activeProjectId,
         sessionId: session.activeSessionId,
       });
+      if (generationToken !== generationTokenRef.current) return { status: 'stale' };
       if (result?.action === 'clarify') {
         const pendingIndex = pendingGenerationIndexRef.current;
         setMessages(previous => previous.map((message, index) => (
@@ -707,6 +960,15 @@ export function AgentProvider({ children }) {
         setStatusMsg(result.response || '请补充生成信息');
         return;
       }
+      setGenerationTurn(previous => previous ? {
+        ...previous,
+        taskId: result?.taskId || previous.taskId,
+        requestId: result?.requestId || previous.requestId,
+        status: 'preview',
+        positive: result?.positive || previous.positive,
+        negative: result?.negative || previous.negative,
+        workflow: result?.workflowName || previous.workflow,
+      } : previous);
       if (result?.action === 'ai_failed') {
         await discardGenerationTurn();
         setPromptPreview(result);
@@ -720,12 +982,14 @@ export function AgentProvider({ children }) {
       setPromptPreview(result);
       setStatus('preview');
       setStatusMsg('请确认提示词和注入目标');
-    } catch (error) {
-      const userMessage = formatAgentError(error);
-      await discardGenerationTurn();
-      setGenerationPending(false);
-      setStatus('error');
-      setStatusMsg(userMessage);
+      } catch (error) {
+        if (generationToken !== generationTokenRef.current) return { status: 'stale' };
+        const userMessage = formatAgentError(error);
+        await discardGenerationTurn();
+        setGenerationPending(false);
+        setStatus('error');
+        setStatusMsg(userMessage);
+        setMessages(previous => [...previous, { role: 'agent', content: userMessage, time: timeStr(), turnId }]);
     } finally {
       submissionLockRef.current = false;
     }
@@ -733,8 +997,13 @@ export function AgentProvider({ children }) {
 
   const runDirectGeneration = useCallback(async (text, overrides = {}) => {
     if (!text && attachments.length === 0) return { status: 'empty_prompt', message: '请输入提示词或添加参考图' };
-    if (status === 'running' || submissionLockRef.current) return { status: 'busy', message: '已有生成任务正在进行' };
+    if (['running', 'preview', 'preparing', 'stopping'].includes(status) || submissionLockRef.current) {
+      const message = status === 'stopping' ? '上一任务正在收尾，请等待取消完成后再试' : '已有生成任务正在进行或等待确认';
+      setStatusMsg(message);
+      return { status: 'busy', message };
+    }
     submissionLockRef.current = true;
+    const generationToken = ++generationTokenRef.current;
     if (!selectedFile) {
       setStatus('error');
       setStatusMsg('请先选择一个工作流');
@@ -749,6 +1018,8 @@ export function AgentProvider({ children }) {
     setLastGenerationRequest(text || IMAGE_ONLY_REQUEST);
     if (typeof overrides.negative === 'string') setLastGenerationNegative(overrides.negative);
     activeTaskIdRef.current = '';
+    activeDirectTaskIdRef.current = '';
+    activeDirectRequestIdRef.current = '';
     setAutoConfirmPreviewId('');
     setPromptPreview(null);
     setPreview(null);
@@ -763,6 +1034,9 @@ export function AgentProvider({ children }) {
     beginAgentTask();
     sendStartRef.current = Date.now();
     const turnId = newTurnId();
+    activeTurnIdRef.current = turnId;
+    setGenerationTurn({ turnId, taskId: '', requestId: turnId, status: 'preparing', positive: text || IMAGE_ONLY_REQUEST, negative: overrides.negative || '', workflow: overrides.workflowName || selectedFile, settings: controls.settings || {}, media: [] });
+    registeredDirectRequestsRef.current.add(turnId);
     pendingGenerationTurnIdRef.current = turnId;
     const attached = messageAttachments(attachments);
     setMessages(previous => {
@@ -791,7 +1065,16 @@ export function AgentProvider({ children }) {
         presetOrigin: overrides.presetOrigin || '',
         executionPolicy: { retry: true, evaluate: true, mutatePrompt: false },
       });
-       const nextPreview = { ...result, quickGenerate: overrides.quickGenerate === true || overrides.autoConfirm === true };
+       if (generationToken !== generationTokenRef.current) return { status: 'stale' };
+        const nextPreview = { ...result, quickGenerate: overrides.quickGenerate === true || overrides.autoConfirm === true };
+        setGenerationTurn(previous => previous ? {
+          ...previous,
+          taskId: result?.taskId || previous.taskId,
+          requestId: result?.requestId || previous.requestId,
+          status: 'preview',
+          positive: result?.positive || previous.positive,
+          negative: result?.negative || previous.negative,
+        } : previous);
        setPromptPreview(nextPreview);
        if (overrides.autoConfirm === true) setAutoConfirmPreviewId(result.previewId || '');
        const finalWorkflowName = result?.workflow?.name || result?.workflowName || overrides.workflowName || selectedFile;
@@ -800,6 +1083,7 @@ export function AgentProvider({ children }) {
        setStatusMsg('已完成生成准备，请确认后执行');
        return { ...result, status: 'accepted', workflowName: finalWorkflowName };
     } catch (error) {
+      if (generationToken !== generationTokenRef.current) return { status: 'stale' };
       const userMessage = formatAgentError(error);
       await discardGenerationTurn();
       setGenerationPending(false);
@@ -811,12 +1095,13 @@ export function AgentProvider({ children }) {
     }
   }, [status, selectedFile, generationControls, attachments, beginAgentTask, discardGenerationTurn, session.activeProjectId, session.activeSessionId]);
 
-  const sendQuickGeneration = useCallback((text, { negative = '', workflowName = '' } = {}) => (
+  const sendQuickGeneration = useCallback((text, { negative = '', workflowName = '', controls = null } = {}) => (
     runDirectGeneration(text, {
       negative,
       workflowName: workflowName || selectedFile,
       origin: 'quick_generate',
       autoConfirm: true,
+      ...(controls ? { controls } : {}),
     })
   ), [runDirectGeneration, selectedFile]);
 
@@ -836,7 +1121,7 @@ export function AgentProvider({ children }) {
         return { status: 'dependency_failed', message, dependencyReport };
       }
     }
-    const request = buildPresetGenerationRequest(options.preset, { workflowName: selectedFile, controls: generationControls, overrides: options.overrides });
+    const request = buildPresetGenerationRequest(options.preset, { workflowName: selectedFile, controls: options.controls || generationControls, overrides: options.overrides });
     let media = request.media;
     if (window.electronAPI.globalPresetResolveResources) {
       const resolved = await window.electronAPI.globalPresetResolveResources(options.preset);
@@ -861,6 +1146,43 @@ export function AgentProvider({ children }) {
   }, [runDirectGeneration, selectedFile, generationControls]);
 
   const confirmPromptPreview = useCallback(async (edits = {}) => {
+    if (promptPreview?.action === 'generation_suggestion') {
+      const suggestion = promptPreview;
+      if (edits.action !== 'prepare_generation') return;
+      setPromptPreview(null);
+      setGenerationPending(true);
+      setStatus('running');
+      setStatusMsg('正在整理提示词...');
+      try {
+        const result = await window.electronAPI.agentHandleTurn({
+          text: suggestion.request,
+          modeHint: 'generate',
+          workflowName: selectedFile,
+          workflowManifest,
+          projectId: session.activeProjectId,
+          sessionId: session.activeSessionId,
+          turnId: suggestion.turnId || newTurnId(),
+          skipUserMessage: true,
+        });
+        const payload = result?.result && typeof result.result === 'object'
+          ? { ...result, ...result.result, result: result.result }
+          : result;
+        if (payload?.action === 'prepare' && payload.preview) {
+          setPromptPreview(payload.preview);
+          setStatus('preview');
+          setStatusMsg(payload.decision?.reason || '请确认生成预览');
+          return;
+        }
+        setGenerationPending(false);
+        setStatus('idle');
+        setStatusMsg(payload?.response || payload?.decision?.question || '未能准备生成请求');
+      } catch (error) {
+        setGenerationPending(false);
+        setStatus('error');
+        setStatusMsg(formatAgentError(error));
+      }
+      return;
+    }
     if (promptPreview?.action === 'ai_failed') {
       const request = promptPreview.originalRequest;
       await discardGenerationTurn();
@@ -876,7 +1198,12 @@ export function AgentProvider({ children }) {
     if (!promptPreview?.previewId) return;
     const previewId = promptPreview.previewId;
     const preview = promptPreview;
+    if (confirmedPreviewIdsRef.current.has(previewId) || invalidPreviewIdsRef.current.has(previewId)) return;
+    confirmedPreviewIdsRef.current.add(previewId);
+    activeTurnIdRef.current = preview.turnId || preview.executionContext?.turnId || activeTurnIdRef.current;
     activeTaskIdRef.current = '';
+    activeDirectTaskIdRef.current = promptPreview.taskId || '';
+    activeDirectRequestIdRef.current = promptPreview.requestId || '';
     setAutoConfirmPreviewId('');
     setPromptPreview(null);
     setMessages(previous => previous.filter(message => !message.previewNotice));
@@ -906,22 +1233,40 @@ export function AgentProvider({ children }) {
           confirmation: edits,
           workflowName: selectedFile,
           workflowManifest,
-          sessionId: session.activeSessionId,
+           projectId: session.activeProjectId,
+           sessionId: session.activeSessionId,
+           turnId: preview.turnId || preview.executionContext?.turnId || activeTurnIdRef.current,
+           requestId: preview.requestId || '',
+           previewId,
           recordConfirmation: false,
         });
       const executionResult = result?.result || result;
       if (executionResult?.error) throw new Error(executionResult.error);
       const resultItems = resultMedia(executionResult);
-      if (resultItems.length) {
+    if (resultItems.length) {
         setGenerationResult({ ...executionResult, media: resultItems });
+        setGenerationTurn(previous => previous ? {
+          ...previous,
+          taskId: executionResult.taskId || previous.taskId,
+          requestId: executionResult.requestId || previous.requestId,
+          status: 'completed',
+          media: resultItems,
+          positive: edits.positive || preview.positive || previous.positive,
+          negative: edits.negative || preview.negative || previous.negative,
+        } : previous);
         if (preview.presetId && window.electronAPI.globalPresetMarkUsed) void window.electronAPI.globalPresetMarkUsed(preview.presetId, true).catch(() => {});
         setImages(executionResult.images || []);
         setVideos(executionResult.videos || []);
         setMedia(resultItems);
+        setGenerationTurn(previous => previous ? { ...previous, status: 'completed', media: resultItems } : previous);
         setGenerationPending(false);
         setAssets(previous => mergeAssets(previous, resultItems));
         setMessages(previous => {
           if (preview.source === 'direct') {
+            const directTaskId = preview.taskId || preview.requestId || '';
+            const messageId = preview.requestId ? `direct:${preview.requestId}:completed` : directTaskId ? `direct:${directTaskId}:completed` : '';
+            if (messageId && previous.some(message => message.messageId === messageId)) return previous;
+            if (directTaskId && previous.some(message => message.directTaskId === directTaskId)) return previous;
             return [...previous, {
               role: 'agent',
               content: `Generated ${resultItems.length} media item(s).`,
@@ -931,6 +1276,8 @@ export function AgentProvider({ children }) {
               prompt: edits.positive || preview.positive || '',
               negative: edits.negative || preview.negative || '',
               turnId: preview.turnId || '',
+              messageId,
+              directTaskId,
               time: timeStr(),
             }];
           }
@@ -938,7 +1285,7 @@ export function AgentProvider({ children }) {
           if (index < 0) return previous;
           return previous.map((message, messageIndex) => (
             messageIndex === index
-              ? { ...message, images: mergeAssets(message.images || [], executionResult.images || []), videos: mergeAssets(message.videos || [], executionResult.videos || []), media: mergeAssets(message.media || [], resultItems) }
+               ? { ...message, images: mergeAssets(message.images || [], executionResult.images || []), videos: mergeAssets(message.videos || [], executionResult.videos || []), media: mergeAssets(message.media || [], resultItems), prompt: edits.positive || preview.positive || message.prompt || '', negative: edits.negative || preview.negative || message.negative || '', workflowName: preview.workflowName || message.workflowName || '', parameters: preview.parameters || executionResult.parameters || executionResult.settings || message.parameters || {}, nodeOverrides: preview.nodeOverrides || executionResult.nodeOverrides || message.nodeOverrides || {}, generationSource: 'direct' }
               : message
           ));
         });
@@ -980,6 +1327,7 @@ export function AgentProvider({ children }) {
   }, []);
 
   const cancelPromptPreview = useCallback(async () => {
+    generationTokenRef.current += 1;
     if (promptPreview?.previewId) {
       try {
         if (promptPreview.source === 'direct') {
@@ -1013,43 +1361,79 @@ export function AgentProvider({ children }) {
   }, []);
 
   const applyTurnResult = useCallback(async (result, requestText, modeHint = 'answer') => {
-    if (result?.action === 'clarify') {
-      setGenerationPending(false);
-      setStatus('idle');
-      setStatusMsg(result.response || result.result?.response || result.decision?.question || '请补充必要信息');
-      return;
-    }
-    if (result?.action === 'queued') {
-      setGenerationPending(false);
-      setStatus('idle');
-      setStatusMsg('\u751f\u6210\u8bf7\u6c42\u5df2\u6392\u961f\uff08\u7b2c ' + (result.position || '?') + ' \u9879\uff09');
-      return;
-    }
-    if (result?.action === 'prepare') {
-      setPromptPreview(result.preview);
-      if (result.preview?.workflowName && result.preview.workflowName !== selectedFile) setSelectedFile(result.preview.workflowName);
+    // agent:turn wraps chat responses and generation previews in `result`.
+    // Normalize that transport envelope before updating the UI.
+    const payload = result?.result && typeof result.result === 'object'
+      ? { ...result, ...result.result, result: result.result }
+      : result;
+    if (payload?.action === 'generate' && payload.preview) {
+      setPromptPreview(payload.preview);
+      setGenerationPending(true);
       setStatus('preview');
-      setStatusMsg(result.decision?.reason || '请确认生成预览');
+      setStatusMsg(payload.decision?.reason || '请确认生成预览');
       return;
     }
-    if (result?.action === 'policy_block') {
+    if (payload?.action === 'clarify') {
+      setGenerationPending(false);
+      setStatus('idle');
+       setStatusMsg(payload.response || payload.decision?.question || '请补充必要信息');
+       return;
+    }
+    if (payload?.action === 'queued') {
+      setGenerationPending(false);
+      setStatus('idle');
+       setStatusMsg('\u751f\u6210\u8bf7\u6c42\u5df2\u6392\u961f\uff08\u7b2c ' + (payload.position || '?') + ' \u9879\uff09');
+       return;
+    }
+    if (payload?.action === 'prepare') {
+       setPromptPreview(payload.preview);
+       if (payload.preview?.workflowName && payload.preview.workflowName !== selectedFile) setSelectedFile(payload.preview.workflowName);
+       setStatus('preview');
+       setStatusMsg(payload.decision?.reason || '请确认生成预览');
+       return;
+    }
+    if (payload?.action === 'policy_block') {
       setGenerationPending(false);
       setStatus('idle');
       setStatusMsg('');
+      addActivityEvent({
+        type: 'policy',
+        status: 'rejected',
+        description: '云端安全审核驳回',
+        message: payload.message || '内容未通过云端安全审核',
+        reason: payload.policyDecision?.reason || '',
+        categories: payload.policyDecision?.categories || [],
+        sentToCloud: false,
+        taskId: payload.taskId || '',
+        traceId: payload.traceId || '',
+      });
       setPolicyConfirm({
         text: requestText,
         modeHint,
         media: null,
-        turnId: result.turnId || '',
-        message: result.message || '内容被云端审查拦截',
-        categories: result.policyDecision?.categories || [],
-        reason: result.policyDecision?.reason || '',
+         turnId: payload.turnId || '',
+         message: payload.message || '内容被云端审查拦截',
+         categories: payload.policyDecision?.categories || [],
+         reason: payload.policyDecision?.reason || '',
+         requiresLocal: payload.policyDecision?.requiresLocal === true,
+         localUnavailable: payload.policyDecision?.localUnavailable === true,
       });
+      return;
+    }
+    if (payload?.action === 'suggest') {
+      setGenerationPending(false);
+      setPromptPreview({
+        action: 'generation_suggestion',
+        request: requestText,
+        turnId: payload.turnId || '',
+      });
+      setStatus('idle');
+      setStatusMsg(payload.response || '检测到图片生成请求');
       return;
     }
     setGenerationPending(false);
     setStatus('idle');
-    setStatusMsg(result.response || '已完成');
+     setStatusMsg(payload.response || '已完成');
     if (sessionInfoRef.current.messageCount === 0 && sessionInfoRef.current.title === '新会话') {
       const renameTarget = sessionInfoRef.current.sessionId;
       const renameProjectId = sessionInfoRef.current.projectId;
@@ -1061,10 +1445,14 @@ export function AgentProvider({ children }) {
         })
         .catch(() => {});
     }
-  }, [selectedFile, setSelectedFile, session]);
+  }, [selectedFile, setSelectedFile, session, addActivityEvent]);
 
   const submitTurn = useCallback(async (text, modeHint = 'answer') => {
-    if ((!text && attachments.length === 0) || status === 'running' || submissionLockRef.current) return;
+    if (!text && attachments.length === 0) return;
+    if (status === 'running' || status === 'stopping' || submissionLockRef.current) {
+      setStatusMsg(status === 'stopping' ? '上一任务正在收尾，请稍候' : '请求正在处理中，请勿重复发送');
+      return { status: 'busy' };
+    }
     submissionLockRef.current = true;
     const requestText = text || IMAGE_ONLY_REQUEST;
     generationSourceRef.current = 'chat';
@@ -1099,23 +1487,34 @@ export function AgentProvider({ children }) {
       setGenerationPending(false);
       setStatus('error');
       setStatusMsg(userMessage);
+      addActivityEvent({ type: 'error', status: 'error', description: userMessage, error: error?.message || userMessage, code: error?.code || '', taskId: activeTaskIdRef.current, traceId: error?.traceId || '' });
       setMessages(previous => [...previous, { role: 'agent', content: userMessage, time: timeStr() }]);
     } finally {
       submissionLockRef.current = false;
     }
-  }, [status, selectedFile, workflowManifest, attachments, session.activeSessionId, beginAgentTask, applyTurnResult]);
+  }, [status, selectedFile, workflowManifest, attachments, session.activeSessionId, beginAgentTask, applyTurnResult, addActivityEvent]);
 
   const confirmPolicyOverride = useCallback(async () => {
     const pending = policyConfirm;
     if (!pending || submissionLockRef.current) return;
     submissionLockRef.current = true;
+    addActivityEvent({
+      type: 'policy',
+      status: 'overridden',
+      description: '已确认手动发送',
+      message: '用户确认后继续发送到云端',
+      sentToCloud: true,
+      taskId: pending.taskId || '',
+      traceId: pending.traceId || '',
+    });
     if (pending.kind === 'openai-image') {
       setPolicyConfirm(null);
       setGenerationPending(true);
       setStatus('running');
       setStatusMsg('已确认手动发送，正在调用云端生图...');
       try {
-        const result = await window.electronAPI.imageGenerate(pending.text, {
+         const generationToken = ++generationTokenRef.current;
+         const result = await window.electronAPI.imageGenerate(pending.text, {
           projectId: session.activeProjectId,
           sessionId: session.activeSessionId,
           images: pending.images || [],
@@ -1123,18 +1522,26 @@ export function AgentProvider({ children }) {
           allowPolicyOverride: true,
           ...(pending.imageOptions || {}),
         });
-        activeImageRequestIdRef.current = pending.turnId;
+         if (generationToken !== generationTokenRef.current) return;
+         activeImageRequestIdRef.current = pending.turnId;
         activeTaskIdRef.current = result.taskId || '';
-        setImages(result.images || []);
+        const normalizedResult = normalizeGenerationResult(result);
+        setImages(normalizedResult.images || []);
+        setVideos(normalizedResult.videos || []);
+        setMedia(normalizedResult.media || []);
+        setGenerationResult(normalizedResult);
         await refreshAssets({ replace: true });
-        setMessages(previous => [...previous, { role: 'agent', content: 'OpenAI Image 生成完成。', images: result.images || [], time: timeStr(), turnId: pending.turnId }]);
+        setMessages(previous => [...previous, { role: 'agent', content: 'OpenAI Image 生成完成。', images: normalizedResult.images || [], media: normalizedResult.media || [], time: timeStr(), turnId: pending.turnId }]);
         setLastGenerationRequest(pending.text);
         setGenerationSource('openai-image');
         setStatus('idle');
         setStatusMsg('生成完成');
       } catch (error) {
         setStatus('error');
-        setStatusMsg(formatAgentError(error));
+        const userMessage = formatAgentError(error);
+        setStatusMsg(userMessage);
+        addActivityEvent({ type: 'error', status: 'error', description: userMessage, error: error?.message || userMessage, code: error?.code || '', taskId: activeTaskIdRef.current, traceId: error?.traceId || '' });
+         setMessages(previous => [...previous, { role: 'agent', content: userMessage, time: timeStr(), turnId: pending.turnId }]);
       } finally {
         setGenerationPending(false);
         submissionLockRef.current = false;
@@ -1144,7 +1551,6 @@ export function AgentProvider({ children }) {
     setPolicyConfirm(null);
     setGenerationPending(true);
     setThinking('');
-    setActivityEvents([]);
     setGenerationProgress(null);
     beginAgentTask();
     sendStartRef.current = Date.now();
@@ -1167,23 +1573,37 @@ export function AgentProvider({ children }) {
       setGenerationPending(false);
       setStatus('error');
       setStatusMsg(userMessage);
+      addActivityEvent({ type: 'error', status: 'error', description: userMessage, error: error?.message || userMessage, code: error?.code || '', taskId: activeTaskIdRef.current, traceId: error?.traceId || '' });
       setMessages(previous => [...previous, { role: 'agent', content: userMessage, time: timeStr() }]);
     } finally {
       submissionLockRef.current = false;
     }
-  }, [policyConfirm, selectedFile, workflowManifest, session.activeSessionId, beginAgentTask, applyTurnResult]);
+  }, [policyConfirm, selectedFile, workflowManifest, session.activeSessionId, beginAgentTask, applyTurnResult, addActivityEvent]);
 
   const cancelPolicyOverride = useCallback(() => {
+    addActivityEvent({
+      type: 'policy',
+      status: 'cancelled',
+      description: '已取消发送',
+      message: '内容未发送到云端',
+      sentToCloud: false,
+      taskId: policyConfirm?.taskId || '',
+      traceId: policyConfirm?.traceId || '',
+    });
     setPolicyConfirm(null);
     setGenerationPending(false);
     setStatus('idle');
     setStatusMsg('已取消发送（内容被云端审查拦截）。');
     setMessages(previous => [...previous, { role: 'agent', content: '已取消发送：内容被云端审查拦截，未发送到云端。', time: timeStr() }]);
-  }, []);
+  }, [policyConfirm, addActivityEvent]);
 
   const handleSend = useCallback(async (action = 'answer', imageOptions = {}, textOverride = null) => {
     const text = textOverride === null ? input.trim() : String(textOverride || '').trim();
-    if ((!text && attachments.length === 0) || status === 'running' || submissionLockRef.current) return;
+    if (!text && attachments.length === 0) return;
+    if (status === 'running' || status === 'stopping' || submissionLockRef.current) {
+      setStatusMsg(status === 'stopping' ? '上一任务正在收尾，请稍候' : '请求正在处理中，请勿重复发送');
+      return { status: 'busy' };
+    }
     setInput('');
 
     setEditingMessageIndex(-1);
@@ -1198,26 +1618,43 @@ export function AgentProvider({ children }) {
       activeImageRequestIdRef.current = turnId;
       setMessages(previous => [...previous, { role: 'user', content: text, time: timeStr(), turnId }]);
       try {
-        const result = await window.electronAPI.imageGenerate(text, {
+         const generationToken = ++generationTokenRef.current;
+         const result = await window.electronAPI.imageGenerate(text, {
           projectId: session.activeProjectId,
           sessionId: session.activeSessionId,
           images: attachments,
           requestId: turnId,
           ...imageOptions,
         });
-        setImages(result.images || []);
-        activeTaskIdRef.current = result.taskId || '';
-        await refreshAssets({ replace: true });
-        setMessages(previous => [...previous, { role: 'agent', content: 'OpenAI Image 生成完成。', images: result.images || [], time: timeStr(), turnId }]);
+          if (generationToken !== generationTokenRef.current) return;
+          const normalizedResult = normalizeGenerationResult(result);
+         setImages(normalizedResult.images || []);
+         setVideos(normalizedResult.videos || []);
+         setMedia(normalizedResult.media || []);
+         setGenerationResult(normalizedResult);
+         activeTaskIdRef.current = result.taskId || '';
+         await refreshAssets({ replace: true });
+         setMessages(previous => [...previous, { role: 'agent', content: 'OpenAI Image 生成完成。', images: normalizedResult.images || [], media: normalizedResult.media || [], time: timeStr(), turnId }]);
         setLastGenerationRequest(text);
         setGenerationSource('openai-image');
         setStatus('idle');
         setStatusMsg('生成完成');
       } catch (error) {
-        if (error?.code === 'CLOUD_POLICY_BLOCKED') {
-          setGenerationPending(false);
-          setStatus('idle');
-          setPolicyConfirm({
+         if (error?.code === 'CLOUD_POLICY_BLOCKED') {
+           setGenerationPending(false);
+           setStatus('idle');
+           addActivityEvent({
+             type: 'policy',
+             status: 'rejected',
+             description: '云端安全审核驳回',
+             message: error.message || '内容未通过云端安全审核',
+             reason: error.policyDecision?.reason || '',
+             categories: error.policyDecision?.categories || [],
+             sentToCloud: false,
+             taskId: error.taskId || turnId,
+             traceId: error.traceId || '',
+           });
+           setPolicyConfirm({
             kind: 'openai-image',
             text,
             images: attachments,
@@ -1226,11 +1663,15 @@ export function AgentProvider({ children }) {
             message: error.message || '内容被云端审查拦截',
             categories: error.policyDecision?.categories || [],
             reason: error.policyDecision?.reason || '',
+            requiresLocal: error.policyDecision?.requiresLocal === true,
+            localUnavailable: error.policyDecision?.localUnavailable === true,
           });
           return;
         }
         setStatus('error');
-        setStatusMsg(formatAgentError(error));
+        const userMessage = formatAgentError(error);
+        setStatusMsg(userMessage);
+        addActivityEvent({ type: 'error', status: 'error', description: userMessage, error: error?.message || userMessage, code: error?.code || '', taskId: activeTaskIdRef.current, traceId: error?.traceId || '' });
       } finally {
         setGenerationPending(false);
         submissionLockRef.current = false;
@@ -1239,27 +1680,39 @@ export function AgentProvider({ children }) {
     }
     if (action === 'answer') setAttachments([]);
     return submitTurn(text, action === 'generate' ? 'generate' : 'answer');
-  }, [input, status, attachments, runDirectGeneration, submitTurn, session.activeProjectId, session.activeSessionId, refreshAssets]);
+  }, [input, status, attachments, runDirectGeneration, submitTurn, session.activeProjectId, session.activeSessionId, refreshAssets, addActivityEvent]);
 
-  const handleRegenerate = useCallback((feedbackType = 'regenerate') => {
-    const controls = { ...generationControls };
+  const handleRegenerate = useCallback((record = null, feedbackType = 'regenerate') => {
+    if (typeof record === 'string') {
+      feedbackType = record;
+      record = null;
+    }
+    const source = record?.generationSource || generationSourceRef.current;
+    const request = (record?.prompt || lastGenerationRequest).trim();
+    const negative = record?.negative ?? lastGenerationNegative;
+    const controls = {
+      ...generationControls,
+      settings: { ...(record?.parameters || generationControls.settings || {}) },
+      nodeOverrides: record?.nodeOverrides || generationControls.nodeOverrides || {},
+      outputNodeIds: record?.outputNodeIds || generationControls.outputNodeIds || null,
+    };
     // Regenerate means a new sample. Reusing an existing seed produces the same image.
     controls.settings = { ...(controls.settings || {}), seed: Math.floor(Math.random() * 0xFFFFFFFF) };
-    if (generationSourceRef.current === 'direct') {
-      runDirectGeneration(lastGenerationRequest.trim(), { controls, negative: lastGenerationNegative });
+    if (source === 'direct') {
+      runDirectGeneration(request, { controls, negative, workflowName: record?.workflowName || selectedFile });
       return;
     }
-    if (generationSourceRef.current === 'openai-image') {
-      void handleSend('openai-image', { ...controls, count: 1 }, lastGenerationRequest.trim());
+    if (source === 'openai-image') {
+      void handleSend('openai-image', { ...controls, count: 1 }, request);
       return;
     }
     void window.electronAPI.agentFeedback(feedbackType);
-    runGeneration(lastGenerationRequest.trim(), controls);
-  }, [lastGenerationRequest, lastGenerationNegative, runGeneration, runDirectGeneration, generationControls, handleSend]);
+    runGeneration(request, controls);
+  }, [lastGenerationRequest, lastGenerationNegative, runGeneration, runDirectGeneration, generationControls, handleSend, selectedFile]);
 
   const recordFeedback = useCallback(async (type, details = {}) => {
     if (type === 'regenerate' || type === 'new_seed') {
-      if (lastGenerationRequest && status !== 'running') handleRegenerate(type);
+       if (lastGenerationRequest && status !== 'running') handleRegenerate(null, type);
       return { handled: true };
     }
     if (type === 'edit_prompt' && lastGenerationRequest) setInput(lastGenerationRequest);
@@ -1268,18 +1721,43 @@ export function AgentProvider({ children }) {
   }, [lastGenerationRequest, status, handleRegenerate]);
 
   const handleCancel = useCallback(async () => {
-    terminateStreamingTask(activeTaskIdRef.current, 'cancelled');
+    generationTokenRef.current += 1;
+    const taskId = activeTaskIdRef.current;
+    const currentPreview = promptPreview;
+    if (currentPreview?.previewId) invalidPreviewIdsRef.current.add(currentPreview.previewId);
+    if (activeTurnIdRef.current) blockedTurnIdsRef.current.add(activeTurnIdRef.current);
+    activeTaskIdRef.current = '';
+    if (activeDirectRequestIdRef.current) blockedTaskIdsRef.current.add(activeDirectRequestIdRef.current);
+    activeDirectRequestIdRef.current = '';
+    activeDirectTaskIdRef.current = '';
+    activeTurnIdRef.current = '';
+    terminateStreamingTask(taskId, 'cancelled');
     setGenerationProgress(null);
+    setPromptPreview(null);
+    setAutoConfirmPreviewId('');
+    setGenerationTurn(previous => previous ? { ...previous, status: 'cancelled' } : previous);
     if (generationSourceRef.current === 'direct' || generationSourceRef.current === 'ai') {
       await discardGenerationTurn();
     }
-    if (generationSourceRef.current === 'direct') await window.electronAPI.directCancel();
-    else if (generationSourceRef.current === 'openai-image') await window.electronAPI.imageCancel(activeImageRequestIdRef.current);
-    else await window.electronAPI.agentCancel(activeTaskIdRef.current);
-    setGenerationPending(false);
-    setStatus('idle');
-    setStatusMsg('已取消');
-  }, [terminateStreamingTask, discardGenerationTurn]);
+    let cancelMessage = '已取消';
+    let cancellation = null;
+    try {
+      if (generationSourceRef.current === 'direct') {
+        if (currentPreview?.previewId) await window.electronAPI.directDiscardPreview(currentPreview.previewId).catch(() => {});
+        cancellation = await window.electronAPI.directCancel();
+      } else if (generationSourceRef.current === 'openai-image') {
+        await window.electronAPI.imageCancel(activeImageRequestIdRef.current);
+      } else {
+        await window.electronAPI.agentCancel(taskId);
+      }
+    } catch (error) {
+      cancelMessage = `取消请求失败：${formatAgentError(error)}`;
+    }
+    const stopping = generationSourceRef.current === 'direct' && cancellation?.cancelled && !cancellation?.settled;
+    setGenerationPending(stopping);
+    setStatus(stopping ? 'stopping' : 'idle');
+    setStatusMsg(stopping ? '取消请求已发送，正在等待后台任务收尾' : cancelMessage);
+  }, [promptPreview, terminateStreamingTask, discardGenerationTurn]);
 
   const handleKeyDown = useCallback((event, action = 'answer') => {
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -1292,6 +1770,7 @@ export function AgentProvider({ children }) {
     if (status === 'running') return;
     terminateStreamingTask(activeTaskIdRef.current, 'cancelled');
     if (promptPreview?.previewId) {
+      invalidPreviewIdsRef.current.add(promptPreview.previewId);
       try {
         if (promptPreview.source === 'direct') await window.electronAPI.directDiscardPreview(promptPreview.previewId);
         else await window.electronAPI.agentDiscardPreview(promptPreview.previewId);
@@ -1308,11 +1787,14 @@ export function AgentProvider({ children }) {
     setGenerationPending(false);
     setGenerationProgress(null);
     setGenerationResult(null);
+    setGenerationTurn(null);
     setPromptPreview(null);
     setPreview(null);
     setAttachments([]);
     setTrace(null);
     setActivityEvents([]);
+    setErrorFeedback(null);
+    setFeedbackOpen(false);
     setContextUsage(null);
     setPolicyConfirm(null);
     setAutoConfirmPreviewId('');
@@ -1320,6 +1802,10 @@ export function AgentProvider({ children }) {
     pendingGenerationIndexRef.current = -1;
     pendingGenerationTurnIdRef.current = '';
     activeTaskIdRef.current = '';
+    activeTurnIdRef.current = '';
+    blockedTurnIdsRef.current.clear();
+    invalidPreviewIdsRef.current.clear();
+    confirmedPreviewIdsRef.current.clear();
     activeImageRequestIdRef.current = '';
     submissionLockRef.current = false;
     setThinking('');
@@ -1339,6 +1825,11 @@ export function AgentProvider({ children }) {
     handleAttachMedia,
     removeAttachment,
     activityEvents,
+    executionRecords: session.sessionState?.executionRecords || {},
+    errorFeedback,
+    setErrorFeedback,
+    feedbackOpen,
+    setFeedbackOpen,
     status,
     setStatus,
     statusMsg,
@@ -1365,6 +1856,7 @@ export function AgentProvider({ children }) {
     setGenerationProgress,
     generationResult,
     generationPending,
+    generationTurn,
     preview,
     setPreview,
     promptPreview,

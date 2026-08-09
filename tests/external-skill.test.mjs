@@ -19,6 +19,7 @@ test('external Skill manifests are validated and become safe plans', () => {
   const step = skill.steps('two heroes').at(-1);
   assert.equal(step.input.workflowName, 'comic.json');
   assert.deepEqual(step.input.settings, { width: 768, height: 1024, batch: 2 });
+  assert.equal(skill.steps('two heroes', { workflowName: 'other.json' }).at(-1).input.workflowName, 'comic.json');
 });
 
 test('external Skill routing uses keywords and never loads executable code', () => {

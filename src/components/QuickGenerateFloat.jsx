@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAgent } from '../contexts/AgentContext.jsx';
 import { useComfyUI } from '../contexts/ComfyUIContext.jsx';
-import { useSession } from '../contexts/SessionContext.jsx';
 import ImageAsset from './ImageAsset.jsx';
 import AssetPreviewModal from './AssetPreviewModal.jsx';
 import Icon from './Icon.jsx';
@@ -9,11 +8,10 @@ import FloatingPresetView from './FloatingPresetView.jsx';
 import { presetDefaultControls, presetWorkflowName } from '../runtime/preset-generation.mjs';
 import H3VideoPanel from './H3VideoPanel.jsx';
 import { isMiniMaxH3Workflow } from './h3-video-controls.mjs';
+import { useI18n } from '../i18n/I18nContext.jsx';
 
 const INITIAL_PROMPT = '';
 const INITIAL_NEGATIVE = '';
-const TASK_STORAGE_PREFIX = 'comfy-agent.quick-generate-task.';
-const QUICK_PREPARE_TIMEOUT_MS = 120000;
 const QUICK_RESULT_DISPLAY_MS = 8000;
 
 function normalizePrompt(value = '') {
@@ -33,19 +31,6 @@ function replacePrompt(value) {
   return normalizePrompt(value).trim();
 }
 
-function taskStorageKey(projectId, sessionId) {
-  return `${TASK_STORAGE_PREFIX}${projectId || 'default'}.${sessionId || 'default'}`;
-}
-
-function readTask(projectId, sessionId) {
-  try {
-    const value = JSON.parse(window.localStorage.getItem(taskStorageKey(projectId, sessionId)) || 'null');
-    return value && typeof value === 'object' ? value : null;
-  } catch {
-    return null;
-  }
-}
-
 function ProgressRing({ progress, status, indeterminate = false }) {
   const radius = 27;
   const circumference = 2 * Math.PI * radius;
@@ -59,32 +44,27 @@ function ProgressRing({ progress, status, indeterminate = false }) {
 }
 
 function PromptChips({ value, onRemove }) {
+  const { t } = useI18n();
   const parts = normalizePrompt(value).split(',').map(item => item.trim()).filter(Boolean);
-  if (!parts.length) return <span className="quick-prompt-empty">还没有提示词片段</span>;
-  return <div className="quick-prompt-chips">{parts.map((part, index) => <span className="quick-prompt-chip" key={`${part}-${index}`}><span>{part}</span><button type="button" onClick={() => onRemove(index)} aria-label={`删除${part}`}><Icon name="close" size={10} /></button></span>)}</div>;
+  if (!parts.length) return <span className="quick-prompt-empty">{t('floatNoPromptParts')}</span>;
+  return <div className="quick-prompt-chips">{parts.map((part, index) => <span className="quick-prompt-chip" key={`${part}-${index}`}><span>{part}</span><button type="button" onClick={() => onRemove(index)} aria-label={t('floatRemovePart', { part })}><Icon name="close" size={10} /></button></span>)}</div>;
 }
 
 export default function QuickGenerateFloat({ onClose, visible = true }) {
-  const { generationProgress, generationPending, generationResult, status: agentStatus, statusMsg, preview, sendQuickGeneration, runLibraryGeneration, handleCancel, cancelPromptPreview, setPreview, monitorRecoveryTask } = useAgent();
+  const { t } = useI18n();
+  const { generationProgress, generationPending, generationResult, status: agentStatus, statusMsg, preview, sendQuickGeneration, runLibraryGeneration, handleCancel, setPreview } = useAgent();
   const { selectedFile, selectWorkflow, workflowFiles, workflowManifest, setGenerationControls } = useComfyUI();
-  const { activeProjectId, activeSessionId, sessionState } = useSession();
   const [collapsed, setCollapsed] = useState(false);
   const [tab, setTab] = useState('positive');
   const [positive, setPositive] = useState(INITIAL_PROMPT);
   const [negative, setNegative] = useState(INITIAL_NEGATIVE);
-  const [status, setStatus] = useState('idle');
-  const [task, setTask] = useState(null);
   const [resultOnly, setResultOnly] = useState(false);
-  const requestedRef = useRef(false);
-  const recoveryTaskRef = useRef(false);
   const dragRef = useRef(null);
   const tabRef = useRef(tab);
-  const prepareTimeoutRef = useRef(null);
   const resultTimerRef = useRef(null);
   const resultDeadlineRef = useRef(null);
   const resultRemainingRef = useRef(0);
   const resultWasCollapsedRef = useRef(false);
-  const generationBaselineRef = useRef(null);
   const [resultCountdown, setResultCountdown] = useState(0);
   const [view, setView] = useState('quick');
   const [generationPage, setGenerationPage] = useState('image');
@@ -92,7 +72,8 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
   const [dragReceiving, setDragReceiving] = useState(false);
   const [h3Readiness, setH3Readiness] = useState(null);
   const incomingDragRef = useRef(null);
-  const isBusy = ['preparing', 'confirming', 'running'].includes(status);
+  const status = agentStatus === 'completed' ? 'complete' : agentStatus === 'error' || agentStatus === 'failed' ? 'failed' : agentStatus === 'preview' ? 'confirming' : agentStatus || 'idle';
+  const isBusy = generationPending || ['preparing', 'confirming', 'running'].includes(status);
   tabRef.current = tab;
 
   function stopResultCountdown() {
@@ -149,56 +130,6 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
   }
 
   useEffect(() => {
-    const restored = readTask(activeProjectId, activeSessionId);
-    if (!restored) {
-      setTask(null);
-      setStatus('idle');
-      requestedRef.current = false;
-      recoveryTaskRef.current = false;
-       setPositive(normalizePrompt(sessionState?.lastPrompt || INITIAL_PROMPT));
-       setNegative(normalizePrompt(INITIAL_NEGATIVE));
-      return;
-    }
-     setPositive(normalizePrompt(restored.positive || INITIAL_PROMPT));
-     setNegative(normalizePrompt(restored.negative || INITIAL_NEGATIVE));
-    setTask(restored);
-    requestedRef.current = true;
-    if (restored.phase === 'running' && restored.taskId) {
-      recoveryTaskRef.current = true;
-      setStatus('running');
-      void monitorRecoveryTask(restored.taskId).then(result => {
-        if (result?.status === 'completed' && result.result) {
-          const media = result.result.media || [...(result.result.images || []), ...(result.result.videos || [])];
-          setTask(current => ({ ...current, phase: 'complete', result: media, promptId: result.promptId || current.promptId }));
-          setStatus('complete');
-        } else if (['queued', 'running'].includes(result?.status)) {
-          setTask(current => ({ ...current, phase: 'running', promptId: result.promptId || current.promptId, progress: result.progress || current.progress }));
-          setStatus('running');
-        } else {
-          setTask(current => ({ ...current, phase: 'failed', error: result?.message || '远端任务状态未知，请重试。' }));
-          setStatus('failed');
-        }
-      }).catch(error => {
-        setTask(current => ({ ...current, phase: 'failed', error: error.message || '恢复任务失败，请重试。' }));
-        setStatus('failed');
-      });
-    } else if (['preparing', 'confirming', 'running'].includes(restored.phase)) {
-      setTask({ ...restored, phase: 'failed', error: '应用重新加载，之前的任务没有后端任务标识，请重试。' });
-      setStatus('failed');
-    } else {
-      // Completed tasks are history, not a command to reopen the result screen.
-      // Start the controller on its prompt editor so reopening the float does not
-      // trap the user in the previous generation.
-      if (restored.phase === 'complete') {
-        setTask(current => ({ ...current, phase: 'idle', result: [] }));
-        setStatus('idle');
-      } else {
-        setStatus(restored.phase === 'failed' ? 'failed' : 'idle');
-      }
-    }
-  }, [activeProjectId, activeSessionId, monitorRecoveryTask, sessionState?.lastPrompt]);
-
-  useEffect(() => {
     if (!window.electronAPI.onFloatingDrag) return undefined;
     const unsubscribe = window.electronAPI.onFloatingDrag(event => {
        if (event?.phase === 'start') {
@@ -231,71 +162,6 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
       setDragReceiving(false);
     };
   }, [isBusy, selectWorkflow, setGenerationControls, workflowFiles]);
-
-  useEffect(() => {
-    if (!activeProjectId && !activeSessionId) return;
-    try {
-      if (task) window.localStorage.setItem(taskStorageKey(activeProjectId, activeSessionId), JSON.stringify({ ...task, updatedAt: Date.now() }));
-      else window.localStorage.removeItem(taskStorageKey(activeProjectId, activeSessionId));
-    } catch {}
-  }, [activeProjectId, activeSessionId, task]);
-
-  useEffect(() => {
-    if (!requestedRef.current) return;
-    if (generationPending && task?.phase !== 'preparing') {
-      setStatus('running');
-      setTask(current => current ? { ...current, phase: 'running' } : current);
-    } else if (!generationPending && generationResult && generationResult !== generationBaselineRef.current && (agentStatus === 'complete' || agentStatus === 'completed') && ['preparing', 'confirming', 'running'].includes(task?.phase)) {
-      const result = generationResult?.media || task?.result || [];
-      setTask(current => ({ ...current, phase: 'complete', result }));
-      setStatus('complete');
-    } else if (!generationPending && generationResult && generationResult !== generationBaselineRef.current && generationResult.media?.length && task?.phase === 'running') {
-      setTask(current => ({ ...current, phase: 'complete', result: generationResult.media }));
-      setStatus('complete');
-    } else if (['error', 'failed', 'cancelled'].includes(agentStatus) && ['preparing', 'confirming', 'running'].includes(task?.phase)) {
-      setTask(current => ({ ...current, phase: agentStatus === 'cancelled' ? 'cancelled' : 'failed', error: statusMsg || '工作流执行失败' }));
-      setStatus(agentStatus === 'cancelled' ? 'idle' : 'failed');
-    }
-  }, [agentStatus, generationPending, generationResult, statusMsg, task?.phase]);
-
-  useEffect(() => {
-    if (status !== 'running' || !generationProgress || task?.phase !== 'running') return;
-    setTask(current => {
-      if (!current || (current.progress?.percent === generationProgress.percent && current.progress?.message === generationProgress.message)) return current;
-      return { ...current, progress: { percent: generationProgress.percent, indeterminate: generationProgress.indeterminate, message: generationProgress.message, node: generationProgress.node } };
-    });
-  }, [generationProgress, status, task?.phase]);
-
-  useEffect(() => {
-    if (!recoveryTaskRef.current || status !== 'running' || !task?.taskId || !monitorRecoveryTask) return undefined;
-    let active = true;
-    const check = async () => {
-      try {
-        const result = await monitorRecoveryTask(task.taskId);
-        if (!active) return;
-        if (result?.status === 'completed' && result.result) {
-          const media = result.result.media || [...(result.result.images || []), ...(result.result.videos || [])];
-          setTask(current => ({ ...current, phase: 'complete', result: media, promptId: result.promptId || current.promptId }));
-          setStatus('complete');
-        } else if (['unknown', 'unavailable', 'submit_unknown', 'archive_failed'].includes(result?.status)) {
-          setTask(current => ({ ...current, phase: 'failed', error: result?.message || '远端任务状态未知，请重试。' }));
-          setStatus('failed');
-        }
-        if (result?.progress) {
-          setTask(current => ({ ...current, progress: result.progress }));
-        }
-      } catch (error) {
-        if (!active) return;
-        setTask(current => ({ ...current, phase: 'failed', error: error.message || '恢复任务失败，请重试。' }));
-        setStatus('failed');
-      }
-    };
-    const timer = window.setInterval(() => { void check(); }, 5000);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, [monitorRecoveryTask, status, task?.taskId]);
 
   useEffect(() => {
     if (status !== 'complete') return undefined;
@@ -333,21 +199,18 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
     else resumeResultCountdown();
   }, [preview, resultOnly]);
 
-   useEffect(() => () => {
-     if (prepareTimeoutRef.current) window.clearTimeout(prepareTimeoutRef.current);
-     cancelOrbDrag();
-   }, []);
+    useEffect(() => () => cancelOrbDrag(), []);
 
   const currentValue = tab === 'positive' ? positive : negative;
   const setCurrentValue = tab === 'positive' ? setPositive : setNegative;
    const promptParts = useMemo(() => normalizePrompt(currentValue).split(',').map(item => item.trim()).filter(Boolean), [currentValue]);
   const statusLabel = { idle: 'READY', preparing: 'PREPARING', confirming: 'READY TO RUN', running: 'GENERATING', complete: 'COMPLETE', failed: 'FAILED' }[status];
-  const progressEvent = generationProgress || task?.progress || null;
+   const progressEvent = generationProgress || null;
   const progress = Number.isFinite(progressEvent?.overallPercent) ? progressEvent.overallPercent : Number(progressEvent?.percent || 0);
   const indeterminate = progressEvent?.indeterminate === true;
-  const statusDescription = { idle: '准备开始生成', preparing: '正在准备生成', confirming: '请确认生成参数', running: progressEvent?.percentScope === 'node' ? `当前节点：${progressEvent.message || progressEvent.node || '执行中'}` : progressEvent?.message || `正在生成 · ${progress}%`, complete: '生成完成 · 预览结果', failed: task?.error || statusMsg || '工作流执行失败' }[status];
-  const recentImages = (task?.result || []).slice(0, 4);
-  const workflowName = task?.workflowName || workflowManifest?.workflowName || selectedFile || '未选择工作流';
+   const statusDescription = { idle: t('floatStatusIdle'), preparing: t('floatStatusPreparing'), confirming: t('floatStatusConfirming'), running: progressEvent?.percentScope === 'node' ? t('floatCurrentNode', { node: progressEvent.message || progressEvent.node || t('floatStatusRunning') }) : progressEvent?.message || t('floatGenerating', { progress }), complete: t('floatStatusComplete'), failed: statusMsg || t('floatStatusFailed') }[status];
+   const recentImages = (generationResult?.media || []).slice(0, 4);
+   const workflowName = workflowManifest?.workflowName || selectedFile || t('floatNoWorkflowSelected');
   const modelType = workflowManifest?.modelType || workflowManifest?.promptProfile?.family || 'generic';
    // The backend performs the authoritative workflow existence/preflight check.
    // Do not block the button on a stale floating-window file list.
@@ -361,7 +224,7 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
   }
 
   useEffect(() => {
-    if (isMiniMaxH3Workflow(workflowManifest)) setGenerationPage('video');
+    setGenerationPage(isMiniMaxH3Workflow(workflowManifest) ? 'video' : 'image');
   }, [workflowManifest]);
 
   function handlePromptKeyDown(event) {
@@ -374,42 +237,22 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
      setCurrentValue(promptParts.filter((_, itemIndex) => itemIndex !== index).join(', '));
   }
 
-  function startGeneration(preset = activePreset, positiveOverride = '', negativeOverride = '') {
+  function startGeneration(preset = activePreset, positiveOverride = '', negativeOverride = '', forceNewSeed = false) {
     const generationPositive = positiveOverride || positive;
     const generationNegative = negativeOverride || negative;
-    if (!generationPositive.trim() || !generationReady || isBusy) return;
-    generationBaselineRef.current = generationResult;
+    const upscaleOnly = workflowManifest?.modes?.includes?.('upscale') || /upscale|放大|超分/i.test(`${selectedFile} ${workflowManifest?.workflowName || ''}`);
+    if ((!upscaleOnly && !generationPositive.trim()) || !generationReady || isBusy) return;
     setResultOnly(false);
     collapse();
-    requestedRef.current = true;
-    recoveryTaskRef.current = false;
-    const request = { phase: 'preparing', positive: generationPositive.trim(), negative: generationNegative.trim(), workflowName, startedAt: Date.now(), result: [], projectId: activeProjectId, sessionId: activeSessionId, presetId: preset?.id || '' };
-    setTask(request);
-    setStatus('preparing');
-    if (prepareTimeoutRef.current) window.clearTimeout(prepareTimeoutRef.current);
-     prepareTimeoutRef.current = window.setTimeout(() => {
-       void handleCancel().catch(() => {});
-       if (cancelPromptPreview) void cancelPromptPreview().catch(() => {});
-       setTask(current => current?.phase === 'preparing' ? { ...current, phase: 'failed', error: '工作流检查超时，请重试。' } : current);
-      setStatus(current => current === 'preparing' ? 'failed' : current);
-    }, QUICK_PREPARE_TIMEOUT_MS);
+    // 再次生成必须换 seed，否则复用工作流默认种子会得到相同图片。
+    const seedControls = forceNewSeed
+      ? { ...generationControls, settings: { ...(generationControls.settings || {}), seed: Math.floor(Math.random() * 0xFFFFFFFF) } }
+      : null;
     const generationPreset = preset ? { ...preset, positive: generationPositive.trim(), negative: generationNegative.trim() } : null;
-    const generation = generationPreset
-      ? runLibraryGeneration(generationPositive.trim(), generationNegative.trim(), { immediate: true, preset: generationPreset })
-      : sendQuickGeneration(generationPositive.trim(), { negative: generationNegative.trim(), workflowName: selectedFile });
-    void generation.then(result => {
-      if (prepareTimeoutRef.current) window.clearTimeout(prepareTimeoutRef.current);
-      if (!result || result.status !== 'accepted') {
-        setTask(current => ({ ...current, phase: 'failed', error: result?.message || '工作流检查失败，请重试。' }));
-        setStatus('failed');
-        return;
-      }
-      setTask(current => current ? { ...current, phase: 'running', taskId: result.taskId, workflowName: result.workflowName || current.workflowName } : current);
-    }).catch(error => {
-      if (prepareTimeoutRef.current) window.clearTimeout(prepareTimeoutRef.current);
-      setTask(current => ({ ...current, phase: 'failed', error: error.message || '工作流检查失败，请重试。' }));
-      setStatus('failed');
-    });
+    void (generationPreset
+      ? runLibraryGeneration(generationPositive.trim(), generationNegative.trim(), { immediate: true, preset: generationPreset, controls: seedControls })
+      : sendQuickGeneration(generationPositive.trim(), { negative: generationNegative.trim(), workflowName: selectedFile, controls: seedControls }))
+      .catch(() => {});
   }
 
   function openPresetLibrary() {
@@ -458,10 +301,6 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
       setPositive(normalizePrompt(payload.positive || INITIAL_PROMPT));
       setNegative(normalizePrompt(payload.negative || INITIAL_NEGATIVE));
     }
-    setStatus('idle');
-    setTask(null);
-    requestedRef.current = false;
-    recoveryTaskRef.current = false;
     if (payload.kind === 'preset-card') {
       const preset = {
         ...payload,
@@ -482,7 +321,7 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
   }
 
   function resetPreset(preset) {
-    if (!window.confirm(`恢复“${preset.title}”的默认状态？当前修改会被清除。`)) return;
+    if (!window.confirm(t('floatConfirmResetPreset', { title: preset.title }))) return;
      setPositive(normalizePrompt(preset.positive || INITIAL_PROMPT));
      setNegative(normalizePrompt(preset.negative || INITIAL_NEGATIVE));
     setGenerationControls(presetDefaultControls(preset));
@@ -490,27 +329,17 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
     if (presetWorkflow && workflowFiles.includes(presetWorkflow)) selectWorkflow(presetWorkflow);
     setActivePreset(preset);
     setTab('positive');
-    setStatus('idle');
-    setTask(null);
-    requestedRef.current = false;
   }
 
   function resetGeneration() {
     stopResultCountdown();
-    if (prepareTimeoutRef.current) window.clearTimeout(prepareTimeoutRef.current);
-    prepareTimeoutRef.current = null;
-     if (['preparing', 'confirming', 'running'].includes(status)) void handleCancel().catch(() => {});
-     else if (cancelPromptPreview) void cancelPromptPreview().catch(() => {});
-    recoveryTaskRef.current = false;
+     if (isBusy) void handleCancel().catch(() => {});
     setResultOnly(false);
     setTab('positive');
      setPositive(normalizePrompt(INITIAL_PROMPT));
      setNegative(normalizePrompt(INITIAL_NEGATIVE));
     setActivePreset(null);
     setGenerationControls({ settings: {}, nodeOverrides: {}, outputNodeIds: null });
-    setStatus('idle');
-    setTask(null);
-    requestedRef.current = false;
   }
 
   function collapse() {
@@ -523,10 +352,10 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
     resizeFloatingWindow(false);
   }
 
-  function retryGeneration() {
+  async function retryGeneration() {
     stopResultCountdown();
     setResultOnly(false);
-    startGeneration();
+    startGeneration(activePreset, '', '', true);
   }
 
   function editPrompt() {
@@ -585,22 +414,22 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
 
   return (
     <>
-      <section className={`quick-generate-float${collapsed ? ' collapsed' : ''}${dragReceiving ? ' drag-receiving' : ''}${visible || task ? '' : ' quick-generate-hidden'}`} aria-label="快速生成控制器">
-       {dragReceiving && <div className="floating-drag-receive-layer" aria-live="polite"><div className="floating-drag-receive-orb"><Icon name="download" size={22} /><strong>松开以载入卡片</strong><span>内容会载入快速生成</span></div></div>}
+      <section className={`quick-generate-float${collapsed ? ' collapsed' : ''}${dragReceiving ? ' drag-receiving' : ''}${visible ? '' : ' quick-generate-hidden'}`} aria-label={t('floatController')}>
+       {dragReceiving && <div className="floating-drag-receive-layer" aria-live="polite"><div className="floating-drag-receive-orb"><Icon name="download" size={22} /><strong>{t('floatReleaseToLoad')}</strong><span>{t('floatReleaseHint')}</span></div></div>}
       {view === 'presets' ? <FloatingPresetView onBack={() => setView('quick')} onAdjust={preset => selectPreset(preset)} onGenerate={preset => selectPreset(preset, true)} onReset={resetPreset} /> : collapsed ? (
-        <button className="quick-generate-orb" type="button" onPointerDown={handleOrbPointerDown} onPointerMove={handleOrbPointerMove} onPointerUp={handleOrbPointerUp} onPointerCancel={handleOrbPointerUp} title="展开快速生成">
+        <button className="quick-generate-orb" type="button" onPointerDown={handleOrbPointerDown} onPointerMove={handleOrbPointerMove} onPointerUp={handleOrbPointerUp} onPointerCancel={handleOrbPointerUp} title={t('floatExpand')}>
           <ProgressRing progress={progress} status={status} indeterminate={indeterminate} />
           <span className="quick-generate-orb-content">{status === 'running' ? (indeterminate ? '...' : `${progress}%`) : <Icon name={status === 'complete' ? 'check' : status === 'failed' ? 'circleAlert' : 'spark'} size={20} />}</span>
         </button>
       ) : (
         <div className={`quick-generate-panel${resultOnly ? ' result-only' : ''}`}>
              <header className="quick-generate-header" onDoubleClick={collapse}>
-            <div><span className="section-kicker">{resultOnly ? 'RESULT' : 'QUICK GENERATE'}</span><strong>{resultOnly ? '生成完成' : '快速生成'}</strong></div>
+            <div><span className="section-kicker">{resultOnly ? 'RESULT' : 'QUICK GENERATE'}</span><strong>{resultOnly ? t('floatResultTitle') : t('floatQuickGenerate')}</strong></div>
             <div className="quick-generate-header-actions">
-               <button type="button" className="quick-generate-main" onClick={openPresetLibrary} title="打开预设卡"><Icon name="spark" size={13} /><span>预设卡</span></button>
-               <button type="button" className="quick-generate-main" onClick={() => window.electronAPI.floatingShowMain?.()} title="打开主应用"><Icon name="panelRight" size={13} /><span>主应用</span></button>
-              <button type="button" className="quick-generate-collapse" onClick={collapse} title="收起为悬浮球"><Icon name="minimize" size={14} /></button>
-              <button type="button" className="quick-generate-close" onClick={() => onClose?.()} title="隐藏悬浮窗"><Icon name="close" size={15} /></button>
+               <button type="button" className="quick-generate-main" onClick={openPresetLibrary} title={t('floatOpenPresets')}><Icon name="spark" size={13} /><span>{t('floatPresetCards')}</span></button>
+               <button type="button" className="quick-generate-main" onClick={() => window.electronAPI.floatingShowMain?.()} title={t('floatOpenMain')}><Icon name="panelRight" size={13} /><span>{t('floatMainApp')}</span></button>
+              <button type="button" className="quick-generate-collapse" onClick={collapse} title={t('floatCollapseOrb')}><Icon name="minimize" size={14} /></button>
+              <button type="button" className="quick-generate-close" onClick={() => onClose?.()} title={t('floatHideWindow')}><Icon name="close" size={15} /></button>
             </div>
           </header>
 
@@ -612,46 +441,46 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
            {!resultOnly && ['preparing', 'running'].includes(status) && <div className="quick-generate-progress"><span className={indeterminate || status === 'preparing' ? 'indeterminate' : ''} style={indeterminate || status === 'preparing' ? undefined : { width: `${progress}%` }} /></div>}
 
           {resultOnly && <div className="quick-generate-featured-result">
-             {recentImages[0] ? <ImageAsset image={recentImages[0]} onOpen={preview => setPreview({ ...preview, images: recentImages, index: 0 })} /> : <div className="quick-generate-result-empty"><Icon name="images" size={18} /><span>生成结果已完成</span></div>}
-             <span className="quick-generate-result-caption">点击结果查看大图 · {resultCountdown}s 后返回提示词</span>
+             {recentImages[0] ? <ImageAsset image={recentImages[0]} onOpen={preview => setPreview({ ...preview, images: recentImages, index: 0 })} /> : <div className="quick-generate-result-empty"><Icon name="images" size={18} /><span>{t('floatResultEmpty')}</span></div>}
+             <span className="quick-generate-result-caption">{t('floatResultCaption', { n: resultCountdown })}</span>
              <span className="quick-generate-result-countdown" style={{ width: `${Math.max(0, Math.min(100, (resultCountdown / (QUICK_RESULT_DISPLAY_MS / 1000)) * 100))}%` }} />
            </div>}
 
            {resultOnly && <div className="quick-generate-result-actions">
-              <button type="button" className="btn" onClick={editPrompt}><Icon name="edit" size={13} />编辑提示词</button>
-              <button type="button" className="btn btn-primary" onClick={retryGeneration}><Icon name="refresh" size={13} />再次生成</button>
-              <button type="button" className="btn quick-generate-reset" onClick={resetGeneration}><Icon name="trash" size={13} />清空并恢复默认</button>
+              <button type="button" className="btn" onClick={editPrompt}><Icon name="edit" size={13} />{t('floatEditPrompt')}</button>
+              <button type="button" className="btn btn-primary" onClick={retryGeneration}><Icon name="refresh" size={13} />{t('floatGenerateAgain')}</button>
+              <button type="button" className="btn quick-generate-reset" onClick={resetGeneration}><Icon name="trash" size={13} />{t('floatClearReset')}</button>
            </div>}
 
-           {!resultOnly && <div className="quick-generate-pages" role="tablist" aria-label="生成类型">
-             <button type="button" className={!videoPage ? 'active' : ''} onClick={() => selectGenerationPage('image')} role="tab" aria-selected={!videoPage}><Icon name="images" size={13} />文生图</button>
-             <button type="button" className={videoPage ? 'active video' : ''} onClick={() => selectGenerationPage('video')} role="tab" aria-selected={videoPage} title="打开视频生成页；请在下方选择 MiniMax H3 工作流"><Icon name="play" size={13} />视频生成</button>
+           {!resultOnly && <div className="quick-generate-pages" role="tablist" aria-label={t('floatGenerationType')}>
+             <button type="button" className={!videoPage ? 'active' : ''} onClick={() => selectGenerationPage('image')} role="tab" aria-selected={!videoPage}><Icon name="images" size={13} />{t('floatTextToImage')}</button>
+             <button type="button" className={videoPage ? 'active video' : ''} onClick={() => selectGenerationPage('video')} role="tab" aria-selected={videoPage} title={t('floatChooseH3First')}><Icon name="play" size={13} />{t('floatVideoGeneration')}</button>
            </div>}
 
            {!resultOnly && <div className={`quick-generation-editor${videoPage ? ' video' : ''}`}>
              <div className="quick-prompt-card">
-             <div className="quick-prompt-card-heading"><div><span className="section-kicker">PROMPT CARD</span><strong>提示词</strong></div><span>{promptParts.length} 个片段</span></div>
-            <div className="quick-prompt-tabs" role="tablist" aria-label="提示词类型">
-               <button type="button" className={tab === 'positive' ? 'active' : ''} onClick={() => setTab('positive')} role="tab" aria-selected={tab === 'positive'}><Icon name="plus" size={12} />我想要<span>{normalizePrompt(positive).split(',').filter(item => item.trim()).length}</span></button>
-               <button type="button" className={tab === 'negative' ? 'active negative' : ''} onClick={() => setTab('negative')} role="tab" aria-selected={tab === 'negative'}><Icon name="minus" size={12} />我不想要<span>{normalizePrompt(negative).split(',').filter(item => item.trim()).length}</span></button>
+             <div className="quick-prompt-card-heading"><div><span className="section-kicker">PROMPT CARD</span><strong>{t('floatPromptCard')}</strong></div><span>{t('floatPromptParts', { n: promptParts.length })}</span></div>
+            <div className="quick-prompt-tabs" role="tablist" aria-label={t('floatPromptType')}>
+               <button type="button" className={tab === 'positive' ? 'active' : ''} onClick={() => setTab('positive')} role="tab" aria-selected={tab === 'positive'}><Icon name="plus" size={12} />{t('floatIWant')}<span>{normalizePrompt(positive).split(',').filter(item => item.trim()).length}</span></button>
+               <button type="button" className={tab === 'negative' ? 'active negative' : ''} onClick={() => setTab('negative')} role="tab" aria-selected={tab === 'negative'}><Icon name="minus" size={12} />{t('floatIDontWant')}<span>{normalizePrompt(negative).split(',').filter(item => item.trim()).length}</span></button>
             </div>
             <div className="quick-prompt-card-body">
               <PromptChips value={currentValue} onRemove={removePart} />
-               <textarea value={currentValue} onChange={event => setCurrentValue(normalizePrompt(event.target.value))} onKeyDown={handlePromptKeyDown} placeholder={tab === 'positive' ? '描述主体、动作、场景和风格...' : '例如：blurry, bad anatomy'} disabled={isBusy} aria-label={tab === 'positive' ? '正向提示词' : '负向提示词'} />
-              <span className="quick-prompt-hint">内容会原样用于生成</span>
+               <textarea value={currentValue} onChange={event => setCurrentValue(normalizePrompt(event.target.value))} onKeyDown={handlePromptKeyDown} placeholder={tab === 'positive' ? t('floatPositivePlaceholder') : t('floatNegativePlaceholder')} disabled={isBusy} aria-label={tab === 'positive' ? t('floatPresetPositive') : t('floatPresetNegative')} />
+              <span className="quick-prompt-hint">{t('floatVerbatimHint')}</span>
              </div>
              </div>
              {videoPage && <H3VideoPanel onApply={setGenerationControls} onReadinessChange={setH3Readiness} workflowSelected={h3Selected} />}
            </div>}
 
-          {!resultOnly && status === 'complete' && <div className="quick-generate-results" aria-label="最近生成结果">
-            <div className="quick-generate-results-heading"><span>RESULT</span><small>{recentImages.length ? `${recentImages.length} 个结果` : '生成结果'}</small></div>
-             {recentImages.length ? <div className="quick-generate-results-strip">{recentImages.map((image, index) => <ImageAsset key={`${image.filename}-${image.createdAt}`} image={image} compact onOpen={preview => setPreview({ ...preview, images: recentImages, index })} />)}</div> : <div className="quick-generate-result-empty"><Icon name="images" size={15} /><span>结果会显示在这里</span></div>}
+          {!resultOnly && status === 'complete' && <div className="quick-generate-results" aria-label={t('floatRecentResults')}>
+            <div className="quick-generate-results-heading"><span>RESULT</span><small>{recentImages.length ? `${recentImages.length} ${t('floatRecentResults')}` : t('floatResultsHeading')}</small></div>
+             {recentImages.length ? <div className="quick-generate-results-strip">{recentImages.map((image, index) => <ImageAsset key={`${image.filename}-${image.createdAt}`} image={image} compact onOpen={preview => setPreview({ ...preview, images: recentImages, index })} />)}</div> : <div className="quick-generate-result-empty"><Icon name="images" size={15} /><span>{t('floatResultsEmpty')}</span></div>}
           </div>}
             {!resultOnly && <div className="quick-generate-meta">
-            <label className="quick-generate-workflow-label" htmlFor="quick-workflow-select"><Icon name="workflow" size={13} /><span>工作流</span></label>
-              <select id="quick-workflow-select" className="quick-generate-workflow-select" value={selectedFile} onChange={event => selectWorkflow(event.target.value)} disabled={isBusy || workflowFiles.length === 0} aria-label="选择工作流">
-              <option value="">选择工作流</option>
+            <label className="quick-generate-workflow-label" htmlFor="quick-workflow-select"><Icon name="workflow" size={13} /><span>{t('floatWorkflow')}</span></label>
+              <select id="quick-workflow-select" className="quick-generate-workflow-select" value={selectedFile} onChange={event => selectWorkflow(event.target.value)} disabled={isBusy || workflowFiles.length === 0} aria-label={t('floatChooseWorkflow')}>
+              <option value="">{t('floatChooseWorkflow')}</option>
               {workflowFiles.map(file => <option key={file} value={file}>{file}</option>)}
             </select>
              <span title={modelType}>{modelType}</span>
@@ -659,10 +488,10 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
             {!resultOnly && <div className="quick-generate-action-row">
               <button type="button" className={`quick-generate-action${status === 'running' ? ' cancel' : status === 'failed' ? ' retry' : ''}`} onClick={status === 'running' ? resetGeneration : status === 'failed' ? retryGeneration : startGeneration} disabled={status === 'running' ? false : !positive.trim() || !generationReady || isBusy}>
                <Icon name={status === 'running' ? 'stop' : status === 'complete' ? 'refresh' : status === 'failed' ? 'refresh' : 'spark'} size={19} />
-               <span>{status === 'running' ? '取消生成' : status === 'complete' ? '再次生成' : status === 'failed' ? '重试生成' : '生成'}</span>
-                <small>{status === 'running' || status === 'failed' ? statusDescription : videoPage && !h3Selected ? '请先选择 MiniMax H3 视频工作流' : videoPage && !h3Readiness?.ready ? h3Readiness?.message || '正在检查 H3 节点' : '使用当前工作流'}</small>
+               <span>{status === 'running' ? t('floatCancelGeneration') : status === 'complete' ? t('floatGenerateAgain') : status === 'failed' ? t('floatRetryGeneration') : t('floatGenerate')}</span>
+                <small>{status === 'running' || status === 'failed' ? statusDescription : videoPage && !h3Selected ? t('floatChooseH3First') : videoPage && !h3Readiness?.ready ? h3Readiness?.message || t('floatCheckingH3') : t('floatUseCurrentWorkflow')}</small>
              </button>
-             {!isBusy && <button type="button" className="btn quick-generate-reset" onClick={resetGeneration} title="清空当前结果并恢复默认提示词"><Icon name="trash" size={13} />清空</button>}
+             {!isBusy && <button type="button" className="btn quick-generate-reset" onClick={resetGeneration} title={t('floatClearReset')}><Icon name="trash" size={13} />{t('floatClear')}</button>}
            </div>}
         </div>
       )}

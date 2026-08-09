@@ -73,7 +73,7 @@ function buildAgentContext(userRequest, options = {}) {
       savedPreferences: options.project?.savedPreferences || {},
       researchSettings: options.project?.researchSettings || {},
     },
-  availableTools: options.availableTools || ['prompt_enhance', 'comfyui', 'filesystem', 'filesystem_mutate', 'system', 'web', 'workflow_inspect', 'inspect_image', 'workflow_patch', 'workflow_mutation_preview', 'workflow_mutation_commit', 'workflow_revision_list', 'workflow_rollback'],
+    availableTools: options.availableTools || Object.keys(options.tools || {}),
     availableWorkflows: options.availableWorkflows || [],
     workflowDir: options.workflowDir || '',
     workflowManifest: options.workflowManifest || null,

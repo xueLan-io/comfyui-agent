@@ -8,7 +8,7 @@ const ADAPTERS = new Map();
 
 function activeNodes(workflow) {
   const nodes = workflow.nodes || [];
-  const active = nodes.filter(node => node.mode === 0);
+  const active = nodes.filter(node => node.mode === undefined || node.mode === 0);
   return active.length > 0 ? active : nodes;
 }
 
@@ -52,7 +52,12 @@ function workflowCapabilities(workflow, family) {
   }
 
   const labelFamily = family === 'anima' ? 'anime' : family;
-  return { family, modes, labels: modes.map(mode => `${labelFamily}_${mode}`) };
+  return {
+    family,
+    modes,
+    labels: modes.map(mode => `${labelFamily}_${mode}`),
+    promptRequired: !modes.includes('upscale') && (modes.length === 0 || modes.some(mode => mode === 'txt2img' || mode === 'img2img' || mode === 'inpaint' || mode === 'txt2video')),
+  };
 }
 
 function widgetValue(node, inputName) {
@@ -149,7 +154,7 @@ export class WorkflowAdapter {
 
   static detect(workflowJson) {
     const nodes = workflowJson.nodes || [];
-    const active = nodes.filter(node => node.mode === 0);
+    const active = nodes.filter(node => node.mode === undefined || node.mode === 0);
     const inspected = active.length > 0 ? active : nodes;
     const signature = inspected
       .flatMap(node => [node.type, node.title, ...widgetValues(node), ...(node.properties?.models || []).flatMap(model => [model.name, model.directory])])
@@ -177,7 +182,10 @@ export class WorkflowAdapter {
     const modelType = WorkflowAdapter.detect(wf);
     const promptProfile = buildPromptProfile(wf, modelType);
     const adapter = ADAPTERS.get(modelType);
-    const capabilities = workflowCapabilities(wf, modelType);
+    const capabilities = {
+      ...workflowCapabilities(wf, modelType),
+      ...(wf.extra?.comfyAgent?.capabilities || {}),
+    };
     const modelRequirements = workflowModelRequirements(wf);
 
     return {

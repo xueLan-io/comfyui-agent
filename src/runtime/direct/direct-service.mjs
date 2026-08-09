@@ -58,6 +58,11 @@ function previewFor(request, workflow, validation, previewId) {
       modelReady: workflow.modelReady !== false,
     },
     workflowName: request.workflowName,
+    settings: request.settings || {},
+    nodeOverrides: request.nodeOverrides || {},
+    outputNodeIds: request.outputNodeIds || null,
+    media: request.media || {},
+    parameters: request.settings || {},
     timeEstimate: estimateGenerationTime({
       modelType: workflow.modelType || profile.family || 'generic',
       settings: request.settings,
@@ -107,7 +112,7 @@ export class DirectService {
     const mode = mediaWorkflowMode(request.media);
     const requested = await this.executor.inspect(request.workflowName, this.workflowDir);
     const supportedModes = requested?.capabilities?.modes || [];
-    const supportsReferenceMedia = (request.media.images?.length > 0 && supportedModes.includes('img2video'))
+    const supportsReferenceMedia = (request.media.images?.length > 0 && (supportedModes.includes('img2video') || supportedModes.includes('upscale')))
       || (request.media.videos?.length > 0 && supportedModes.includes('video2video'));
     if (!mode || supportedModes.includes(mode) || supportsReferenceMedia) return { workflowName: request.workflowName, manifest: requested };
     const candidates = (await this.executor.discover?.(this.workflowDir)) || [];
@@ -116,10 +121,22 @@ export class DirectService {
     return { workflowName: match.name, manifest: await this.executor.inspect(match.name, this.workflowDir) };
   }
 
-  async prepare(input, { sandboxInput = {} } = {}) {
+  async prepare(input, { sandboxInput = {}, signal } = {}) {
+    if (signal?.aborted) {
+      const error = new Error('Direct generation cancelled');
+      error.code = 'GENERATION_CANCELLED';
+      throw error;
+    }
     const request = assertDirectExecutionPolicy(directGenerationRequest(input));
     assertSandboxMedia({ ...sandboxInput, ...request.media });
     const resolved = await this._resolveWorkflow(request);
+    // Workflow inspection can finish after the caller's preparation timeout.
+    // Never publish a preview for a request that has already been cancelled.
+    if (signal?.aborted) {
+      const error = new Error('Direct generation cancelled');
+      error.code = 'GENERATION_CANCELLED';
+      throw error;
+    }
     const workflow = resolved.manifest;
     request.workflowName = resolved.workflowName;
     const validation = validateDirectRequest(request, workflow);
@@ -220,7 +237,7 @@ export class DirectService {
           } else {
             result = normalizeGenerationResult(result);
             if (!result.media.length) {
-              lastError = Object.assign(new Error('No media in output'), { failureType: 'empty_output', retryable: true });
+              lastError = Object.assign(new Error('No media in output'), { failureType: 'empty_output', retryable: true, promptId: result.promptId || '' });
             } else if (request.executionPolicy.evaluate) {
               result.technicalEvaluation = evaluateTechnical(result);
               if (result.technicalEvaluation.passed) break;
@@ -235,6 +252,9 @@ export class DirectService {
 
         throwIfCancelled();
         const failure = classifyFailure(lastError, { tool: 'comfyui' });
+        if (lastError?.promptId || lastError?.failureType === 'observe_unknown' || lastError?.failureType === 'submit_unknown') {
+          throw lastError;
+        }
         if (!failure.retryable || attempt >= maxAttempts) throw lastError;
         await waitBeforeRetry(1000 * attempt);
         request.settings = { ...request.settings, seed: Math.floor(Math.random() * 0xFFFFFFFF) };
@@ -252,6 +272,9 @@ export class DirectService {
         origin: request.origin,
         promptIssues: promptChecks(request),
         executionPolicy: request.executionPolicy,
+        settings: { ...request.settings },
+        parameters: { ...request.settings },
+        attempt: attempt,
       });
     } finally {
       this._running = false;

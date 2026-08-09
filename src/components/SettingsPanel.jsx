@@ -212,15 +212,15 @@ export default function SettingsPanel({ onClose }) {
 
   async function checkUpdate() {
     setUpdate(current => ({ ...current, status: 'checking', error: '' }));
-    try { setUpdate(await window.electronAPI.updateCheck()); } catch (error) { setUpdate(current => ({ ...current, status: 'error', error: error.message || '检查更新失败' })); }
+    try { setUpdate(await window.electronAPI.updateCheck()); } catch (error) { setUpdate(current => ({ ...current, status: 'error', error: error.message || t('settingsCheckFailed') })); }
   }
 
   async function downloadUpdate() {
-    try { setUpdate(await window.electronAPI.updateDownload(update.manifest)); } catch (error) { setUpdate(current => ({ ...current, status: 'error', error: error.message || '下载更新失败' })); }
+    try { setUpdate(await window.electronAPI.updateDownload(update.manifest)); } catch (error) { setUpdate(current => ({ ...current, status: 'error', error: error.message || t('settingsDownloadFailed') })); }
   }
 
   async function installUpdate() {
-    try { setUpdate(await window.electronAPI.updateInstall()); } catch (error) { setUpdate(current => ({ ...current, status: 'error', error: error.message || '安装更新失败' })); }
+    try { setUpdate(await window.electronAPI.updateInstall()); } catch (error) { setUpdate(current => ({ ...current, status: 'error', error: error.message || t('settingsInstallFailed') })); }
   }
 
   useEffect(() => {
@@ -272,8 +272,8 @@ export default function SettingsPanel({ onClose }) {
   async function testProvider() {
     setTestState({ status: 'testing', message: t('connecting') });
     try {
-      await saveProvider();
-      const result = await window.electronAPI.llmTest(editing.id, editing.models.find(model => model.id)?.id);
+      // 测试编辑框中的当前配置，不保存；与保存走同一份配置。
+      const result = await window.electronAPI.llmTest(editing, editing.models.find(model => model.id)?.id);
       setTestState({ status: 'ok', message: result.message || t('connectionSucceeded') });
     } catch (error) {
       setTestState({ status: 'error', message: error.message || t('connectionFailed') });
@@ -357,7 +357,7 @@ export default function SettingsPanel({ onClose }) {
       <div className="modal-header"><div><h2>{t('settings')}</h2><p className="settings-header-note">{t('settingsDescription')}</p></div><button className="btn btn-icon" onClick={onClose} title={t('close')}><Icon name="close" /></button></div>
       <div className="settings-body">
          <div className="settings-tabs" role="tablist" aria-label={t('settings')}>
-           {[['appearance', t('appearance'), t('appearanceNote')], ['models', t('models'), `${llm.providers.reduce((total, provider) => total + (provider.models?.length || 0), 0)} ${t('modelCount')}`], ['providers', t('providers'), `${llm.providers.length} ${t('providerCount')}`], ['skills', t('skills'), t('skillsNote')], ['generation', t('generation'), t('generationNote')], ['comfyui', t('connection'), comfyState.status === 'ready' ? t('connected') : t('offline')], ['mcp', t('mcp'), mcp.enabled ? t('enabled') : t('disabledStatus')], ['updates', '应用更新', appVersion ? `当前 v${appVersion}` : '版本信息']].map(([id, label, note]) => (
+           {[['appearance', t('appearance'), t('appearanceNote')], ['models', t('models'), `${llm.providers.reduce((total, provider) => total + (provider.models?.length || 0), 0)} ${t('modelCount')}`], ['providers', t('providers'), `${llm.providers.length} ${t('providerCount')}`], ['skills', t('skills'), t('skillsNote')], ['generation', t('generation'), t('generationNote')], ['comfyui', t('connection'), comfyState.status === 'ready' ? t('connected') : t('offline')], ['mcp', t('mcp'), mcp.enabled ? t('enabled') : t('disabledStatus')], ['updates', t('settingsUpdates'), appVersion ? t('settingsCurrentVersion', { version: appVersion }) : t('settingsVersionInfo')]].map(([id, label, note]) => (
           <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)} role="tab" aria-selected={tab === id} title={note}><strong>{label}</strong><small>{note}</small></button>
         ))}
       </div>
@@ -432,17 +432,17 @@ export default function SettingsPanel({ onClose }) {
         </div>}
          {tab === 'updates' && <div className="comfyui-settings">
            <section>
-             <div className="settings-section-heading"><div><h3>应用更新</h3><p>检查并安装便携版应用更新，不会修改 ComfyUI、模型或用户数据。</p></div><Icon name="refresh" size={16} /></div>
-             <div className="update-summary"><span>当前版本</span><code>v{appVersion || '未知'}</code>{update.version && <><span>可用版本</span><code>v{update.version}</code></>}</div>
-             {update.manifest?.releaseNotesUrl && <p className="settings-muted"><a href={update.manifest.releaseNotesUrl} target="_blank" rel="noreferrer">查看更新说明</a></p>}
+             <div className="settings-section-heading"><div><h3>{t('settingsUpdates')}</h3><p>{t('settingsUpdatesNote')}</p></div><Icon name="refresh" size={16} /></div>
+              <div className="update-summary"><span>{t('settingsCurrentVersionLabel')}</span><code>v{appVersion || t('settingsUnknown')}</code>{update.version && update.status !== 'latest' && <><span>{t('settingsAvailableVersion')}</span><code>v{update.version}</code></>}</div>
+             {update.manifest?.releaseNotesUrl && <p className="settings-muted"><a href={update.manifest.releaseNotesUrl} target="_blank" rel="noreferrer">{t('settingsReleaseNotes')}</a></p>}
              {update.status === 'downloading' && <progress className="update-progress" max="100" value={update.progress} />}
              {update.error && <p className="provider-status error">{update.error}</p>}
-             {update.status === 'latest' && <p className="provider-status ok">当前已是最新版本。</p>}
-             {update.status === 'full-required' && <p className="provider-status warn">此版本包含运行时升级，请从 Release 页面下载完整便携包。</p>}
+             {update.status === 'latest' && <p className="provider-status ok">{t('settingsUpToDate')}</p>}
+             {update.status === 'full-required' && <p className="provider-status warn">{t('settingsFullRequired')}</p>}
              <div className="settings-actions">
-               <button className="btn" onClick={checkUpdate} disabled={['checking', 'downloading', 'installing'].includes(update.status)}>{update.status === 'checking' ? '检查中...' : '检查更新'}</button>
-               {update.status === 'available' && <button className="btn btn-primary" onClick={downloadUpdate}>下载更新</button>}
-               {update.status === 'ready' && <button className="btn btn-primary" onClick={installUpdate}>重启并安装</button>}
+               <button className="btn" onClick={checkUpdate} disabled={['checking', 'downloading', 'installing'].includes(update.status)}>{update.status === 'checking' ? t('settingsChecking') : t('settingsCheckUpdate')}</button>
+               {update.status === 'available' && <button className="btn btn-primary" onClick={downloadUpdate}>{t('settingsDownloadUpdate')}</button>}
+               {update.status === 'ready' && <button className="btn btn-primary" onClick={installUpdate}>{t('settingsInstallUpdate')}</button>}
              </div>
            </section>
          </div>}

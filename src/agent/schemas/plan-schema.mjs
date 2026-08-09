@@ -1,6 +1,5 @@
 import { validateToolInput } from './tool-schema.mjs';
 
-const TOOL_NAMES = ['prompt_enhance', 'comfyui', 'filesystem', 'filesystem_mutate', 'system', 'web', 'workflow_inspect', 'inspect_image', 'workflow_patch', 'workflow_mutation_preview', 'workflow_mutation_commit', 'workflow_revision_list', 'workflow_rollback'];
 const EXPECTED_OUTPUTS = ['prompt', 'images', 'videos', 'files', 'validation', 'web', 'workflow', 'models', 'image', 'logs', 'patch', 'queue', 'status', 'media', 'revision', 'service', 'artifact', 'any'];
 export const MAX_PLAN_STEPS = 6;
 
@@ -11,8 +10,7 @@ const PlanStepSchema = {
     id: { type: 'string', pattern: '^step\\d+$', description: 'Unique step identifier' },
     tool: {
       type: 'string',
-      enum: TOOL_NAMES,
-      description: 'Registered tool to execute',
+      description: 'Tool name from the active tool registry',
     },
     skill: {
       type: 'string',
@@ -207,7 +205,7 @@ export function validatePlan(input, options = {}) {
   const errors = [];
   const context = options.context || {};
   const tools = options.tools || {};
-  const registeredTools = new Set(Object.keys(tools).length > 0 ? Object.keys(tools) : TOOL_NAMES);
+  const registeredTools = Object.keys(tools).length > 0 ? new Set(Object.keys(tools)) : null;
   const maxSteps = Math.min(options.maxSteps || MAX_PLAN_STEPS, MAX_PLAN_STEPS);
 
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
@@ -237,7 +235,7 @@ export function validatePlan(input, options = {}) {
     if (typeof step.id !== 'string' || !/^step\d+$/.test(step.id || '')) errors.push(`${prefix}.id: must match stepN`);
     if (step.id && seen.has(step.id)) errors.push(`${prefix}: duplicate id "${step.id}"`);
     if (step.id) seen.add(step.id);
-    if (typeof step.tool !== 'string' || !registeredTools.has(step.tool)) errors.push(`${prefix}.tool: tool is not registered`);
+    if (typeof step.tool !== 'string' || (registeredTools && !registeredTools.has(step.tool))) errors.push(`${prefix}.tool: tool is not registered`);
     if (!step.input || typeof step.input !== 'object' || Array.isArray(step.input)) errors.push(`${prefix}.input: must be an object`);
     if (typeof step.description !== 'string' || !step.description.trim()) errors.push(`${prefix}.description: must be a non-empty string`);
     if (typeof step.description === 'string' && step.description.length > 120) errors.push(`${prefix}.description: exceeds maximum length`);

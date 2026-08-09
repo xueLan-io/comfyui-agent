@@ -1,19 +1,19 @@
 import Icon from './Icon.jsx';
 import { useI18n } from '../i18n/I18nContext.jsx';
 
-const CATEGORY_LABELS = {
-  sexual_content: '色情内容',
-  sexualized_minors: '未成年色情内容',
-  graphic_violence: '暴力血腥内容',
-  self_harm: '自残自杀内容',
-  illicit_instructions: '非法指令',
-  unreviewed_media: '未审查的媒体内容',
-};
-
 export default function PolicyConfirmModal({ pending, onConfirm, onCancel }) {
   const { t } = useI18n();
   if (!pending) return null;
-  const categories = (pending.categories || []).map(category => CATEGORY_LABELS[category] || category);
+  const categoryLabel = {
+    sexual_content: t('policySexualContent'),
+    sexualized_minors: t('policySexualizedMinors'),
+    graphic_violence: t('policyGraphicViolence'),
+    self_harm: t('policySelfHarm'),
+    illicit_instructions: t('policyIllicitInstructions'),
+    unreviewed_media: t('policyUnreviewedMedia'),
+  };
+  const categories = (pending.categories || []).map(category => categoryLabel[category] || category);
+  const referenceImages = pending.images || [];
   return (
     <div className="modal-overlay prompt-preview-overlay">
       <section className="prompt-preview-panel" onClick={event => event.stopPropagation()} aria-label={t('policyReviewTitle')}>
@@ -35,7 +35,13 @@ export default function PolicyConfirmModal({ pending, onConfirm, onCancel }) {
           <section className="prompt-preview-section">
             <h3>{t('blockedContent')}</h3>
             <p className="prompt-preview-text">{pending.text}</p>
+            {referenceImages.length > 0 && (
+              <p className="prompt-preview-text"><strong>{t('policySourceLabel')}</strong>{referenceImages.map((image, index) => image.name || image.filename || t('policyAttachment', { n: index + 1 })).join('、')}</p>
+            )}
           </section>
+          {pending.requiresLocal && (
+            <div className="prompt-preview-warning">{pending.localUnavailable ? t('policyLocalUnavailable') : t('policyLocalRequired')}</div>
+          )}
           <p className="prompt-preview-assistant-note">{t('policyRiskNote')}</p>
         </div>
         <footer className="settings-footer prompt-preview-footer">

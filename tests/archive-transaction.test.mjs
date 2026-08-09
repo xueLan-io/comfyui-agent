@@ -17,3 +17,15 @@ test('archive cleans temporary and already-created files after a failed batch', 
     assert.equal(task.updates.at(-1).archiveStatus, 'archive_failed');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('archive rejects task ids that can escape the project tree', async () => {
+  const root = await mkdtemp(join(process.env.TEMP || process.env.TMP || '.', 'archive-path-'));
+  try {
+    const source = join(root, 'source.txt');
+    await writeFile(source, 'data');
+    const service = new ResultArchiveService({ projectResolver: async () => ({ id: 'p', dir: root }), mediaResolver: async () => source });
+    const result = await service.archive({ owner: { principalId: 'principal', projectId: 'p', sessionId: 's' }, taskId: '../outside', media: [{ filename: 'x.png', mediaType: 'image' }] });
+    assert.equal(result.archiveStatus, 'archive_failed');
+    assert.match(result.error, /Invalid task id/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

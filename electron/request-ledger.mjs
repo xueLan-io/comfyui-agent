@@ -1,6 +1,41 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
+export const RequestStates = Object.freeze({
+  CREATED: 'created',
+  QUEUED: 'queued',
+  PREPARING: 'preparing',
+  PREPARED: 'prepared',
+  EXECUTING: 'executing',
+  OBSERVING: 'observing',
+  SUBMIT_UNKNOWN: 'submit_unknown',
+  STOPPING: 'stopping',
+  COMPLETED: 'completed',
+  FAILED: 'failed',
+  CANCELLED: 'cancelled',
+  TIMED_OUT: 'timed_out',
+  ARCHIVE_FAILED: 'archive_failed',
+});
+
+const TERMINAL_STATES = new Set([
+  RequestStates.COMPLETED,
+  RequestStates.FAILED,
+  RequestStates.CANCELLED,
+]);
+
+const ACTIVE_STATES = new Set([
+  RequestStates.CREATED,
+  RequestStates.QUEUED,
+  RequestStates.PREPARING,
+  RequestStates.PREPARED,
+  RequestStates.EXECUTING,
+  RequestStates.OBSERVING,
+  RequestStates.SUBMIT_UNKNOWN,
+  RequestStates.STOPPING,
+  RequestStates.TIMED_OUT,
+  RequestStates.ARCHIVE_FAILED,
+]);
+
 function clone(value) {
   return value && typeof value === 'object' ? structuredClone(value) : value;
 }
@@ -63,11 +98,29 @@ export class RequestLedger {
     return requestId ? this.entries.get(requestId) || null : null;
   }
 
-  begin(requestId, { source = '', fingerprint = '', taskId = '', previewId = '', principalId = '', tenantId = '', projectId = '', sessionId = '', serviceId = '', traceId = '', schemaVersion = 1 } = {}) {
+  list({ projectId = '', sessionId = '', states = null } = {}) {
+    const wanted = Array.isArray(states) ? new Set(states) : null;
+    return [...this.entries.values()]
+      .filter(entry => (!projectId || entry.projectId === projectId)
+        && (!sessionId || entry.sessionId === sessionId)
+        && (!wanted || wanted.has(entry.state)))
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .map(clone);
+  }
+
+  isTerminal(state = '') {
+    return TERMINAL_STATES.has(state);
+  }
+
+  isActive(state = '') {
+    return ACTIVE_STATES.has(state);
+  }
+
+  begin(requestId, { source = '', fingerprint = '', taskId = '', turnId = '', previewId = '', principalId = '', tenantId = '', projectId = '', sessionId = '', serviceId = '', traceId = '', schemaVersion = 1 } = {}) {
     if (!requestId) throw new Error('requestId is required');
     const existing = this.entries.get(requestId);
     if (existing) {
-      const identity = { serviceId, principalId, tenantId, projectId, sessionId, fingerprint };
+      const identity = { serviceId, principalId, tenantId, projectId, sessionId, fingerprint, turnId, taskId };
       const identityFields = Object.keys(identity);
       if (identityFields.some(field => existing[field] && identity[field] && existing[field] !== identity[field])) {
         const error = new Error('requestId is already associated with a different request');
@@ -76,7 +129,8 @@ export class RequestLedger {
       }
       return existing;
     }
-    const entry = { schemaVersion, requestId, serviceId, principalId, tenantId, projectId, sessionId, source, fingerprint, taskId, traceId, previewId, state: 'created', recovery: { state: 'none', attempts: 0 }, preview: null, result: null, error: null, updatedAt: Date.now() };
+    const now = Date.now();
+    const entry = { schemaVersion, requestId, serviceId, principalId, tenantId, projectId, sessionId, source, fingerprint, taskId, turnId, traceId, previewId, state: RequestStates.CREATED, recovery: { state: 'none', attempts: 0 }, preview: null, result: null, error: null, createdAt: now, updatedAt: now, revision: 1 };
     this.entries.set(requestId, entry);
     this.metrics?.increment('request.created');
     void this.persist();
@@ -86,19 +140,38 @@ export class RequestLedger {
   update(requestId, patch = {}) {
     const entry = this.entries.get(requestId);
     if (!entry) return null;
-    Object.assign(entry, clone(patch), { updatedAt: Date.now() });
+    if (patch.state && !Object.values(RequestStates).includes(patch.state)) {
+      const error = new Error(`Unknown request state: ${patch.state}`);
+      error.code = 'REQUEST_STATE_INVALID';
+      throw error;
+    }
+    if (TERMINAL_STATES.has(entry.state) && patch.state && patch.state !== entry.state) {
+      const error = new Error(`Request is already terminal: ${entry.state}`);
+      error.code = 'REQUEST_TERMINAL';
+      throw error;
+    }
+    Object.assign(entry, clone(patch), { updatedAt: Date.now(), revision: (entry.revision || 0) + 1 });
     void this.persist();
     return entry;
   }
 
   complete(requestId, result) {
     this.metrics?.increment('request.completed');
-    return this.update(requestId, { state: 'completed', result, error: null });
+    return this.update(requestId, { state: RequestStates.COMPLETED, result, error: null });
   }
 
   fail(requestId, error) {
     this.metrics?.increment('request.failed');
-    return this.update(requestId, { state: 'failed', error: error ? { message: error.message || String(error), code: error.code || '' } : null });
+    return this.update(requestId, { state: error?.code === 'REQUEST_TIMEOUT' ? RequestStates.TIMED_OUT : RequestStates.FAILED, error: error ? { message: error.message || String(error), code: error.code || '' } : null });
+  }
+
+  archiveFailed(requestId, result = null, error = null) {
+    this.metrics?.increment('request.archive_failed');
+    return this.update(requestId, {
+      state: 'archive_failed',
+      result,
+      error: error ? { message: error.message || String(error), code: error.code || 'ARCHIVE_FAILED' } : null,
+    });
   }
 
   recover(requestId, { state = 'observing', taskId = '', promptId = '', recovery = 'restart' } = {}) {

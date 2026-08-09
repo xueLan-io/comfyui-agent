@@ -10,6 +10,7 @@ import { checkPromptStructure, STRUCTURE_LABELS } from '../agent/optimizer/promp
 import { formatWeight, normalizePromptPart, removePromptPart, reorderPromptPart, splitPromptParts, updatePromptWeight } from './prompt-parser.mjs';
 import Icon from './Icon.jsx';
 import { DragGhost, useFloatingCardDrag } from './useFloatingCardDrag.jsx';
+import { useI18n } from '../i18n/I18nContext.jsx';
 
 const PAGE_SIZE = 120;
 const WEIGHT_STEP = 0.1;
@@ -34,55 +35,61 @@ function useDebouncedValue(value, delay = 200) {
   return debounced;
 }
 
-const ANIME_PRESETS = [
-  { id: 'anime-portrait', title: '人物肖像', description: '半身、清晰脸部和表情', prompt: 'anime illustration, solo character, upper body, expressive eyes, clean lineart, detailed hair, soft cel shading' },
-  { id: 'anime-full-body', title: '完整角色', description: '全身立绘和角色设定', prompt: 'anime illustration, solo character, full body, clear silhouette, balanced pose, detailed costume, clean lineart' },
-  { id: 'anime-key-visual', title: '作品主视觉', description: '封面、海报和宣传图', prompt: 'anime key visual, strong focal composition, polished character design, vibrant controlled colors, cinematic lighting' },
-  { id: 'anime-school-life', title: '校园日常', description: '轻松明亮的场景氛围', prompt: 'anime illustration, student character, school uniform, warm daylight, gentle everyday atmosphere, detailed background' },
-];
+function animePresets(t) {
+  return [
+    { id: 'anime-portrait', title: t('plPresetPortrait'), description: t('plPresetPortraitDesc'), prompt: 'anime illustration, solo character, upper body, expressive eyes, clean lineart, detailed hair, soft cel shading' },
+    { id: 'anime-full-body', title: t('plPresetFullBody'), description: t('plPresetFullBodyDesc'), prompt: 'anime illustration, solo character, full body, clear silhouette, balanced pose, detailed costume, clean lineart' },
+    { id: 'anime-key-visual', title: t('plPresetKeyVisual'), description: t('plPresetKeyVisualDesc'), prompt: 'anime key visual, strong focal composition, polished character design, vibrant controlled colors, cinematic lighting' },
+    { id: 'anime-school-life', title: t('plPresetSchoolLife'), description: t('plPresetSchoolLifeDesc'), prompt: 'anime illustration, student character, school uniform, warm daylight, gentle everyday atmosphere, detailed background' },
+  ];
+}
 
-const PROMPT_STAGES = [
-  { id: 'subject', label: '主体', description: '画面里是谁或是什么', categoryIds: ['subject', 'character-role'] },
-  { id: 'appearance', label: '外观', description: '脸、发型、服装和配饰', categoryIds: ['character-face', 'character-eyes', 'character-hair', 'character-build', 'character-clothing', 'character-accessory', 'character-detail'] },
-  { id: 'pose', label: '动作', description: '表情、动作和视线', categoryIds: ['character-expression', 'character-pose', 'character-action'] },
-  { id: 'composition', label: '构图', description: '画面范围和视角', categoryIds: ['composition'] },
-  { id: 'scene', label: '场景', description: '环境、背景和光线', categoryIds: ['environment', 'lighting'] },
-  { id: 'finish', label: '风格', description: '画师标签、画风和最后的质量调整', categoryIds: ['style', 'artist', 'detail'] },
-];
+function promptStages(t) {
+  return [
+    { id: 'subject', label: t('plStageSubject'), description: t('plStageSubjectDesc'), categoryIds: ['subject', 'character-role'] },
+    { id: 'appearance', label: t('plStageAppearance'), description: t('plStageAppearanceDesc'), categoryIds: ['character-face', 'character-eyes', 'character-hair', 'character-build', 'character-clothing', 'character-accessory', 'character-detail'] },
+    { id: 'pose', label: t('plStagePose'), description: t('plStagePoseDesc'), categoryIds: ['character-expression', 'character-pose', 'character-action'] },
+    { id: 'composition', label: t('plStageComposition'), description: t('plStageCompositionDesc'), categoryIds: ['composition'] },
+    { id: 'scene', label: t('plStageScene'), description: t('plStageSceneDesc'), categoryIds: ['environment', 'lighting'] },
+    { id: 'finish', label: t('plStageFinish'), description: t('plStageFinishDesc'), categoryIds: ['style', 'artist', 'detail'] },
+  ];
+}
 
-const PROMPT_INTENTS = [
-  { id: 'portrait', label: '人物肖像', stage: 'appearance', description: '脸部、发型和表情' },
-  { id: 'full-body', label: '完整角色', stage: 'pose', description: '姿势、服装和轮廓' },
-  { id: 'scene', label: '场景氛围', stage: 'scene', description: '环境、光线和情绪' },
-  { id: 'style', label: '风格探索', stage: 'finish', description: '画风、材质和渲染' },
-  { id: 'fix', label: '问题修复', stage: 'finish', description: '手部、构图和细节' },
-];
+function promptIntents(t) {
+  return [
+    { id: 'portrait', label: t('plIntentPortrait'), stage: 'appearance', description: t('plIntentPortraitDesc') },
+    { id: 'full-body', label: t('plIntentFullBody'), stage: 'pose', description: t('plIntentFullBodyDesc') },
+    { id: 'scene', label: t('plIntentScene'), stage: 'scene', description: t('plIntentSceneDesc') },
+    { id: 'style', label: t('plIntentStyle'), stage: 'finish', description: t('plIntentStyleDesc') },
+    { id: 'fix', label: t('plIntentFix'), stage: 'finish', description: t('plIntentFixDesc') },
+  ];
+}
 
 const BROWSE_GROUP_IDS = ['character', 'action-expression', 'composition', 'scene', 'lighting', 'style', 'artist', 'quality'];
 const MY_CONTENT_GROUP_IDS = ['favorites', 'custom'];
 
-function promptPathForItem(item, taxonomyGroups) {
-  if (item.category === 'custom') return ['我的内容', '自定义词条'];
-  if (item.category === 'collected') return ['收集词库', item.kind === 'phrase' ? '完整短语' : (item.tagGroup || '未分类')];
+function promptPathForItem(item, taxonomyGroups, t) {
+  if (item.category === 'custom') return [t('plPathMyContent'), t('plPathCustom')];
+  if (item.category === 'collected') return [t('plPathCollected'), item.kind === 'phrase' ? t('plPathPhrase') : (item.tagGroup || t('plPathUncategorized'))];
 
   const parent = taxonomyGroups.find(group => BROWSE_GROUP_IDS.includes(group.id) && matchesPromptTaxonomy(item, group));
-  if (!parent) return [categoryLabel(item.category)];
+  if (!parent) return [categoryLabel(item.category, t)];
   const child = parent.children?.find(group => group.itemIds?.includes(item.id))
     || parent.children?.find(group => matchesPromptTaxonomy(item, group));
   const childPath = child?.id.startsWith('clothing-')
-    ? ['服装', child.label]
+    ? [t('plPathClothing'), child.label]
     : ['character-body', 'character-chest', 'character-arms-hands', 'character-legs-feet'].includes(child?.id)
-      ? ['身体结构', child.id === 'character-body' ? null : child.label]
+      ? [t('plPathBody'), child.id === 'character-body' ? null : child.label]
       : [child?.label];
   return [parent.label, ...childPath].filter(Boolean);
 }
 
-function stageForCategory(categoryId) {
-  return PROMPT_STAGES.find(stage => stage.categoryIds.includes(categoryId));
+function stageForCategory(categoryId, t) {
+  return promptStages(t).find(stage => stage.categoryIds.includes(categoryId));
 }
 
-function categoryLabel(categoryId) {
-  return PROMPT_LIBRARY_CATEGORIES.find(category => category.id === categoryId)?.label || '提示词';
+function categoryLabel(categoryId, t) {
+  return PROMPT_LIBRARY_CATEGORIES.find(category => category.id === categoryId)?.label || t('plPathPrompt');
 }
 
 function loadLibraryState(key, fallback) {
@@ -114,7 +121,7 @@ function applyLibraryFilters(items, filters) {
   });
 }
 
-function workflowPromptExamples(manifest) {
+function workflowPromptExamples(manifest, t) {
   return (manifest?.editableNodes || [])
     .filter(node => /promptlist/i.test(node.type || ''))
     .flatMap(node => (node.inputs || [])
@@ -122,14 +129,15 @@ function workflowPromptExamples(manifest) {
       .map(input => ({
         id: `workflow-${node.id}-${input.name}`,
         category: 'workflow-example',
-        title: `当前工作流 · ${input.name.slice(7)}`,
-        description: '来自当前工作流的完整提示词',
+        title: t('plWorkflowExampleTitle', { name: input.name.slice(7) }),
+        description: t('plWorkflowExampleDesc'),
         prompt: input.value.trim(),
         source: manifest.workflowName,
       })));
 }
 
 function DraggablePromptCard({ item, path, related, added, favorite, onToggleFavorite, onAdd, onReplace, onDelete, onDragLabel, target }) {
+  const { t } = useI18n();
   const drag = useFloatingCardDrag({
     kind: 'prompt-card',
     title: item.title || item.prompt || '',
@@ -143,17 +151,17 @@ function DraggablePromptCard({ item, path, related, added, favorite, onToggleFav
 
   return (
     <article className={`prompt-workbench-card${drag.dragging ? ' is-dragging' : ''}`} aria-hidden={drag.dragging || undefined}>
-      <div className={`prompt-workbench-card-art prompt-workbench-card-art-${item.category} prompt-workbench-card-drag-handle`} {...drag.dragHandlers}><span>{item.tagGroup || categoryLabel(item.category)}</span><Icon name="spark" size={16} /></div>
+      <div className={`prompt-workbench-card-art prompt-workbench-card-art-${item.category} prompt-workbench-card-drag-handle`} {...drag.dragHandlers}><span>{item.tagGroup || categoryLabel(item.category, t)}</span><Icon name="spark" size={16} /></div>
       <div className="prompt-workbench-card-body">
-        <div className="prompt-workbench-card-meta"><span>{item.kind === 'phrase' ? '完整短语' : (stageForCategory(item.category)?.label || '提示词')}</span>{item.sourceCount > 0 && <small>{item.sourceCount.toLocaleString()} 次使用</small>}<button type="button" className={`prompt-library-favorite${favorite ? ' active' : ''}`} onClick={() => onToggleFavorite(item)} title={favorite ? '取消收藏' : '收藏'} aria-label={favorite ? '取消收藏' : '收藏'}><Icon name="star" size={13} /></button></div>
+        <div className="prompt-workbench-card-meta"><span>{item.kind === 'phrase' ? t('plCardPhrase') : (stageForCategory(item.category, t)?.label || t('plCardFallback'))}</span>{item.sourceCount > 0 && <small>{t('plUsageCount', { n: item.sourceCount.toLocaleString() })}</small>}<button type="button" className={`prompt-library-favorite${favorite ? ' active' : ''}`} onClick={() => onToggleFavorite(item)} title={favorite ? t('plUnfavorite') : t('plFavorite')} aria-label={favorite ? t('plUnfavorite') : t('plFavorite')}><Icon name="star" size={13} /></button></div>
         <h3>{item.title}</h3>
         <div className="prompt-workbench-card-path">{path.join(' > ')}</div>
         <p>{item.description}</p>
-        {item.usage && <div className="prompt-workbench-card-related"><span>用途</span>{item.usage}</div>}
-        {item.aliases?.length > 0 && <div className="prompt-workbench-card-related"><span>别名</span>{item.aliases.slice(0, 3).join('、')}</div>}
-        {related.length > 0 && <div className="prompt-workbench-card-related"><span>相关</span>{related.join('、')}</div>}
+        {item.usage && <div className="prompt-workbench-card-related"><span>{t('plUsage')}</span>{item.usage}</div>}
+        {item.aliases?.length > 0 && <div className="prompt-workbench-card-related"><span>{t('plAliases')}</span>{item.aliases.slice(0, 3).join('、')}</div>}
+        {related.length > 0 && <div className="prompt-workbench-card-related"><span>{t('plRelated')}</span>{related.join('、')}</div>}
         <div className="prompt-workbench-card-prompt" title={item.prompt}>{item.prompt}</div>
-        <div className="prompt-workbench-card-actions"><button type="button" className={`prompt-library-add${added ? ' added' : ''}`} onClick={() => onAdd(item)}><Icon name={added ? 'check' : 'plus'} size={13} />{added ? '已加入' : '加入'}</button><button type="button" className="prompt-workbench-card-replace" onClick={() => onReplace(item)} title="替换当前编辑内容">替换</button>{item.category === 'custom' && <button type="button" className="prompt-library-delete" onClick={() => onDelete(item)} title="删除自定义词条" aria-label={`删除${item.title}`}><Icon name="trash" size={12} /></button>}</div>
+        <div className="prompt-workbench-card-actions"><button type="button" className={`prompt-library-add${added ? ' added' : ''}`} onClick={() => onAdd(item)}><Icon name={added ? 'check' : 'plus'} size={13} />{added ? t('plAdded') : t('plAdd')}</button><button type="button" className="prompt-workbench-card-replace" onClick={() => onReplace(item)} title={t('plReplaceTitle')}>{t('plReplace')}</button>{item.category === 'custom' && <button type="button" className="prompt-library-delete" onClick={() => onDelete(item)} title={t('plDeleteTitle')} aria-label={t('plDeleteAria', { title: item.title })}><Icon name="trash" size={12} /></button>}</div>
       </div>
       <DragGhost dragging={drag.dragging} dragPoint={drag.dragPoint} label="PROMPT" />
     </article>
@@ -161,6 +169,7 @@ function DraggablePromptCard({ item, path, related, added, favorite, onToggleFav
 }
 
 export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }) {
+  const { t } = useI18n();
   const { input, setInput } = useAgent();
   const { workflowManifest } = useComfyUI();
   const [activeGroup, setActiveGroup] = useState('character');
@@ -358,12 +367,12 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   const collectedGroups = useMemo(() => collectedTagGroups.map(group => ({
     id: `collected-group:${group.tagGroup}`,
     label: group.label,
-    description: `${group.count.toLocaleString()} 条收集标签`,
+    description: t('plCollectedCount', { n: group.count.toLocaleString() }),
     source: 'collected',
     categoryIds: ['collected'],
     tagGroup: group.tagGroup,
     count: group.count,
-  })), [collectedTagGroups]);
+  })), [collectedTagGroups, t]);
   const taxonomyGroups = useMemo(() => [...PROMPT_LIBRARY_TAXONOMY, ...collectedGroups], [collectedGroups]);
   const taxonomyNodes = useMemo(() => taxonomyGroups.flatMap(group => [group, ...(group.children || [])]), [taxonomyGroups]);
   const countableTaxonomyNodes = useMemo(() => PROMPT_LIBRARY_TAXONOMY.flatMap(group => [
@@ -403,7 +412,7 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
 }, {}), [taxonomyCounts]);
   const selectedGroup = taxonomyNodes.find(group => group.id === activeGroup) || PROMPT_LIBRARY_TAXONOMY[1];
   const selectedParent = PROMPT_LIBRARY_TAXONOMY.find(group => group.children?.some(child => child.id === activeGroup));
-  const selectedStage = PROMPT_STAGES.find(stage => stage.id === activeStage);
+  const selectedStage = promptStages(t).find(stage => stage.id === activeStage);
   const isArtistView = (activeGroup === 'artist' || activeGroup === 'artist-anime') && !activeStage && !isGlobalSearch;
   const browsedItems = useMemo(() => {
     if (activeGroup === 'favorites') return indexedItems.filter(item => favorites.has(item.id));
@@ -427,7 +436,7 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   const negativeParts = useMemo(() => splitPromptParts(negative), [negative]);
   const activeParts = composerTarget === 'positive' ? promptParts : negativeParts;
   const missingStructure = useMemo(() => checkPromptStructure({ positive: input }).map(issue => issue.dimension), [input]);
-  const workflowExamples = useMemo(() => workflowPromptExamples(workflowManifest), [workflowManifest]);
+  const workflowExamples = useMemo(() => workflowPromptExamples(workflowManifest, t), [workflowManifest, t]);
 
   useEffect(() => { setVisibleLimit(PAGE_SIZE); }, [activeGroup, activeStage, advancedFilters, query, artistTier]);
 
@@ -606,10 +615,10 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   }, [composerTarget]);
 
   const collectionLabel = collectionState === 'ready'
-    ? `${collectedItems.length.toLocaleString()} 条收集词条`
+    ? t('plCollectedCount', { n: collectedItems.length.toLocaleString() })
     : collectionState === 'loading'
-      ? `同步中 ${Math.round(collectionProgress.percent || 0)}%`
-      : collectionState === 'error' ? '收集词库不可用' : '收集词库按需加载';
+      ? t('plCollecting', { n: Math.round(collectionProgress.percent || 0) })
+      : collectionState === 'error' ? t('plCollectedUnavailable') : t('plCollectedOnDemand');
   const browseGroups = PROMPT_LIBRARY_TAXONOMY.filter(group => BROWSE_GROUP_IDS.includes(group.id));
   const visibleBrowseGroups = useMemo(() => {
     if (!query) return browseGroups;
@@ -626,31 +635,31 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   const visiblePhraseItems = visibleItems.filter(item => item.kind === 'phrase');
 
   function renderPromptCard(item) {
-    const path = promptPathForItem(item, taxonomyGroups);
+    const path = promptPathForItem(item, taxonomyGroups, t);
     const related = item.related?.slice(0, 4) || [];
-    return <DraggablePromptCard key={item.id} item={item} path={path} related={related} added={addedId === item.id} favorite={favorites.has(item.id)} onToggleFavorite={toggleFavorite} onAdd={addPrompt} onReplace={replacePrompt} onDelete={deleteCustomItem} onDragLabel="长按拖入悬浮窗" target={composerTarget} />;
+    return <DraggablePromptCard key={item.id} item={item} path={path} related={related} added={addedId === item.id} favorite={favorites.has(item.id)} onToggleFavorite={toggleFavorite} onAdd={addPrompt} onReplace={replacePrompt} onDelete={deleteCustomItem} onDragLabel={t('plDragLabel')} target={composerTarget} />;
   }
 
   return (
     <main className={'prompt-library-page prompt-library-workbench' + (hidden ? ' view-hidden' : '')}>
       <header className="prompt-workbench-header">
-        <div className="prompt-workbench-title"><span className="page-eyebrow">PROMPT WORKBENCH</span><h1>提示词工作台</h1><span>浏览标签，组合提示词，直接送入当前工作流</span></div>
-        <div className="prompt-workbench-header-actions"><span className="prompt-library-model-badge"><Icon name="spark" size={13} /> 本地词库</span><button className="btn btn-icon" onClick={onBack} title="返回对话" aria-label="返回对话"><Icon name="chevronLeft" size={15} /></button>{windowApi && <div className="window-controls prompt-workbench-window-controls" aria-label="窗口控制"><button className="window-control" onClick={() => windowApi.windowMinimize()} title="最小化" aria-label="最小化"><Icon name="minimize" /></button><button className="window-control" onClick={toggleMaximize} title={maximized ? '还原' : '最大化'} aria-label={maximized ? '还原' : '最大化'}><Icon name={maximized ? 'restore' : 'maximize'} /></button><button className="window-control window-control-close" onClick={() => windowApi.windowClose()} title="关闭" aria-label="关闭"><Icon name="windowClose" /></button></div>}</div>
+        <div className="prompt-workbench-title"><span className="page-eyebrow">PROMPT WORKBENCH</span><h1>{t('plTitle')}</h1><span>{t('plSubtitle')}</span></div>
+        <div className="prompt-workbench-header-actions"><span className="prompt-library-model-badge"><Icon name="spark" size={13} /> {t('plLocalLibrary')}</span><button className="btn btn-icon" onClick={onBack} title={t('plBackToChat')} aria-label={t('plBackToChat')}><Icon name="chevronLeft" size={15} /></button>{windowApi && <div className="window-controls prompt-workbench-window-controls" aria-label={t('plWindowControls')}><button className="window-control" onClick={() => windowApi.windowMinimize()} title={t('plMinimize')} aria-label={t('plMinimize')}><Icon name="minimize" /></button><button className="window-control" onClick={toggleMaximize} title={maximized ? t('plRestore') : t('plMaximize')} aria-label={maximized ? t('plRestore') : t('plMaximize')}><Icon name={maximized ? 'restore' : 'maximize'} /></button><button className="window-control window-control-close" onClick={() => windowApi.windowClose()} title={t('close')} aria-label={t('close')}><Icon name="windowClose" /></button></div>}</div>
       </header>
 
       {shouldLoadCollection && collectionState === 'loading' && <div className="prompt-library-sync-status" role="status" aria-live="polite">
         <div className="prompt-library-sync-dialog">
           <span className="prompt-library-sync-spinner" aria-hidden="true"><Icon name="spark" size={24} /></span>
-          <strong>正在同步本地词库</strong>
+          <strong>{t('plSyncing')}</strong>
           <span>{collectionLabel}</span>
-          <progress value={collectionProgress.percent || 0} max="100" aria-label="提示词库同步进度" />
+          <progress value={collectionProgress.percent || 0} max="100" aria-label={t('plSyncAria')} />
         </div>
       </div>}
 
-      <nav className="prompt-workbench-progress" aria-label="提示词构建步骤">
-        <span className="prompt-workbench-progress-label">提示词路径</span>
+      <nav className="prompt-workbench-progress" aria-label={t('plBuildAria')}>
+        <span className="prompt-workbench-progress-label">{t('plPromptPath')}</span>
         <div className="prompt-workbench-progress-steps">
-          {PROMPT_STAGES.map((stage, index) => <button type="button" key={stage.id} className={!isGlobalSearch && activeStage === stage.id ? 'active' : ''} onClick={() => chooseStage(stage)}><span>{index + 1}</span><strong>{stage.label}</strong><small>{stage.description}</small></button>)}
+          {promptStages(t).map((stage, index) => <button type="button" key={stage.id} className={!isGlobalSearch && activeStage === stage.id ? 'active' : ''} onClick={() => chooseStage(stage)}><span>{index + 1}</span><strong>{stage.label}</strong><small>{stage.description}</small></button>)}
         </div>
       </nav>
 
@@ -661,26 +670,26 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
       >
         <aside className="prompt-workbench-sidebar">
             <div className="prompt-workbench-sidebar-scroll">
-            <div className="prompt-workbench-sidebar-section"><span className="section-kicker">QUICK SEARCH</span><strong>快捷搜索</strong></div>
+            <div className="prompt-workbench-sidebar-section"><span className="section-kicker">QUICK SEARCH</span><strong>{t('plQuickSearch')}</strong></div>
             <form className="prompt-workbench-quick-search-form" onSubmit={addQuickSearch}>
-              <input value={quickSearchInput} onChange={event => setQuickSearchInput(event.target.value)} placeholder="填中文关键词，回车添加" aria-label="添加快捷搜索词" />
-              <button type="submit" disabled={!quickSearchInput.trim()} title="添加并搜索" aria-label="添加并搜索"><Icon name="plus" size={13} /></button>
+              <input value={quickSearchInput} onChange={event => setQuickSearchInput(event.target.value)} placeholder={t('plQuickSearchPlaceholder')} aria-label={t('plQuickSearchAddAria')} />
+              <button type="submit" disabled={!quickSearchInput.trim()} title={t('plQuickSearchAdd')} aria-label={t('plQuickSearchAdd')}><Icon name="plus" size={13} /></button>
             </form>
             {savedSearches.length > 0 && <div className="prompt-workbench-quick-search-list">
               {savedSearches.map(term => <span className="prompt-workbench-quick-search-chip" key={term}>
-                <button type="button" onClick={() => runQuickSearch(term)} title={`搜索“${term}”`}>{term}</button>
-                <button type="button" className="prompt-workbench-quick-search-remove" onClick={() => removeQuickSearch(term)} aria-label={`删除${term}`} title={`删除${term}`}><Icon name="close" size={10} /></button>
+                <button type="button" onClick={() => runQuickSearch(term)} title={t('plSearchTerm', { term })}>{term}</button>
+                <button type="button" className="prompt-workbench-quick-search-remove" onClick={() => removeQuickSearch(term)} aria-label={t('plDeleteTerm', { term })} title={t('plDeleteTerm', { term })}><Icon name="close" size={10} /></button>
               </span>)}
             </div>}
             <div className="prompt-workbench-sidebar-rule" />
-            <div className="prompt-workbench-sidebar-section"><span className="section-kicker">START</span><strong>从目标开始</strong></div>
-            <div className="prompt-workbench-sidebar-recipe-list" aria-label="快速开始">{ANIME_PRESETS.map(preset => <button type="button" className={`prompt-workbench-recipe${addedId === preset.id ? ' added' : ''}`} key={preset.id} onClick={() => addPreset(preset)}><span className="prompt-workbench-recipe-mark"><Icon name="spark" size={13} /></span><span><strong>{preset.title}</strong><small>{preset.description}</small></span><Icon name={addedId === preset.id ? 'check' : 'plus'} size={12} /></button>)}</div>
+            <div className="prompt-workbench-sidebar-section"><span className="section-kicker">START</span><strong>{t('plStartFromGoal')}</strong></div>
+            <div className="prompt-workbench-sidebar-recipe-list" aria-label={t('plQuickStartAria')}>{animePresets(t).map(preset => <button type="button" className={`prompt-workbench-recipe${addedId === preset.id ? ' added' : ''}`} key={preset.id} onClick={() => addPreset(preset)}><span className="prompt-workbench-recipe-mark"><Icon name="spark" size={13} /></span><span><strong>{preset.title}</strong><small>{preset.description}</small></span><Icon name={addedId === preset.id ? 'check' : 'plus'} size={12} /></button>)}</div>
             <div className="prompt-workbench-intent-list">
-              {PROMPT_INTENTS.map(intent => <button type="button" key={intent.id} className={activeIntent === intent.id ? 'active' : ''} onClick={() => chooseIntent(intent)}><span>{intent.label}</span><small>{intent.description}</small></button>)}
+              {promptIntents(t).map(intent => <button type="button" key={intent.id} className={activeIntent === intent.id ? 'active' : ''} onClick={() => chooseIntent(intent)}><span>{intent.label}</span><small>{intent.description}</small></button>)}
             </div>
             <div className="prompt-workbench-sidebar-rule" />
-            <div className="prompt-workbench-sidebar-section"><span className="section-kicker">BROWSE</span><strong>标签分类</strong></div>
-            <nav className="prompt-workbench-category-list" aria-label="标签分类">
+            <div className="prompt-workbench-sidebar-section"><span className="section-kicker">BROWSE</span><strong>{t('plBrowse')}</strong></div>
+            <nav className="prompt-workbench-category-list" aria-label={t('plBrowseAria')}>
               {visibleBrowseGroups.filter(group => !group.hidden).map(group => {
                 const hasChildren = group.children?.length > 0;
                 const groupActive = !activeIntent && !activeStage && (activeGroup === group.id || selectedParent?.id === group.id);
@@ -688,25 +697,25 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
                 return <div className="prompt-workbench-category-branch" key={group.id}>
                   <div className="prompt-workbench-category-row">
                     <button type="button" className={groupActive ? 'active' : ''} onClick={() => chooseGroup(group.id)}><span>{group.label}</span><small>{categoryCounts[group.id]}</small></button>
-                    {hasChildren && <button type="button" className="prompt-workbench-category-toggle" onClick={() => toggleGroupExpanded(group.id)} title={groupExpanded ? `收起${group.label}二级栏目` : `展开${group.label}二级栏目`} aria-label={groupExpanded ? `收起${group.label}二级栏目` : `展开${group.label}二级栏目`}><Icon name={groupExpanded ? 'chevronUp' : 'chevronDown'} size={12} /></button>}
+                    {hasChildren && <button type="button" className="prompt-workbench-category-toggle" onClick={() => toggleGroupExpanded(group.id)} title={groupExpanded ? t('plCollapseSub', { label: group.label }) : t('plExpandSub', { label: group.label })} aria-label={groupExpanded ? t('plCollapseSub', { label: group.label }) : t('plExpandSub', { label: group.label })}><Icon name={groupExpanded ? 'chevronUp' : 'chevronDown'} size={12} /></button>}
                   </div>
-                  {hasChildren && groupExpanded && <div className="prompt-workbench-subcategory-list"><span className="prompt-workbench-subcategory-label">继续细分</span>{group.children.filter(child => !child.hidden).map(child => <button type="button" key={child.id} className={activeGroup === child.id && !activeIntent && !activeStage ? 'active' : ''} onClick={() => chooseGroup(child.id)}><span>{child.label}</span><small>{(taxonomyCounts.counts[child.id] || 0).toLocaleString()}</small></button>)}</div>}
+                  {hasChildren && groupExpanded && <div className="prompt-workbench-subcategory-list"><span className="prompt-workbench-subcategory-label">{t('plSubdivide')}</span>{group.children.filter(child => !child.hidden).map(child => <button type="button" key={child.id} className={activeGroup === child.id && !activeIntent && !activeStage ? 'active' : ''} onClick={() => chooseGroup(child.id)}><span>{child.label}</span><small>{(taxonomyCounts.counts[child.id] || 0).toLocaleString()}</small></button>)}</div>}
                 </div>;
               })}
             </nav>
             <div className="prompt-workbench-sidebar-rule" />
-            <div className="prompt-workbench-sidebar-section"><span className="section-kicker">MY CONTENT</span><strong>我的内容</strong></div>
-            <nav className="prompt-workbench-category-list" aria-label="我的内容">
+            <div className="prompt-workbench-sidebar-section"><span className="section-kicker">MY CONTENT</span><strong>{t('plMyContent')}</strong></div>
+            <nav className="prompt-workbench-category-list" aria-label={t('plMyContentAria')}>
               {myContentGroups.map(group => <button type="button" key={group.id} className={!activeIntent && !activeStage && activeGroup === group.id ? 'active' : ''} onClick={() => chooseGroup(group.id)}><span>{group.label}</span><small>{group.id === 'favorites' ? favorites.size : customItems.length}</small></button>)}
             </nav>
-            <button type="button" className={`prompt-workbench-filter-toggle${advancedOpen ? ' active' : ''}`} onClick={() => setAdvancedOpen(value => !value)}><Icon name="settings" size={13} /><span>高级筛选</span><Icon name={advancedOpen ? 'chevronUp' : 'chevronDown'} size={12} /></button>
+            <button type="button" className={`prompt-workbench-filter-toggle${advancedOpen ? ' active' : ''}`} onClick={() => setAdvancedOpen(value => !value)}><Icon name="settings" size={13} /><span>{t('plAdvanced')}</span><Icon name={advancedOpen ? 'chevronUp' : 'chevronDown'} size={12} /></button>
           </div>
         </aside>
 
         <div
           className="prompt-workbench-resizer"
           role="separator"
-          aria-label="调整左侧栏宽度"
+          aria-label={t('plSidebarResizeAria')}
           aria-orientation="vertical"
           aria-valuemin={SIDEBAR_MIN_WIDTH}
           aria-valuemax={SIDEBAR_MAX_WIDTH}
@@ -714,63 +723,63 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
           tabIndex="0"
           onPointerDown={startSidebarResize}
           onKeyDown={resizeSidebarWithKeyboard}
-          title="拖动调整左侧栏宽度"
+          title={t('plSidebarResizeTitle')}
         />
 
         <section className="prompt-workbench-browser">
           <div className="prompt-workbench-browser-top">
-            <div><span className="section-kicker">{isGlobalSearch ? 'SEARCH' : activeIntent ? 'RECOMMENDATION' : 'LIBRARY'}</span><h2>{isGlobalSearch ? `搜索“${search.trim()}”` : activeIntent ? PROMPT_INTENTS.find(intent => intent.id === activeIntent)?.label : activeStage ? selectedStage.label : selectedGroup.label}</h2></div>
-            <span className="prompt-workbench-result-count">{filteredItems.length.toLocaleString()} 条</span>
+            <div><span className="section-kicker">{isGlobalSearch ? 'SEARCH' : activeIntent ? 'RECOMMENDATION' : 'LIBRARY'}</span><h2>{isGlobalSearch ? t('plSearchHeading', { term: search.trim() }) : activeIntent ? promptIntents(t).find(intent => intent.id === activeIntent)?.label : activeStage ? selectedStage.label : selectedGroup.label}</h2></div>
+            <span className="prompt-workbench-result-count">{t('plResultCount', { n: filteredItems.length.toLocaleString() })}</span>
           </div>
           <div className="prompt-workbench-search-row">
-            <label className="prompt-library-search"><Icon name="search" size={14} /><input value={search} onChange={event => { const value = event.target.value; setSearch(value); if (value.trim()) { setActiveStage(''); setActiveIntent(''); } }} placeholder="搜索标签、用途或英文词组" aria-label="搜索提示词" /></label>
+            <label className="prompt-library-search"><Icon name="search" size={14} /><input value={search} onChange={event => { const value = event.target.value; setSearch(value); if (value.trim()) { setActiveStage(''); setActiveIntent(''); } }} placeholder={t('plSearchPlaceholder')} aria-label={t('plSearchAria')} /></label>
             <div className="prompt-workbench-search-hints">{searchHints.map(term => <button type="button" key={term.query} onClick={() => { setSearch(term.query); setActiveStage(''); setActiveIntent(''); }}>{term.label}</button>)}</div>
           </div>
 
           {advancedOpen && <div className="prompt-workbench-advanced-filters">
-            <label><span>来源</span><select value={advancedFilters.source} onChange={event => setAdvancedFilters(current => ({ ...current, source: event.target.value, tagGroup: event.target.value === 'collected' ? current.tagGroup : 'all' }))}><option value="all">全部来源</option><option value="curated">精选库</option><option value="collected">收集库</option><option value="custom">自定义</option></select></label>
-            <label><span>内容</span><select value={advancedFilters.contentType} onChange={event => setAdvancedFilters(current => ({ ...current, contentType: event.target.value }))}><option value="all">词条与短语</option><option value="tag">只看词条</option><option value="phrase">只看短语</option></select></label>
-            <label><span>原始标签组</span><select value={advancedFilters.tagGroup} onChange={event => setAdvancedFilters(current => ({ ...current, tagGroup: event.target.value }))}><option value="all">全部标签组</option>{collectedTagGroups.map(group => <option value={group.tagGroup} key={group.tagGroup}>{group.label} · {group.count.toLocaleString()}</option>)}</select></label>
+            <label><span>{t('plFilterSource')}</span><select value={advancedFilters.source} onChange={event => setAdvancedFilters(current => ({ ...current, source: event.target.value, tagGroup: event.target.value === 'collected' ? current.tagGroup : 'all' }))}><option value="all">{t('plSourceAll')}</option><option value="curated">{t('plSourceCurated')}</option><option value="collected">{t('plSourceCollected')}</option><option value="custom">{t('plSourceCustom')}</option></select></label>
+            <label><span>{t('plFilterContent')}</span><select value={advancedFilters.contentType} onChange={event => setAdvancedFilters(current => ({ ...current, contentType: event.target.value }))}><option value="all">{t('plContentAll')}</option><option value="tag">{t('plContentTag')}</option><option value="phrase">{t('plContentPhrase')}</option></select></label>
+            <label><span>{t('plFilterTagGroup')}</span><select value={advancedFilters.tagGroup} onChange={event => setAdvancedFilters(current => ({ ...current, tagGroup: event.target.value }))}><option value="all">{t('plTagGroupAll')}</option>{collectedTagGroups.map(group => <option value={group.tagGroup} key={group.tagGroup}>{group.label} · {group.count.toLocaleString()}</option>)}</select></label>
           </div>}
 
           {!isGlobalSearch && activeGroup === 'custom' && <form className="prompt-workbench-custom-form" onSubmit={addCustomItem}>
-            <label htmlFor="prompt-workbench-custom-input">保存一条自定义词条</label>
-            <div><input id="prompt-workbench-custom-input" value={customPrompt} onChange={event => setCustomPrompt(event.target.value)} placeholder="输入完整提示词或标签" /><button type="submit" className="btn btn-primary" disabled={!customPrompt.trim()} title="保存自定义词条"><Icon name="plus" size={13} />保存</button></div>
+            <label htmlFor="prompt-workbench-custom-input">{t('plCustomSaveLabel')}</label>
+            <div><input id="prompt-workbench-custom-input" value={customPrompt} onChange={event => setCustomPrompt(event.target.value)} placeholder={t('plCustomPlaceholder')} /><button type="submit" className="btn btn-primary" disabled={!customPrompt.trim()} title={t('plCustomSaveTitle')}><Icon name="plus" size={13} />{t('plCustomSave')}</button></div>
           </form>}
 
 
-           {workflowExamples.length > 0 && !isGlobalSearch && <div className="prompt-workbench-workflow-row"><span><strong>当前工作流示例</strong><small>{workflowManifest.workflowName}</small></span>{workflowExamples.slice(0, 2).map(example => <button type="button" key={example.id} onClick={() => replacePrompt(example)}>{example.title}<Icon name="chevronRight" size={13} /></button>)}</div>}
+           {workflowExamples.length > 0 && !isGlobalSearch && <div className="prompt-workbench-workflow-row"><span><strong>{t('plWorkflowExamples')}</strong><small>{workflowManifest.workflowName}</small></span>{workflowExamples.slice(0, 2).map(example => <button type="button" key={example.id} onClick={() => replacePrompt(example)}>{example.title}<Icon name="chevronRight" size={13} /></button>)}</div>}
 
-          {isArtistView && <div className="prompt-workbench-artist-tiers" role="tablist" aria-label="画师标签分级">
-            {[{ id: 'high', label: '高频', count: indexedItems.filter(item => item.category === 'artist' && item.tier === 'high').length },
-              { id: 'medium', label: '普通', count: indexedItems.filter(item => item.category === 'artist' && item.tier === 'medium').length },
-              { id: 'low', label: '低频', count: indexedItems.filter(item => item.category === 'artist' && item.tier === 'low').length }].map(tier => (
+          {isArtistView && <div className="prompt-workbench-artist-tiers" role="tablist" aria-label={t('plArtistAria')}>
+            {[{ id: 'high', label: t('plTierHigh'), count: indexedItems.filter(item => item.category === 'artist' && item.tier === 'high').length },
+              { id: 'medium', label: t('plTierMedium'), count: indexedItems.filter(item => item.category === 'artist' && item.tier === 'medium').length },
+              { id: 'low', label: t('plTierLow'), count: indexedItems.filter(item => item.category === 'artist' && item.tier === 'low').length }].map(tier => (
               <button type="button" key={tier.id} role="tab" aria-selected={artistTier === tier.id} className={artistTier === tier.id ? 'active' : ''} onClick={() => setArtistTier(tier.id)}><span>{tier.label}</span><small>{tier.count}</small></button>
             ))}
           </div>}
 
-           <div className="prompt-workbench-cards-heading"><strong>{activeIntent ? '接下来可以补充' : '可用内容'}</strong><span>{activeGroup === 'artist' || activeGroup === 'artist-anime' ? 'Anima 画师候选词；加入后请实际出图确认效果' : '点击加入购物车，替换会覆盖当前编辑内容'}</span>{activeGroup === 'collected' && !fullCollectionRequested && <button type="button" className="prompt-library-load-more" onClick={() => setFullCollectionRequested(true)}>加载完整收集词库 · {getCollectedTagGroups().reduce((sum, group) => sum + group.count, 0).toLocaleString()} 条</button>}</div>
+           <div className="prompt-workbench-cards-heading"><strong>{activeIntent ? t('plNextSuggestions') : t('plAvailableContent')}</strong><span>{activeGroup === 'artist' || activeGroup === 'artist-anime' ? t('plArtistNote') : t('plCartHint')}</span>{activeGroup === 'collected' && !fullCollectionRequested && <button type="button" className="prompt-library-load-more" onClick={() => setFullCollectionRequested(true)}>{t('plLoadFullLibrary', { n: getCollectedTagGroups().reduce((sum, group) => sum + group.count, 0).toLocaleString() })}</button>}</div>
           <div className="prompt-workbench-card-scroll">
-            {!isGlobalSearch && advancedFilters.source === 'collected' && collectionState === 'loading' ? <div className="prompt-library-empty"><strong>正在加载收集词库</strong><span>完成后可以搜索完整标签。</span></div> : visibleItems.length === 0 ? <div className="prompt-library-empty"><strong>没有找到匹配内容</strong><span>试试角色、发型、制服、夜景或 cel shading。</span></div> : <div className="prompt-workbench-results-sections">
-              {visibleTagItems.length > 0 && <section className="prompt-workbench-result-section"><div className="prompt-workbench-result-section-heading"><strong>词条</strong><span>{visibleTagItems.length.toLocaleString()} 条</span></div><div className="prompt-workbench-card-grid">{visibleTagItems.map(renderPromptCard)}</div></section>}
-              {visiblePhraseItems.length > 0 && <section className="prompt-workbench-result-section"><div className="prompt-workbench-result-section-heading"><strong>完整短语</strong><span>{visiblePhraseItems.length.toLocaleString()} 条</span></div><div className="prompt-workbench-card-grid">{visiblePhraseItems.map(renderPromptCard)}</div></section>}
+            {!isGlobalSearch && advancedFilters.source === 'collected' && collectionState === 'loading' ? <div className="prompt-library-empty"><strong>{t('plLoadingCollected')}</strong><span>{t('plLoadingCollectedNote')}</span></div> : visibleItems.length === 0 ? <div className="prompt-library-empty"><strong>{t('plNoMatches')}</strong><span>{t('plNoMatchesHint')}</span></div> : <div className="prompt-workbench-results-sections">
+              {visibleTagItems.length > 0 && <section className="prompt-workbench-result-section"><div className="prompt-workbench-result-section-heading"><strong>{t('plTagsSection')}</strong><span>{t('plResultCount', { n: visibleTagItems.length.toLocaleString() })}</span></div><div className="prompt-workbench-card-grid">{visibleTagItems.map(renderPromptCard)}</div></section>}
+              {visiblePhraseItems.length > 0 && <section className="prompt-workbench-result-section"><div className="prompt-workbench-result-section-heading"><strong>{t('plPhrasesSection')}</strong><span>{t('plResultCount', { n: visiblePhraseItems.length.toLocaleString() })}</span></div><div className="prompt-workbench-card-grid">{visiblePhraseItems.map(renderPromptCard)}</div></section>}
             </div>}
-            {filteredItems.length > visibleLimit && <button type="button" className="prompt-library-load-more" onClick={() => setVisibleLimit(limit => limit + PAGE_SIZE)}>加载更多 · 还剩 {filteredItems.length - visibleLimit} 条</button>}
+            {filteredItems.length > visibleLimit && <button type="button" className="prompt-library-load-more" onClick={() => setVisibleLimit(limit => limit + PAGE_SIZE)}>{t('plLoadMore', { n: filteredItems.length - visibleLimit })}</button>}
           </div>
         </section>
 
-        <aside className="prompt-workbench-cart" aria-label="提示词购物车">
-          <div className="prompt-workbench-cart-header"><div><span className="section-kicker">CART</span><h2>我的提示词</h2></div><span>{activeParts.length} 个片段</span></div>
+        <aside className="prompt-workbench-cart" aria-label={t('plCartAria')}>
+          <div className="prompt-workbench-cart-header"><div><span className="section-kicker">CART</span><h2>{t('plCart')}</h2></div><span>{t('plPartsCount', { n: activeParts.length })}</span></div>
           <div className="prompt-workbench-cart-body">
-            <div className="prompt-workbench-cart-target"><button type="button" className={composerTarget === 'positive' ? 'active' : ''} onClick={() => setComposerTarget('positive')}><Icon name="plus" size={12} />我想要<span>{promptParts.length}</span></button><button type="button" className={composerTarget === 'negative' ? 'active' : ''} onClick={() => setComposerTarget('negative')} disabled={!negativeSupported}><Icon name="minus" size={12} />我不想要<span>{negativeParts.length}</span></button></div>
-            <div className="prompt-workbench-cart-stack">{activeParts.length === 0 ? <span className="prompt-composer-empty">加入标签后会出现在这里</span> : activeParts.map((part, index) => <span className="prompt-composer-chip" key={`${part.start}-${index}`}><span className="prompt-composer-chip-label" title={part.source}><span className="prompt-composer-chip-translation">{promptDisplayLabels.get(normalizePromptPart(part.raw)) || part.raw}</span>{promptDisplayLabels.has(normalizePromptPart(part.raw)) && promptDisplayLabels.get(normalizePromptPart(part.raw)) !== part.raw && <small>{part.raw}</small>}</span>{part.weight !== 1 && <b className="prompt-composer-weight">{formatWeight(part.weight)}x</b>}<button type="button" onClick={() => changeWeight(index, -WEIGHT_STEP)} aria-label={`降低“${part.raw}”权重`} disabled={part.editableWeight === false || part.weight <= MIN_WEIGHT}><Icon name="minus" size={10} /></button><button type="button" onClick={() => changeWeight(index, WEIGHT_STEP)} aria-label={`提高“${part.raw}”权重`} disabled={part.editableWeight === false || part.weight >= MAX_WEIGHT}><Icon name="plus" size={10} /></button><button type="button" onClick={() => removePart(index)} aria-label={`删除“${part.raw}”`}><Icon name="close" size={10} /></button></span>)}</div>
-            <div className="prompt-workbench-cart-editor-label"><strong>{composerTarget === 'positive' ? '我想要' : '我不想要'}</strong><span>{composerTarget === 'positive' ? '正向提示词' : '负向提示词'}</span></div>
-            <textarea value={composerTarget === 'positive' ? input : negative} onChange={event => composerTarget === 'positive' ? setInput(event.target.value) : setNegative(event.target.value)} placeholder={composerTarget === 'positive' ? '可以直接输入完整提示词…' : '例如：blurry, bad anatomy, extra fingers'} disabled={composerTarget === 'negative' && !negativeSupported} aria-label={composerTarget === 'positive' ? '我想要的内容' : '我不想要的内容'} />
-            {composerTarget === 'positive' && missingStructure.length > 0 && <p className="prompt-workbench-structure-hint">结构提示：缺少{missingStructure.map(dimension => STRUCTURE_LABELS[dimension]).join('、')}描述</p>}
-            <div className="prompt-workbench-cart-note">这里写的内容会原样用于生成。</div>
-            {!negativeSupported && composerTarget === 'negative' && <p className="prompt-library-negative-note">当前工作流不支持负面提示词。</p>}
+            <div className="prompt-workbench-cart-target"><button type="button" className={composerTarget === 'positive' ? 'active' : ''} onClick={() => setComposerTarget('positive')}><Icon name="plus" size={12} />{t('plWant')}<span>{promptParts.length}</span></button><button type="button" className={composerTarget === 'negative' ? 'active' : ''} onClick={() => setComposerTarget('negative')} disabled={!negativeSupported}><Icon name="minus" size={12} />{t('plDontWant')}<span>{negativeParts.length}</span></button></div>
+            <div className="prompt-workbench-cart-stack">{activeParts.length === 0 ? <span className="prompt-composer-empty">{t('plCartEmpty')}</span> : activeParts.map((part, index) => <span className="prompt-composer-chip" key={`${part.start}-${index}`}><span className="prompt-composer-chip-label" title={part.source}><span className="prompt-composer-chip-translation">{promptDisplayLabels.get(normalizePromptPart(part.raw)) || part.raw}</span>{promptDisplayLabels.has(normalizePromptPart(part.raw)) && promptDisplayLabels.get(normalizePromptPart(part.raw)) !== part.raw && <small>{part.raw}</small>}</span>{part.weight !== 1 && <b className="prompt-composer-weight">{formatWeight(part.weight)}x</b>}<button type="button" onClick={() => changeWeight(index, -WEIGHT_STEP)} aria-label={t('plLowerWeight', { part: part.raw })} disabled={part.editableWeight === false || part.weight <= MIN_WEIGHT}><Icon name="minus" size={10} /></button><button type="button" onClick={() => changeWeight(index, WEIGHT_STEP)} aria-label={t('plRaiseWeight', { part: part.raw })} disabled={part.editableWeight === false || part.weight >= MAX_WEIGHT}><Icon name="plus" size={10} /></button><button type="button" onClick={() => removePart(index)} aria-label={t('plRemovePart', { part: part.raw })}><Icon name="close" size={10} /></button></span>)}</div>
+            <div className="prompt-workbench-cart-editor-label"><strong>{composerTarget === 'positive' ? t('plWant') : t('plDontWant')}</strong><span>{composerTarget === 'positive' ? t('plEditorPositive') : t('plEditorNegative')}</span></div>
+            <textarea value={composerTarget === 'positive' ? input : negative} onChange={event => composerTarget === 'positive' ? setInput(event.target.value) : setNegative(event.target.value)} placeholder={composerTarget === 'positive' ? t('plEditorPlaceholderPositive') : t('plEditorPlaceholderNegative')} disabled={composerTarget === 'negative' && !negativeSupported} aria-label={composerTarget === 'positive' ? t('plEditorAriaPositive') : t('plEditorAriaNegative')} />
+            {composerTarget === 'positive' && missingStructure.length > 0 && <p className="prompt-workbench-structure-hint">{t('plStructureHint', { dims: missingStructure.map(dimension => STRUCTURE_LABELS[dimension]).join('、') })}</p>}
+            <div className="prompt-workbench-cart-note">{t('plCartNote')}</div>
+            {!negativeSupported && composerTarget === 'negative' && <p className="prompt-library-negative-note">{t('plNegativeUnsupported')}</p>}
           </div>
-          <div className="prompt-workbench-cart-footer"><button type="button" className="btn" onClick={() => { setInput(''); setNegative(''); }} disabled={!input.trim() && !negative.trim()}><Icon name="trash" size={13} />清空</button><button type="button" className="btn btn-primary" onClick={() => onGenerate(input.trim(), negative.trim())} disabled={!input.trim()}><Icon name="send" size={13} />直接生成</button></div>
+          <div className="prompt-workbench-cart-footer"><button type="button" className="btn" onClick={() => { setInput(''); setNegative(''); }} disabled={!input.trim() && !negative.trim()}><Icon name="trash" size={13} />{t('plClear')}</button><button type="button" className="btn btn-primary" onClick={() => onGenerate(input.trim(), negative.trim())} disabled={!input.trim()}><Icon name="send" size={13} />{t('plGenerateNow')}</button></div>
         </aside>
       </div>
     </main>

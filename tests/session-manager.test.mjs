@@ -39,6 +39,67 @@ test('session manager isolates conversations and shares project state', async ()
   }
 });
 
+test('session manager can create a session without activating it', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'comfy-session-'));
+  try {
+    const manager = new SessionManager(dir);
+    await manager.init();
+    const projectId = manager.activeProjectId;
+    const activeSessionId = manager.activeSessionId;
+    const created = await manager.createSession('Background session', projectId, { activate: false });
+    assert.equal(manager.activeProjectId, projectId);
+    assert.equal(manager.activeSessionId, activeSessionId);
+    assert.ok(manager.getProject(projectId).sessions.some(session => session.id === created.id));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('session state uses a monotonic revision for snapshot synchronization', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'comfy-session-revision-'));
+  try {
+    const manager = new SessionManager(dir);
+    await manager.init();
+    const initial = manager.getSessionState();
+    const next = manager.setSessionState({ requestId: 'request-1', taskStatus: 'executing' });
+    assert.ok(next.revision > initial.revision);
+    assert.ok(next.updatedAt >= initial.updatedAt);
+    assert.equal(next.requestId, 'request-1');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('execution events persist with their conversation turn', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'comfy-session-execution-'));
+  try {
+    const manager = new SessionManager(dir);
+    await manager.init();
+    manager.appendExecutionEvent({ turnId: 'turn_1', type: 'agent:step', stepId: 'plan', status: 'completed', description: 'Created plan' });
+    await manager.flush();
+
+    const restored = new SessionManager(dir);
+    await restored.init();
+    assert.equal(restored.getSessionState().executionRecords.turn_1[0].description, 'Created plan');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('project generation writes also advance the active session revision', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'comfy-session-project-revision-'));
+  try {
+    const manager = new SessionManager(dir);
+    await manager.init();
+    const before = manager.getSessionState().revision;
+    await manager.project.set('lastPrompt', 'revision-bound prompt');
+    assert.ok(manager.getSessionState().revision > before);
+    await manager.flush();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('migrates legacy project and conversation files into default slots', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'comfy-session-migrate-'));
   try {

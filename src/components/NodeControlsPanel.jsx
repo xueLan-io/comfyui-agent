@@ -10,49 +10,42 @@ import {
   toggleOutputControl,
 } from './node-controls.mjs';
 import { buildParameterSchema } from '../runtime/parameter-schema.mjs';
+import { useI18n } from '../i18n/I18nContext.jsx';
 
-const NODE_SETTING_FIELDS = [
-  { key: 'seed', label: '随机种子 Seed', description: '相同种子和参数通常会得到相近结果；留空使用工作流默认值。', type: 'number' },
-  { key: 'steps', label: '采样步数 Steps', description: '控制去噪迭代次数，越高通常越细致，但速度更慢。', type: 'number', min: 1, max: 150, step: 1 },
-  { key: 'cfg', label: '提示词遵循度 CFG', description: '控制画面遵循提示词的程度，过高可能导致画面僵硬或失真。', type: 'number', min: 0, max: 30, step: 0.1 },
-  { key: 'width', label: '宽度 Width', description: '输出图像宽度，建议使用模型支持的尺寸倍数。', type: 'number', min: 64, max: 4096, step: 8 },
-  { key: 'height', label: '高度 Height', description: '输出图像高度，建议使用模型支持的尺寸倍数。', type: 'number', min: 64, max: 4096, step: 8 },
-  { key: 'batch', label: '批量 Batch', description: '一次生成的图片数量，会增加显存和耗时。', type: 'number', min: 1, max: 8, step: 1 },
-  { key: 'denoise', label: '重绘幅度 Denoise', description: '图生图或重绘时控制保留原图的程度，越高改动越大。', type: 'number', min: 0, max: 1, step: 0.05 },
-  { key: 'sampler', label: '采样器 Sampler', description: '选择生成过程使用的采样算法，不同算法会影响速度和质感。', type: 'text', inputNames: ['sampler_name', 'sampler'] },
-  { key: 'scheduler', label: '调度器 Scheduler', description: '控制采样过程中噪声变化的调度方式。', type: 'text', inputNames: ['scheduler'] },
-];
+function nodeInputLabels(t) {
+  return {
+    positive: t('ppPositiveLabel'),
+    negative: t('ppNegativeLabel'),
+    text: t('ncInputText'),
+    seed: t('ncInputSeed'),
+    steps: t('ncInputSteps'),
+    cfg: t('ncInputCfg'),
+    sampler_name: t('ncInputSampler'),
+    scheduler: t('ncInputScheduler'),
+    denoise: t('ncInputDenoise'),
+    width: t('ncInputWidth'),
+    height: t('ncInputHeight'),
+    batch_size: t('ncInputBatch'),
+  };
+}
 
-const NODE_INPUT_LABELS = {
-  positive: '正向提示词',
-  negative: '负向提示词',
-  text: '文本内容',
-  seed: '随机种子 Seed',
-  steps: '采样步数 Steps',
-  cfg: '提示词遵循度 CFG',
-  sampler_name: '采样器 Sampler',
-  scheduler: '调度器 Scheduler',
-  denoise: '重绘幅度 Denoise',
-  width: '宽度 Width',
-  height: '高度 Height',
-  batch_size: '批量 Batch',
-};
-
-const NODE_INPUT_DESCRIPTIONS = {
-  positive: '描述希望生成的主体、动作、构图和画面风格。',
-  negative: '描述希望避免的内容；仅在工作流支持时生效。',
-  seed: '控制随机性；相同种子和参数通常会得到相近结果。',
-  steps: '去噪迭代次数，越高通常越细致，但速度更慢。',
-  cfg: '控制画面遵循提示词的程度。',
-  denoise: '图生图或重绘时控制改动幅度。',
-};
+function nodeInputDescriptions(t) {
+  return {
+    positive: t('ncDescPositive'),
+    negative: t('ncDescNegative'),
+    seed: t('ncDescSeed'),
+    steps: t('ncDescSteps'),
+    cfg: t('ncDescCfg'),
+    denoise: t('ncDescDenoise'),
+  };
+}
 
 function hasOwn(object, key) {
   return Object.prototype.hasOwnProperty.call(object || {}, key);
 }
 
-function displayValue(value) {
-  if (value === undefined || value === null || value === '') return '未设置';
+function displayValue(value, t) {
+  if (value === undefined || value === null || value === '') return t('ncUnset');
   return String(value);
 }
 
@@ -68,10 +61,11 @@ function commonDefinition(field, manifest) {
 }
 
 function ControlField({ definition, value, changed, onChange, onReset }) {
+  const { t } = useI18n();
   const controlId = useId();
   const type = String(definition.type || '').toLowerCase();
   const label = definition.label || definition.name;
-  const defaultLabel = `默认：${displayValue(definition.value)}`;
+  const defaultLabel = t('ncDefault', { value: displayValue(definition.value, t) });
   let control;
 
   if (type === 'select' || (type === 'model' && (definition.options || []).length > 0)) {
@@ -85,8 +79,8 @@ function ControlField({ definition, value, changed, onChange, onReset }) {
     control = (
       <select id={controlId} value={changed ? String(value) : ''} onChange={event => onChange(parseControlValue(definition, event.target.value))}>
         <option value="">{defaultLabel}</option>
-        <option value="true">是</option>
-        <option value="false">否</option>
+        <option value="true">{t('ncYes')}</option>
+        <option value="false">{t('ncNo')}</option>
       </select>
     );
   } else if (type === 'string' && String(value ?? definition.value ?? '').length > 80) {
@@ -100,7 +94,7 @@ function ControlField({ definition, value, changed, onChange, onReset }) {
   } else {
     const numeric = ['number', 'int', 'float'].includes(type) || typeof definition.value === 'number';
     control = numeric && definition.min !== undefined && definition.max !== undefined ? (
-      <div className="parameter-range-control"><input id={controlId} type="range" min={definition.min} max={definition.max} step={definition.step} value={changed ? value : definition.value ?? definition.min} onChange={event => onChange(parseControlValue(definition, event.target.value))} /><output>{displayValue(changed ? value : definition.value)}</output></div>
+      <div className="parameter-range-control"><input id={controlId} type="range" min={definition.min} max={definition.max} step={definition.step} value={changed ? value : definition.value ?? definition.min} onChange={event => onChange(parseControlValue(definition, event.target.value))} /><output>{displayValue(changed ? value : definition.value, t)}</output></div>
     ) : (
       <input id={controlId} type={numeric ? 'number' : 'text'}
         min={definition.min}
@@ -117,7 +111,7 @@ function ControlField({ definition, value, changed, onChange, onReset }) {
     <div className={`node-input-field${changed ? ' changed' : ''}`}>
       <span>
         <label htmlFor={controlId}>{label}</label>
-        {changed && <button type="button" onClick={onReset} title={`恢复 ${label} 的默认值`}><Icon name="refresh" size={13} /></button>}
+        {changed && <button type="button" onClick={onReset} title={t('ncResetTitle', { label })}><Icon name="refresh" size={13} /></button>}
       </span>
       {control}
       {definition.description && <small className="node-input-description">{definition.description}</small>}
@@ -126,6 +120,7 @@ function ControlField({ definition, value, changed, onChange, onReset }) {
 }
 
 export default function NodeControlsPanel({ manifest, controls, onChange, onClose }) {
+  const { t } = useI18n();
   const [search, setSearch] = useState('');
   const [draft, setDraft] = useState(() => cloneGenerationControls(controls));
   const query = search.trim().toLowerCase();
@@ -151,26 +146,26 @@ export default function NodeControlsPanel({ manifest, controls, onChange, onClos
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <section className="node-controls-panel" onClick={event => event.stopPropagation()} aria-label="节点控制">
+      <section className="node-controls-panel" onClick={event => event.stopPropagation()} aria-label={t('ncPanelAria')}>
         <div className="modal-header">
           <div>
-            <h2>工作流参数</h2>
+            <h2>{t('ncTitle')}</h2>
             <p>{manifest.workflowName}</p>
           </div>
-          <button className="btn btn-icon" onClick={onClose} title="关闭"><Icon name="close" /></button>
+          <button className="btn btn-icon" onClick={onClose} title={t('close')}><Icon name="close" /></button>
         </div>
 
         <div className="node-controls-body">
           <div className="node-runtime-summary">
             <span>{manifest.modelType || 'generic'}</span>
-            <span>{manifest.activeNodeCount || 0} 个激活节点</span>
-            <span>{manifest.editableNodeCount || 0} 个可编辑节点</span>
-            <strong>{changeCount} 项变更</strong>
+            <span>{t('ncActiveNodes', { n: manifest.activeNodeCount || 0 })}</span>
+            <span>{t('ncEditableNodes', { n: manifest.editableNodeCount || 0 })}</span>
+            <strong>{t('ncChanges', { n: changeCount })}</strong>
           </div>
 
           <section className="node-control-section">
             <div className="node-section-heading">
-              <div><h3>生成参数</h3><p>仅覆盖已修改项，其余继续使用工作流当前值。</p></div>
+              <div><h3>{t('ncCommonParams')}</h3><p>{t('ncCommonNote')}</p></div>
             </div>
             <div className="common-controls-grid">
               {parameterSchema.filter(field => field.source === 'common').map(field => {
@@ -193,7 +188,7 @@ export default function NodeControlsPanel({ manifest, controls, onChange, onClos
           {outputNodes.length > 0 && (
             <section className="node-control-section">
               <div className="node-section-heading">
-                <div><h3>输出分支</h3><p>至少保留一个输出；默认执行全部输出。</p></div>
+                <div><h3>{t('ncOutputs')}</h3><p>{t('ncOutputsNote')}</p></div>
               </div>
               <div className="output-node-options">
                 {visibleOutputNodes.map(node => (
@@ -212,8 +207,8 @@ export default function NodeControlsPanel({ manifest, controls, onChange, onClos
 
           <section className="node-control-section">
             <div className="node-section-heading">
-              <div><h3>节点输入</h3><p>按节点 ID 精确覆盖未连接的输入值。</p></div>
-              <input className="node-search" value={search} onChange={event => setSearch(event.target.value)} placeholder="搜索节点、分组或 ID" />
+              <div><h3>{t('ncNodeInputs')}</h3><p>{t('ncNodeInputsNote')}</p></div>
+              <input className="node-search" value={search} onChange={event => setSearch(event.target.value)} placeholder={t('ncSearchPlaceholder')} />
             </div>
             <div className="node-list">
               {editableNodes.map(node => (
@@ -232,8 +227,8 @@ export default function NodeControlsPanel({ manifest, controls, onChange, onClos
                           definition={{
                             ...input,
                             ...(schema || {}),
-                            label: schema?.label || NODE_INPUT_LABELS[input.name] || input.name,
-                            description: schema?.description || NODE_INPUT_DESCRIPTIONS[input.name] || '',
+                            label: schema?.label || nodeInputLabels(t)[input.name] || input.name,
+                            description: schema?.description || nodeInputDescriptions(t)[input.name] || '',
                           }}
                           value={draft.nodeOverrides[node.id]?.[input.name]}
                           changed={changed}
@@ -245,17 +240,17 @@ export default function NodeControlsPanel({ manifest, controls, onChange, onClos
                   </div>
                 </div>
               ))}
-              {editableNodes.length === 0 && <div className="node-list-empty">没有匹配的可编辑节点</div>}
+              {editableNodes.length === 0 && <div className="node-list-empty">{t('ncNoMatchingNodes')}</div>}
             </div>
           </section>
         </div>
 
         <div className="settings-footer">
-          <span>{changeCount > 0 ? `下一次生成将应用 ${changeCount} 项变更` : '下一次生成将使用工作流默认参数'}</span>
+          <span>{changeCount > 0 ? t('ncApplyNext', { n: changeCount }) : t('ncUseDefaults')}</span>
           <span className="settings-footer-spacer" />
-          <button className="btn" onClick={() => setDraft(cloneGenerationControls(EMPTY_GENERATION_CONTROLS))} disabled={changeCount === 0}>恢复全部</button>
-          <button className="btn" onClick={onClose}>取消</button>
-          <button className="btn btn-primary" onClick={applyChanges}>应用变更</button>
+          <button className="btn" onClick={() => setDraft(cloneGenerationControls(EMPTY_GENERATION_CONTROLS))} disabled={changeCount === 0}>{t('ncResetAll')}</button>
+          <button className="btn" onClick={onClose}>{t('cancel')}</button>
+          <button className="btn btn-primary" onClick={applyChanges}>{t('ncApply')}</button>
         </div>
       </section>
     </div>

@@ -8,7 +8,7 @@ export const INTENTS = [
   'cancel',
 ];
 
-export const INTENT_ACTIONS = ['reply', 'clarify', 'prepare', 'execute'];
+export const INTENT_ACTIONS = ['reply', 'clarify', 'suggest', 'prepare', 'execute'];
 export const INTENT_TARGETS = ['new', 'last_generation', 'artifact', 'last_prompt', 'attached_media', 'none'];
 
 const LEGACY_INTENTS = {
@@ -30,7 +30,7 @@ export function normalizeIntentDecision(input, fallback = {}) {
     : intent === 'generate' || intent === 'edit' || intent === 'refine'
       ? 'prepare'
       : 'reply';
-  if (['prepare', 'execute'].includes(action) && !['generate', 'edit', 'refine'].includes(intent)) action = 'reply';
+  if (['suggest', 'prepare', 'execute'].includes(action) && !['generate', 'edit', 'refine'].includes(intent)) action = 'reply';
   const missing = Array.isArray(input?.missing)
     ? input.missing.map(String).filter(Boolean)
     : Array.isArray(fallback.missing) ? fallback.missing : [];
