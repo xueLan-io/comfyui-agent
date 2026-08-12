@@ -28,9 +28,9 @@ async function loadMetadata() {
         });
       }
       return rows;
-    }).catch(error => {
+    }).catch(() => {
       metadataPromise = null;
-      throw error;
+      return [];
     });
   }
   return metadataPromise;

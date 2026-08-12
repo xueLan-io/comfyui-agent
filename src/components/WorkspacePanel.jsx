@@ -62,22 +62,13 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
     recentWorkflows,
     toggleFavoriteWorkflow,
   } = useComfyUI();
-  const {
-    promptMode,
-    setPromptMode,
-    status,
-    statusMsg,
-    errorFeedback,
-    setErrorFeedback,
-    setFeedbackOpen,
-  } = useAgent();
+  const { promptMode, setPromptMode } = useAgent();
   const controlChangeCount = countControlChanges(generationControls);
   const promptProfile = workflowManifest?.promptProfile;
   const positiveTargetCount = promptProfile?.positiveTargets?.length || 0;
   const negativeTargetCount = promptProfile?.negativeTargets?.length || 0;
   const promptModeHelp = { raw: 'promptHelpRaw', anime: 'promptHelpAnime', 'anime-character': 'promptHelpCharacter', 'anime-scene': 'promptHelpScene', 'anime-polish': 'promptHelpPolish' }[promptMode] || 'promptHelpAnime';
   const modeText = { raw: ['rawMode', 'rawModeDesc'], anime: ['animeMode', 'animeModeDesc'], 'anime-character': ['characterMode', 'characterModeDesc'], 'anime-scene': ['sceneMode', 'sceneModeDesc'], 'anime-polish': ['polishMode', 'polishModeDesc'] };
-  const statusText = { running: 'workflowRunning', completed: 'workflowCompleted', error: 'workflowFailed', cancelled: 'workflowCancelled' };
 
   useEffect(() => () => clearTimeout(importFeedbackTimer.current), []);
 
@@ -223,7 +214,7 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
        <div className="panel-right-header">
          <div><span className="sidebar-eyebrow">CONTROL ROOM</span><strong className="workspace-title">{t('workflow')}</strong></div>
         <div className="panel-right-controls">
-           {statusText[status] && <span className={`tag tag-${status === 'error' ? 'err' : status === 'running' ? 'processing' : 'ok'}`}>{t(statusText[status])}</span>}
+           {workflowManifest && <span className="tag tag-ok">{t('workflow')} · OK</span>}
           <button className="btn btn-icon workspace-collapse" onClick={() => setCollapsed(value => !value)} title={collapsed ? t('expandSidebar') : t('collapseSidebar')}><Icon name={collapsed ? 'chevronLeft' : 'chevronRight'} /></button>
         </div>
       </div>
@@ -308,9 +299,7 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
            {workflowManifest && <p className="prompt-template-summary">{promptProfile?.supportsNegative === false ? t('promptOnlyPositive') : t('promptTargetsSummary', { positive: positiveTargetCount, negative: negativeTargetCount })}</p>}
         </section>
 
-        {(status === 'error' || status === 'cancelled') && <div className={`status-bar ${status}`}><span className="status-indicator" /><span>{statusMsg || t(statusText[status])}</span>{status === 'error' && <button className="btn btn-feedback" onClick={() => { setErrorFeedback({ error: statusMsg || t('wsRunFailed'), status }); setFeedbackOpen(true); }}><Icon name="circleAlert" size={13} />{t('wsSendFeedback')}</button>}</div>}
-
-      </div>}
+       </div>}
     </section>
   );
 }

@@ -32,6 +32,14 @@ function abortError() {
   return Object.assign(new Error('Execution cancelled'), { name: 'AbortError' });
 }
 
+function hasOutputMedia(entry = {}) {
+  return Object.values(entry.outputs || {}).some(outputs =>
+    Object.values(outputs || {}).some(items =>
+      Array.isArray(items) && items.some(item => item?.filename),
+    ),
+  );
+}
+
 class NodeWebSocket {
   constructor(url) {
     this.listeners = new Map();
@@ -232,10 +240,16 @@ export class ComfyUIClient {
   async submit(prompt, clientId, options = {}) {
     try {
       const result = await this.queuePrompt(prompt, clientId, options.signal);
-      if (!result?.prompt_id) throw new Error('ComfyUI prompt response missing prompt_id');
+      if (!result?.prompt_id) {
+        const error = new Error('ComfyUI prompt response missing prompt_id');
+        error.failureType = 'submit_unknown';
+        error.retryable = false;
+        error.userMessage = 'ComfyUI 已提交状态未知，请检查任务队列后再决定是否重试';
+        throw error;
+      }
       return { promptId: result.prompt_id };
     } catch (error) {
-      if (/timed out|fetch failed|network|connection|econn|reset/i.test(error?.message || '')) {
+      if (error?.failureType === 'submit_unknown' || /timed out|fetch failed|network|connection|econn|reset|unexpected end|json|parse/i.test(error?.message || '')) {
         error.failureType = 'submit_unknown';
         error.retryable = false;
         error.userMessage = 'ComfyUI 已提交状态未知，请检查任务队列后再决定是否重试';
@@ -295,16 +309,25 @@ export class ComfyUIClient {
   }
 
   async inspectImage(image = {}) {
+    const result = await this.inspectMedia(image);
+    return {
+      filename: result.filename,
+      exists: result.exists,
+      readable: result.readable,
+      validFormat: result.readable && isImageBytes(result.bytes || new Uint8Array()),
+    };
+  }
+
+  async inspectMedia(media = {}) {
     const params = new URLSearchParams({
-      filename: image.filename || '',
-      subfolder: image.subfolder || '',
-      type: image.type || 'output',
+      filename: media.filename || '',
+      subfolder: media.subfolder || '',
+      type: media.type || 'output',
     });
     const res = await this._fetch(`${this.baseUrl}/view?${params.toString()}`);
-    if (!res.ok) return { filename: image.filename, exists: false, readable: false, validFormat: false };
+    if (!res.ok) return { filename: media.filename, exists: false, readable: false, bytes: null };
     const bytes = new Uint8Array(await res.arrayBuffer());
-    const validFormat = isImageBytes(bytes);
-    return { filename: image.filename, exists: true, readable: bytes.length > 0, validFormat };
+    return { filename: media.filename, exists: true, readable: bytes.length > 0, bytes };
   }
 
   async fetchImageBytes(image = {}) {
@@ -361,40 +384,58 @@ export class ComfyUIClient {
     const start = Date.now();
     let missingSince = 0;
     for (;;) {
-      if (signal?.aborted) throw abortError();
-      if (Date.now() - start > this.timeoutMs) throw new Error('ComfyUI generation timeout');
+      try {
+        // 取消竞态：手动取消时生成可能已完成（例如轮询间隔内到达 100%），
+        // 成果不应被取消吞掉 —— 任何中止路径都先尝试从历史抢救成功条目。
+        if (signal?.aborted) return this._salvageCompleted(promptId);
+        if (Date.now() - start > this.timeoutMs) throw new Error('ComfyUI generation timeout');
 
-      const requestOptions = signal ? { signal } : {};
-      const queue = await this.queue(requestOptions);
-      const running = queue.queue_running || [];
-      const pending = queue.queue_pending || [];
-      const stillQueued = queueContains(running, promptId) || queueContains(pending, promptId);
+        const requestOptions = signal ? { signal } : {};
+        const queue = await this.queue(requestOptions);
+        const running = queue.queue_running || [];
+        const pending = queue.queue_pending || [];
+        const stillQueued = queueContains(running, promptId) || queueContains(pending, promptId);
 
-      if (!stillQueued) {
-        const history = await this.history(promptId, requestOptions);
-        if (history[promptId]) {
-          const status = history[promptId].status;
-          if (status?.completed && status.status_str && status.status_str !== 'success') {
-            const lastMessage = status.messages?.at(-1)?.[1];
-            throw new Error(lastMessage?.exception_message || `ComfyUI execution ${status.status_str}`);
+        if (!stillQueued) {
+          const history = await this.history(promptId, requestOptions);
+          if (history[promptId]) {
+            const status = history[promptId].status;
+            if (status?.completed && status.status_str && status.status_str !== 'success') {
+              const lastMessage = status.messages?.at(-1)?.[1];
+              throw new Error(lastMessage?.exception_message || `ComfyUI execution ${status.status_str}`);
+            }
+            return history[promptId];
           }
-          return history[promptId];
+          if (!missingSince) missingSince = Date.now();
+          if (Date.now() - missingSince > 15000) {
+            throw new Error(`ComfyUI prompt disappeared before completion: ${promptId}`);
+          }
+          await delay(2000, signal);
+          continue;
         }
-        if (!missingSince) missingSince = Date.now();
-        if (Date.now() - missingSince > 15000) {
-          throw new Error(`ComfyUI prompt disappeared before completion: ${promptId}`);
-        }
-        await delay(2000, signal);
-        continue;
+        missingSince = 0;
+        await delay(pollMs, signal);
+      } catch (error) {
+        if (signal?.aborted) return this._salvageCompleted(promptId);
+        throw error;
       }
-      missingSince = 0;
-      await delay(pollMs, signal);
     }
   }
 
   async observe(promptId, pollMs = 1000, signal) {
     if (!promptId) throw new Error('ComfyUI promptId is required for observation');
     return this.waitForCompletion(promptId, pollMs, signal);
+  }
+
+  // 中止时做最后一次无信号历史检查：ComfyUI 侧已成功完成且有输出则按完成返回，
+  // 否则按正常取消抛出 AbortError。
+  async _salvageCompleted(promptId) {
+    try {
+      const history = await this.history(promptId);
+      const entry = history?.[promptId];
+      if (entry?.status?.status_str === 'success' && hasOutputMedia(entry)) return entry;
+    } catch {}
+    throw abortError();
   }
 
   async fetchResult(promptId, signal) {
@@ -416,9 +457,21 @@ export class ComfyUIClient {
         resolveSocket(null);
         return;
       }
-      const timeout = setTimeout(() => {
+      let settled = false;
+      let timeout;
+      const cleanup = () => {
+        clearTimeout(timeout);
+        signal?.removeEventListener('abort', abort);
+      };
+      const settle = value => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolveSocket(value);
+      };
+      timeout = setTimeout(() => {
         socket.close();
-        resolveSocket(null);
+        settle(null);
       }, 10000);
       const workflowNodeCount = Object.keys(prompt || {}).length;
       const executedNodes = new Set();
@@ -443,22 +496,23 @@ export class ComfyUIClient {
       };
 
       socket.setPromptId = value => { promptId = value || ''; };
-      const abort = () => socket.close();
+      const abort = () => {
+        socket.close();
+        settle(null);
+      };
       if (signal?.aborted) {
         abort();
-        resolveSocket(null);
         return;
       }
       signal?.addEventListener('abort', abort, { once: true });
 
       socket.addEventListener('open', () => {
-        clearTimeout(timeout);
-        resolveSocket(socket);
+        settle(socket);
       }, { once: true });
       socket.addEventListener('error', () => {
-        clearTimeout(timeout);
-        resolveSocket(null);
+        settle(null);
       }, { once: true });
+      socket.addEventListener('close', cleanup, { once: true });
       socket.addEventListener('message', event => {
         if (typeof event.data !== 'string') return;
         try {

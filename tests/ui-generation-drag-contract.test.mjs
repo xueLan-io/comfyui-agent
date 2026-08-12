@@ -48,13 +48,21 @@ test('floating movement and cross-window drag use cancellation tokens', async ()
 });
 
 test('preset saving uses current media and persisted asset recipes', async () => {
-  const chat = await source('src/components/ChatPanel.jsx');
+  const actions = await source('src/components/GenerationActions.jsx');
+  const record = await source('src/components/GenerationRecordCard.jsx');
   const assets = await source('src/components/AssetLibraryPage.jsx');
   const main = await source('electron/main.mjs');
-  assert.match(chat, /const resultRefs = form\.saveResults \? media : \[\]/);
+  assert.match(actions, /const resultRefs = form\.saveResults \? record\.media \|\| \[\] : \[\]/);
   assert.match(assets, /positive: image\.positive \|\| prompt\.positive/);
   assert.match(main, /positive: result\.compiledPrompt\?\.positive \|\| result\.positive/);
   assert.match(main, /positive: edits\.positive \|\| preview\?\.positive/);
+  assert.match(main, /writeFile\(assetRecipePath\(filePath\)/);
+  assert.match(main, /unlink\(assetRecipePath\(filePath\)\)/);
+  assert.doesNotMatch(actions, /satisfied|new_seed|output-feedback/);
+  assert.match(record, /generation-details/);
+  assert.match(record, /renderAspectRatio/);
+  assert.match(record, /hasOutput && <GenerationActions record=\{record\}/);
+  assert.match(record, /hasOutput = media\.length > 0 && \['completed', 'recovery'\]\.includes\(runtime\.phase\)/);
 });
 
 test('frontend keeps archived media renderable and session-scoped', async () => {
@@ -68,6 +76,13 @@ test('frontend keeps archived media renderable and session-scoped', async () => 
   assert.match(main, /media: \[\.\.\.archived, \.\.\.archivedVideos\]/);
   assert.match(main, /mediaType: 'image'/);
   assert.match(session, /activationVersionRef/);
+});
+
+test('generation cards follow their user turn instead of globally sorting messages by timestamps', async () => {
+  const panel = await source('src/components/ChatPanel.jsx');
+  assert.match(panel, /const recordsByTurn = new Map\(\)/);
+  assert.match(panel, /recordsByTurn\.get\(message\.turnId\)/);
+  assert.doesNotMatch(panel, /return \[\.\.\.messageEntries, \.\.\.recordEntries\]\.sort/);
 });
 
 test('renderer failures have a visible fallback and Electron diagnostics', async () => {

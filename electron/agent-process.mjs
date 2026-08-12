@@ -9,6 +9,7 @@ const WORKER_PATH = join(__dirname, 'agent-worker.mjs');
 const JOB_HOST_PATH = join(__dirname, 'job-object-host.ps1');
 const DEFAULT_RPC_TIMEOUT_MS = 2700000;
 const VIDEO_RPC_TIMEOUT_MS = 3600000;
+const STOP_TIMEOUT_MS = 10000;
 const TASK_SCOPED_METHODS = new Set(['cancel', 'getTrace', 'session.getTrace', 'task.update', 'task.transition', 'task.complete', 'task.settleComplete']);
 
 function rejected(message, code = 'AGENT_PROCESS_ERROR') {
@@ -25,6 +26,8 @@ export class AgentProcessClient {
     this.pending = new Map();
     this.ready = null;
     this.startPromise = null;
+    this.stopPromise = null;
+    this.stopResolve = null;
     this.usesUtilityProcess = false;
     this.cache = {
       workflowDir: options.workflowDir || '',
@@ -46,6 +49,8 @@ export class AgentProcessClient {
       getState: () => this.cache.sessionManager,
       getSessionState: () => this.cache.sessionManager.sessionState || null,
       setSessionState: patch => this.call('session.setState', [patch]),
+      appendExecutionEvent: event => this.call('session.appendExecutionEvent', [event]),
+      upsertGenerationRecord: record => this.call('session.upsertGenerationRecord', [record]),
       flush: () => this.call('session.flush'),
       renameProject: (...args) => this.call('session.renameProject', args),
       renameSession: (...args) => this.call('session.renameSession', args),
@@ -114,6 +119,7 @@ export class AgentProcessClient {
     return this.call('config.workflowDir', args);
   }
   setPromptMode(...args) { return this.call('config.promptMode', args); }
+  reconfigureComfy(...args) { return this.call('config.comfy', args); }
 
   getProject(projectId = this.sessionManager.activeProjectId) {
     return (this.cache.sessionManager.projects || []).find(project => project.id === projectId) || null;
@@ -241,6 +247,10 @@ export class AgentProcessClient {
       this.readyResolve?.();
       return;
     }
+    if (message.type === 'stopped') {
+      this.stopResolve?.();
+      return;
+    }
     if (message.type === 'fatal') {
       const error = rejected(message.error || 'Agent worker failed to initialize', 'AGENT_WORKER_INIT_FAILED');
       error.stack = message.stack || error.stack;
@@ -341,25 +351,35 @@ export class AgentProcessClient {
   }
 
   async stop() {
+    if (this.stopPromise) return this.stopPromise;
+    this.stopPromise = this._stop().finally(() => {
+      this.stopPromise = null;
+      this.stopResolve = null;
+    });
+    return this.stopPromise;
+  }
+
+  async _stop() {
     const child = this.child;
     const host = this.jobHost;
     const exited = child
       ? new Promise(resolve => child.once('exit', resolve))
       : Promise.resolve();
-    this.child = null;
-    this.jobHost = null;
-    this._failPending(rejected('Agent process stopped', 'AGENT_PROCESS_STOPPED'));
-    this.ready = null;
     if (child) {
+      const stopped = new Promise(resolve => { this.stopResolve = resolve; });
       try {
         if (this.usesUtilityProcess) child.postMessage({ type: 'stop' });
         else if (child.connected) child.send({ type: 'stop' });
       } catch {}
-      await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 1500))]);
+      await Promise.race([stopped, exited, new Promise(resolve => setTimeout(resolve, STOP_TIMEOUT_MS))]);
     }
+    this.child = null;
+    this.jobHost = null;
+    this._failPending(rejected('Agent process stopped', 'AGENT_PROCESS_STOPPED'));
+    this.ready = null;
     if (!this.usesUtilityProcess && child?.connected) child.disconnect();
     if (host && !host.killed) host.kill();
-    if (child) child.kill();
-    await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 2000))]);
+    if (child && !child.killed) child.kill();
+    await Promise.race([exited, new Promise(resolve => setTimeout(resolve, STOP_TIMEOUT_MS))]);
   }
 }

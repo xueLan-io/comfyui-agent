@@ -3,6 +3,7 @@ import { useAgent } from '../contexts/AgentContext.jsx';
 import { useSession } from '../contexts/SessionContext.jsx';
 import ImageAsset from './ImageAsset.jsx';
 import Icon from './Icon.jsx';
+import PresetSaveModal from './PresetSaveModal.jsx';
 import { useI18n } from '../i18n/I18nContext.jsx';
 
 const RECENT_WINDOW = 7 * 24 * 60 * 60 * 1000;
@@ -39,6 +40,10 @@ function assetSource(image) {
   return image.source === 'openai-image' || image.source === 'cloud' ? 'cloud' : 'local';
 }
 
+function isPresetImage(image) {
+  return image.mediaType !== 'video' && image.type !== 'video' && /\.(png|jpe?g|webp|gif|bmp)$/i.test(image.filename || '');
+}
+
 function tracePrompt(trace, image) {
   const prompt = trace?.promptResult || trace?.result?.compiledPrompt || trace?.compiledPrompt || {};
   return {
@@ -61,6 +66,7 @@ export default function AssetLibraryPage({ onBack }) {
   const [favoriteKeys, setFavoriteKeys] = useState(() => readFavorites(''));
   const [selectedKeys, setSelectedKeys] = useState(() => new Set());
   const [refreshing, setRefreshing] = useState(false);
+  const [presetDraft, setPresetDraft] = useState(null);
 
   useEffect(() => {
     setFavoriteKeys(readFavorites(activeProjectId));
@@ -175,27 +181,46 @@ export default function AssetLibraryPage({ onBack }) {
     }
   }
 
-  async function saveAssetsAsPreset(selected) {
+  async function openPresetSave(selected) {
     if (!selected.length) return;
-    const title = window.prompt(t('presetName'), selected[0].filename?.replace(/\.[^.]+$/, '') || t('historicalPreset'));
-    if (!title?.trim()) return;
-    let metadata = {};
-    if (selected[0].taskId && window.electronAPI.agentGetTrace) {
-      try { metadata = tracePrompt(await window.electronAPI.agentGetTrace(selected[0].taskId), selected[0]); } catch {}
+    const images = selected.filter(isPresetImage);
+    if (!images.length) {
+      window.alert(t('savePresetFailed'));
+      return;
     }
-    if (!metadata.positive) {
-      metadata.positive = window.prompt(t('positivePrompt'), '') || '';
+    let metadata = tracePrompt(null, images[0]);
+    if (images[0].taskId && window.electronAPI.agentGetTrace) {
+      try { metadata = tracePrompt(await window.electronAPI.agentGetTrace(images[0].taskId), images[0]); } catch {}
     }
-    if (!metadata.positive.trim()) { window.alert(t('noPositivePrompt')); return; }
+    setPresetDraft({
+      images,
+      initial: {
+        title: images[0].filename?.replace(/\.[^.]+$/, '') || t('historicalPreset'),
+        description: t('assetFromHistory', { n: images.length }),
+        positive: metadata.positive || '',
+        negative: metadata.negative || '',
+        workflow: metadata.workflow || '',
+        parameters: metadata.parameters || {},
+        tags: t('assetHistoryTag'),
+        source: metadata.source || 'direct',
+        origin: 'asset-library',
+      },
+    });
+  }
+
+  async function saveAssetsAsPreset(value) {
+    if (!presetDraft) return;
+    const { workflow, saveResults, useFirstAsCover, ...input } = value;
     try {
       const saved = await window.electronAPI.globalPresetCreate({
-        title: title.trim(), description: t('assetFromHistory', { n: selected.length }),
-        ...metadata, workflowName: metadata.workflow, resultRefs: selected,
-        coverRef: selected[0], tags: [t('assetHistoryTag')], origin: 'asset-library',
+        ...input,
+        workflowName: workflow,
+        resultRefs: saveResults ? presetDraft.images : [],
+        ...(useFirstAsCover ? { coverRef: presetDraft.images[0] } : {}),
       });
-      window.dispatchEvent(new CustomEvent('comfy-agent:preset-saved', { detail: { id: saved?.id || '', title: title.trim() } }));
-      window.alert(t('presetSavedAndOpened', { name: title.trim() }));
-    } catch (error) { window.alert(error.message || t('savePresetFailed')); }
+      setPresetDraft(null);
+      window.dispatchEvent(new CustomEvent('comfy-agent:preset-saved', { detail: { id: saved?.id || '', title: input.title } }));
+    } catch (error) { throw new Error(error.message || t('savePresetFailed')); }
   }
 
   return (
@@ -244,7 +269,7 @@ export default function AssetLibraryPage({ onBack }) {
         <span>{selectedKeys.size > 0 ? `${selectedKeys.size} ${t('selected')}` : `${visibleAssets.length} ${t('all')}`}</span>
         <div>
           <button className="btn btn-small" onClick={toggleSelectAll} disabled={visibleAssets.length === 0}>{allVisibleSelected ? t('clearSelection') : t('selectAllVisible')}</button>
-          {selectedVisibleAssets.length > 0 && <><button className="btn btn-small btn-primary" onClick={() => void previewSelection()}>{t('previewSelection')}</button><button className="btn btn-small" onClick={() => void saveAssetsAsPreset(selectedVisibleAssets)}>{t('saveAsPreset')}</button></>}
+          {selectedVisibleAssets.length > 0 && <><button className="btn btn-small btn-primary" onClick={() => void previewSelection()}>{t('previewSelection')}</button><button className="btn btn-small" onClick={() => void openPresetSave(selectedVisibleAssets)}>{t('saveAsPreset')}</button></>}
         </div>
       </div>
 
@@ -260,7 +285,7 @@ export default function AssetLibraryPage({ onBack }) {
                 <span className={`asset-library-source-badge ${assetSource(image)}`} title={assetSource(image) === 'cloud' ? t('cloudImage') : t('localImage')}>{assetSource(image) === 'cloud' ? t('cloud') : t('local')}</span>
                   <div className="asset-library-actions">
                   <button className={`asset-library-favorite${favorite ? ' active' : ''}`} onClick={() => toggleFavorite(image)} aria-pressed={favorite} title={favorite ? t('unfavorite') : t('favorite')}><Icon name="star" size={14} /></button>
-                  <button className="asset-library-save-preset" onClick={() => void saveAssetsAsPreset([image])} title={t('saveAsPreset')} aria-label={`${t('saveAsPreset')} ${image.filename}`}><Icon name="bookmark" size={14} /></button>
+                  <button className="asset-library-save-preset" onClick={() => void openPresetSave([image])} title={t('saveAsPreset')} aria-label={`${t('saveAsPreset')} ${image.filename}`}><Icon name="bookmark" size={14} /></button>
                   <button className="asset-library-delete" onClick={() => void handleDelete(image)} title={t('deleteAsset')} aria-label={`${t('deleteAsset')} ${image.filename}`}><Icon name="trash" size={14} /></button>
                   </div>
                 <label className="asset-library-select" title={selectedKeys.has(key) ? t('deselect') : t('select')}>
@@ -283,6 +308,7 @@ export default function AssetLibraryPage({ onBack }) {
           <span>{assets.length > 0 ? t('noResultsHint') : t('noAssetsHint')}</span>
         </div>
       )}
+      {presetDraft && <PresetSaveModal initial={presetDraft.initial} onSave={saveAssetsAsPreset} onClose={() => setPresetDraft(null)} />}
     </main>
   );
 }

@@ -148,21 +148,24 @@ export function createGenerationTools({ generation } = {}) {
   ];
 }
 
-export function createWebMcpServer({ webTool = WebTool, llmProvider, tools = [], toolRegistry = null, generation, serviceRegistry = null, serviceInvoker = null, includeReadOnlyTools = true, includeServiceTools = false, includeMediaTools = false, includeRuntimeMutationTools = false, includeWorkflowMutationTools = false, includeSkillTools = true, skills = SKILLS, surface = 'mcp', include, exclude } = {}) {
+export function createWebMcpServer({ webTool = WebTool, llmProvider, tools = [], toolRegistry = null, generation, serviceRegistry = null, serviceInvoker = null, includeReadOnlyTools = true, includeServiceTools = false, includeMediaTools = false, includeRuntimeMutationTools = false, includeWorkflowMutationTools = false, includeSkillTools = true, skills = SKILLS, surface = 'mcp', modules = null, include, exclude } = {}) {
+  const moduleFlags = { web: true, files: true, comfyui: true, skills: true, ...(modules && typeof modules === 'object' ? modules : {}) };
   const characterResearch = researchHandler(webTool, llmProvider);
-  const baseTools = [
+  const baseTools = moduleFlags.web ? [
     { name: 'web_search', description: 'Search public web pages with the configured domain and source policy.', input_schema: { type: 'object', properties: { query: { type: 'string' }, maxResults: { type: 'number' }, timeoutMs: { type: 'number' }, allowedDomains: { type: 'array' }, sourcePolicy: { type: 'object' } }, required: ['query'], additionalProperties: false }, execute: input => webTool.execute({ action: 'search', ...input }) },
     { name: 'web_open', description: 'Open one public web page with SSRF and domain-policy checks.', input_schema: { type: 'object', properties: { url: { type: 'string' }, timeoutMs: { type: 'number' }, allowedDomains: { type: 'array' }, sourcePolicy: { type: 'object' } }, required: ['url'], additionalProperties: false }, execute: input => webTool.execute({ action: 'open', ...input }) },
     { name: 'character_research', description: 'Search and extract cited character appearance facts.', input_schema: { type: 'object', properties: { query: { type: 'string' }, maxResults: { type: 'number' }, maxOpenPages: { type: 'number' }, timeoutMs: { type: 'number' }, allowedDomains: { type: 'array' }, officialDomains: { type: 'array' }, verifiedDomains: { type: 'array' }, communityDomains: { type: 'array' } }, required: ['query'], additionalProperties: false }, execute: characterResearch },
-  ];
-   const readOnlyTools = includeReadOnlyTools ? [FilesystemTool, PromptLibraryTool, SystemTool, InspectImageTool, ...RuntimeReadTools, ...WorkflowReadTools, ComfyUIRuntimeParametersTool] : [];
-  const runtimeMutationTools = includeRuntimeMutationTools ? RuntimeMutationTools : [];
-  const workflowMutationTools = includeWorkflowMutationTools ? [WorkflowMutationPreviewTool, WorkflowRevisionListTool, WorkflowMutationCommitTool, WorkflowRollbackTool] : [WorkflowMutationPreviewTool, WorkflowRevisionListTool];
-  const plannerTools = includeSkillTools ? createSkillMcpTools(skills) : [];
+  ] : [];
+   const filesTools = includeReadOnlyTools && moduleFlags.files ? [FilesystemTool, PromptLibraryTool, SystemTool] : [];
+   const comfyuiReadTools = includeReadOnlyTools && moduleFlags.comfyui ? [InspectImageTool, ...RuntimeReadTools, ...WorkflowReadTools, ComfyUIRuntimeParametersTool] : [];
+  const runtimeMutationTools = includeRuntimeMutationTools && moduleFlags.comfyui ? RuntimeMutationTools : [];
+  const workflowMutationTools = moduleFlags.comfyui ? (includeWorkflowMutationTools ? [WorkflowMutationPreviewTool, WorkflowRevisionListTool, WorkflowMutationCommitTool, WorkflowRollbackTool] : [WorkflowMutationPreviewTool, WorkflowRevisionListTool]) : [];
+  const plannerTools = includeSkillTools && moduleFlags.skills ? createSkillMcpTools(skills) : [];
    const serviceTools = includeServiceTools && serviceRegistry && serviceInvoker ? createServiceTools({ registry: serviceRegistry, invoker: serviceInvoker }) : [];
    const mediaTools = includeMediaTools ? createMediaTools() : [];
-   const rawTools = [...baseTools, ...readOnlyTools, ...runtimeMutationTools, ...workflowMutationTools, ...serviceTools, ...mediaTools, ...plannerTools, ...createGenerationTools({ generation }), ...tools];
-   const skillRegistryTool = {
+   const generationTools = moduleFlags.comfyui ? createGenerationTools({ generation }) : [];
+   const rawTools = [...baseTools, ...filesTools, ...comfyuiReadTools, ...runtimeMutationTools, ...workflowMutationTools, ...serviceTools, ...mediaTools, ...plannerTools, ...generationTools, ...tools];
+   const skillRegistryTool = moduleFlags.skills ? {
     name: 'skills_list',
     description: 'List the normalized Skill registry and capabilities available to this MCP server.',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
@@ -170,8 +173,8 @@ export function createWebMcpServer({ webTool = WebTool, llmProvider, tools = [],
     side_effects: [], requires_confirmation: false, idempotent: true, retry: { mode: 'never' },
     category: 'management',
     execute: async () => ({ version: SKILL_CONTRACT_VERSION, skills: skillManifest(skills) }),
-   };
-   const skillPlanningTools = includeSkillTools ? [
+   } : null;
+   const skillPlanningTools = includeSkillTools && moduleFlags.skills ? [
      {
        name: 'skills_match', description: 'Match a user request to Skill candidates without executing side effects.', input_schema: { type: 'object', properties: { userIntent: { type: 'string' }, context: { type: 'object' }, skillId: { type: 'string' } }, required: ['userIntent'], additionalProperties: false }, output_schema: { type: 'object' }, side_effects: [], requires_confirmation: false, idempotent: true, retry: { mode: 'never' }, category: 'generation', execute: ({ userIntent, context = {}, skillId }) => createConfiguredSkillRegistry({ builtin: skills }).match(userIntent, { ...context, skillId }),
      },
@@ -179,7 +182,7 @@ export function createWebMcpServer({ webTool = WebTool, llmProvider, tools = [],
        name: 'skill_requirements', description: 'Inspect Skill requirements without executing side effects.', input_schema: { type: 'object', properties: { skillId: { type: 'string' }, context: { type: 'object' } }, required: ['skillId'], additionalProperties: false }, output_schema: { type: 'object' }, side_effects: [], requires_confirmation: false, idempotent: true, retry: { mode: 'never' }, category: 'generation', execute: ({ skillId, context = {} }) => { const skill = createConfiguredSkillRegistry({ builtin: skills }).get(skillId); if (!skill) return { code: 'SKILL_NOT_FOUND' }; return { skillId, requirements: skill.requirements, capabilities: skill.capabilities, context }; },
      },
    ] : [];
-    const localRegistry = registryFromTools([...rawTools, skillRegistryTool, ...skillPlanningTools].map(tool => ({
+    const localRegistry = registryFromTools([...rawTools, ...(skillRegistryTool ? [skillRegistryTool] : []), ...skillPlanningTools].map(tool => ({
      category: tool.category || 'management',
      permission: tool.permission || (tool.requires_confirmation ? 'execute' : 'read'),
      risk_level: tool.risk_level || (tool.requires_confirmation ? 'medium' : 'none'),

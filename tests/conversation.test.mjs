@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ConversationMemory } from '../src/agent/memory/conversation.mjs';
+import { fitMessagesToContext } from '../src/agent/llm/provider.mjs';
 
 test('add message', () => {
   const convo = new ConversationMemory();
@@ -53,6 +54,20 @@ test('getLLMMessages maps agent to assistant', () => {
   assert.equal(llm[0].role, 'user');
   assert.equal(llm[1].role, 'assistant');
   assert.equal(llm[1].content, 'a');
+});
+
+test('context fitting retains the newest user request beside an oversized system prompt', () => {
+  const messages = [
+    { role: 'system', content: 'system '.repeat(400) },
+    { role: 'user', content: 'previous question '.repeat(100) },
+    { role: 'assistant', content: 'previous answer '.repeat(100) },
+    { role: 'user', content: 'current request must remain visible' },
+  ];
+
+  const fitted = fitMessagesToContext(messages, 300);
+
+  assert.equal(fitted.at(-1).role, 'user');
+  assert.match(fitted.at(-1).content, /current request must remain visible/);
 });
 
 test('clear empties messages', () => {

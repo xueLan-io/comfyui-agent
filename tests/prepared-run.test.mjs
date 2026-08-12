@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Agent } from '../src/agent/runtime/agent.mjs';
+import { AgentEventTypes, on } from '../src/agent/events/agent-events.mjs';
+import { ComfyUITool } from '../src/agent/tools/comfyui/index.mjs';
 
 test('confirmed preview executes the frozen plan without another LLM call', async () => {
   let llmCalls = 0;
@@ -52,9 +54,32 @@ test('confirmed preview executes the frozen plan without another LLM call', asyn
     },
   });
 
-  const preview = await agent.prepareGeneration('one girl', {
-    workflowManifest: { workflowName: 'anima.json', modelType: 'anima', promptProfile: profile },
+  const timingEvents = [];
+  const unsubscribe = on(AgentEventTypes.PROGRESS, event => {
+    if (event.scope === 'timing') timingEvents.push(event);
   });
+  let preview;
+  try {
+    preview = await agent.prepareGeneration('one girl', {
+      workflowManifest: { workflowName: 'anima.json', modelType: 'anima', promptProfile: profile },
+    });
+  } finally {
+    unsubscribe();
+  }
+  const taskTiming = timingEvents.filter(event => event.taskId === agent._taskId);
+  assert.deepEqual(taskTiming.map(event => event.stage), [
+    'plan_start',
+    'plan_end',
+    'enhance_start',
+    'enhance_llm_start',
+    'enhance_llm_end',
+    'enhance_end',
+  ]);
+  for (const event of taskTiming.filter(event => event.stage.endsWith('_end'))) {
+    assert.equal(typeof event.duration_ms, 'number');
+    assert.ok(event.duration_ms >= 0);
+    assert.equal(event.outcome, 'completed');
+  }
   assert.equal(llmCalls, 1);
   assert.equal(preview.positive, 'masterpiece, 1girl\n\nA girl stands in soft light.');
   assert.equal(preview.targets.length, 3);
@@ -70,6 +95,156 @@ test('confirmed preview executes the frozen plan without another LLM call', asyn
   assert.equal(llmCalls, 1);
   assert.equal(executedOptions.preparedPlan.steps.some(step => step.tool === 'prompt_enhance'), false);
   assert.equal(executedOptions.compiledPrompt.positive, preview.positive);
+});
+
+test('refinement emits a compiler status before the single compiler call and preview', async () => {
+  const events = [];
+  let compilerCalls = 0;
+  const profile = {
+    family: 'anima',
+    format: 'tag_narrative',
+    supportsNegative: true,
+    positiveTargets: [{ nodeId: '261', input: 'text' }],
+    negativeTargets: [{ nodeId: '240', input: 'text' }],
+  };
+  const agent = new Agent({ llmConfig: { providers: [] } });
+  Object.assign(agent, {
+    workflowDir: '',
+    _artifacts: [],
+    _lastManifest: { workflowName: 'anima.json' },
+    planner: {
+      async createPlan() {
+        events.push('plan-complete');
+        return {
+          goal: 'refine portrait',
+          steps: [
+            { id: 'enhance', tool: 'prompt_enhance', input: { mode: 'anime' } },
+            { id: 'generate', tool: 'comfyui', input: { workflowName: 'anima.json' } },
+          ],
+        };
+      },
+    },
+    llm: {
+      isConfigured: true,
+      async chat(input) {
+        compilerCalls++;
+        const compilerInput = JSON.parse(input.messages[1].content);
+        assert.equal(compilerInput.latestRequest, '优化光线 构图');
+        assert.match(compilerInput.interpretedPrompt, /1person/);
+        events.push('compiler-call');
+        return {
+          content: JSON.stringify({
+            tags: ['best quality', 'masterpiece', '1person'],
+            narrative: 'A single person stands in a softly lit, balanced composition.',
+            positive: '',
+            negative: 'extra fingers',
+            self_check: { preserved: true, issues: [] },
+          }),
+        };
+      },
+    },
+  });
+  agent.project.set('workflow', 'anima.json');
+  agent.project.set('lastPrompt', 'best quality, masterpiece, 1person, solo, standing');
+
+  const unsubscribe = on(AgentEventTypes.STATUS, event => {
+    if (event.taskId !== agent.taskId) return;
+    if (event.status === 'planning' && event.message === '正在根据修改要求编译提示词...') events.push('compiler-status');
+    if (event.status === 'awaiting_confirmation') events.push('awaiting-confirmation');
+  });
+  try {
+    const preview = await agent.prepareGeneration('优化光线 构图', {
+      intent: 'refine',
+      workflowManifest: { workflowName: 'anima.json', modelType: 'anima', promptProfile: profile },
+    });
+    assert.equal(preview.status, 'prepared');
+  } finally {
+    unsubscribe();
+  }
+
+  assert.equal(compilerCalls, 1);
+  assert.deepEqual(events, [
+    'plan-complete',
+    'compiler-status',
+    'compiler-call',
+    'awaiting-confirmation',
+  ]);
+});
+
+test('cancelling prompt compilation does not create a preview or failure state', async () => {
+  const profile = {
+    family: 'anima',
+    format: 'tag_narrative',
+    supportsNegative: true,
+    positiveTargets: [{ nodeId: '261', input: 'text' }],
+    negativeTargets: [{ nodeId: '240', input: 'text' }],
+  };
+  const agent = new Agent({ llmConfig: { providers: [] } });
+  let compilerStarted;
+  const started = new Promise(resolve => { compilerStarted = resolve; });
+  Object.assign(agent, {
+    workflowDir: '',
+    _artifacts: [],
+    _lastManifest: { workflowName: 'anima.json' },
+    planner: {
+      async createPlan() {
+        return {
+          goal: 'portrait',
+          steps: [
+            { id: 'enhance', tool: 'prompt_enhance', input: { mode: 'anime' } },
+            { id: 'generate', tool: 'comfyui', input: { workflowName: 'anima.json' } },
+          ],
+        };
+      },
+    },
+    llm: {
+      isConfigured: true,
+      cancel() {},
+      async chat(input) {
+        compilerStarted();
+        await new Promise((_, reject) => {
+          if (input.signal.aborted) {
+            const error = new Error('模型请求已取消');
+            error.code = 'LLM_CANCELLED';
+            reject(error);
+            return;
+          }
+          input.signal.addEventListener('abort', () => {
+            const error = new Error('模型请求已取消');
+            error.code = 'LLM_CANCELLED';
+            reject(error);
+          }, { once: true });
+        });
+      },
+    },
+  });
+  agent.project.set('workflow', 'anima.json');
+  const originalCancel = ComfyUITool.cancel;
+  ComfyUITool.cancel = async () => ({ status: 'cancelled' });
+  const statuses = [];
+  const unsubscribe = on(AgentEventTypes.STATUS, event => {
+    if (event.taskId === agent.taskId) statuses.push(event.status);
+  });
+  try {
+    const preparation = agent.prepareGeneration('one girl', {
+      workflowManifest: { workflowName: 'anima.json', modelType: 'anima', promptProfile: profile },
+    });
+    await started;
+    const cancellation = await agent.cancel();
+    const result = await preparation;
+
+    assert.equal(cancellation.cancelled, true);
+    assert.deepEqual(result, { cancelled: true, taskId: cancellation.taskId });
+    assert.equal(agent._promptCompileController, null);
+    assert.equal(agent._preparedRuns.size, 0);
+    assert.equal(agent.state, 'cancelled');
+    assert.equal(agent.taskManager.get(cancellation.taskId).state, 'cancelled');
+    assert.ok(!statuses.includes('awaiting_confirmation'));
+    assert.ok(!statuses.includes('failed'));
+  } finally {
+    unsubscribe();
+    ComfyUITool.cancel = originalCancel;
+  }
 });
 
 test('confirmed preview executes user-edited positive and negative prompts', async () => {

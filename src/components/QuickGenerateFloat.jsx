@@ -52,8 +52,8 @@ function PromptChips({ value, onRemove }) {
 
 export default function QuickGenerateFloat({ onClose, visible = true }) {
   const { t } = useI18n();
-  const { generationProgress, generationPending, generationResult, status: agentStatus, statusMsg, preview, sendQuickGeneration, runLibraryGeneration, handleCancel, setPreview } = useAgent();
-  const { selectedFile, selectWorkflow, workflowFiles, workflowManifest, setGenerationControls } = useComfyUI();
+  const { generationProgress, generationResult, runtimeView, statusMsg, preview, sendQuickGeneration, runLibraryGeneration, handleCancel, setPreview } = useAgent();
+  const { selectedFile, selectWorkflow, workflowFiles, workflowManifest, generationControls, setGenerationControls } = useComfyUI();
   const [collapsed, setCollapsed] = useState(false);
   const [tab, setTab] = useState('positive');
   const [positive, setPositive] = useState(INITIAL_PROMPT);
@@ -72,8 +72,12 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
   const [dragReceiving, setDragReceiving] = useState(false);
   const [h3Readiness, setH3Readiness] = useState(null);
   const incomingDragRef = useRef(null);
-  const status = agentStatus === 'completed' ? 'complete' : agentStatus === 'error' || agentStatus === 'failed' ? 'failed' : agentStatus === 'preview' ? 'confirming' : agentStatus || 'idle';
-  const isBusy = generationPending || ['preparing', 'confirming', 'running'].includes(status);
+  const status = runtimeView.phase === 'completed' ? 'complete'
+    : ['failed', 'recovery'].includes(runtimeView.phase) ? 'failed'
+      : runtimeView.phase === 'preview' ? 'confirming'
+        : ['queued', 'running', 'stopping'].includes(runtimeView.phase) ? 'running'
+          : runtimeView.phase || 'idle';
+  const isBusy = runtimeView.busy;
   tabRef.current = tab;
 
   function stopResultCountdown() {
@@ -129,39 +133,44 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
     void window.electronAPI.floatingResize?.(collapsed);
   }
 
+  const handleFloatingDragEventRef = useRef(null);
   useEffect(() => {
-    if (!window.electronAPI.onFloatingDrag) return undefined;
-    const unsubscribe = window.electronAPI.onFloatingDrag(event => {
-       if (event?.phase === 'start') {
-          cancelOrbDrag();
-         incomingDragRef.current = event.payload || null;
-         setDragReceiving(false);
+    handleFloatingDragEventRef.current = event => {
+      if (event?.phase === 'start') {
+        cancelOrbDrag();
+        incomingDragRef.current = event.payload || null;
+        setDragReceiving(false);
         return;
       }
       if (event?.phase === 'move') {
         setDragReceiving(Boolean(event.hit));
         return;
       }
-       if (event?.phase === 'cancel') {
-         incomingDragRef.current = null;
-         setDragReceiving(false);
-         cancelOrbDrag();
-         return;
-       }
-       if (event?.phase !== 'end') return;
+      if (event?.phase === 'cancel') {
+        incomingDragRef.current = null;
+        setDragReceiving(false);
+        cancelOrbDrag();
+        return;
+      }
+      if (event?.phase !== 'end') return;
       const payload = incomingDragRef.current;
       incomingDragRef.current = null;
       setDragReceiving(false);
       if (!event.hit || !payload) return;
-       cancelOrbDrag();
-       applyDraggedCard(payload);
-    });
+      cancelOrbDrag();
+      applyDraggedCard(payload);
+    };
+  });
+
+  useEffect(() => {
+    if (!window.electronAPI.onFloatingDrag) return undefined;
+    const unsubscribe = window.electronAPI.onFloatingDrag(event => handleFloatingDragEventRef.current?.(event));
     return () => {
       unsubscribe?.();
       incomingDragRef.current = null;
       setDragReceiving(false);
     };
-  }, [isBusy, selectWorkflow, setGenerationControls, workflowFiles]);
+  }, []);
 
   useEffect(() => {
     if (status !== 'complete') return undefined;
@@ -248,7 +257,7 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
     const seedControls = forceNewSeed
       ? { ...generationControls, settings: { ...(generationControls.settings || {}), seed: Math.floor(Math.random() * 0xFFFFFFFF) } }
       : null;
-    const generationPreset = preset ? { ...preset, positive: generationPositive.trim(), negative: generationNegative.trim() } : null;
+    const generationPreset = preset ? { ...preset, id: preset.id || preset.presetId || '', positive: generationPositive.trim(), negative: generationNegative.trim() } : null;
     void (generationPreset
       ? runLibraryGeneration(generationPositive.trim(), generationNegative.trim(), { immediate: true, preset: generationPreset, controls: seedControls })
       : sendQuickGeneration(generationPositive.trim(), { negative: generationNegative.trim(), workflowName: selectedFile, controls: seedControls }))

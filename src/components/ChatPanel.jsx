@@ -1,37 +1,62 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAgent } from '../contexts/AgentContext.jsx';
 import { useComfyUI } from '../contexts/ComfyUIContext.jsx';
+import { useSession } from '../contexts/SessionContext.jsx';
 import AgentMessage from './AgentMessage.jsx';
 import ExecutionGraph from './ExecutionGraph.jsx';
 import ActivityTimeline from './ActivityTimeline.jsx';
-import ImageAsset from './ImageAsset.jsx';
-import { outputGalleryClass } from './image-layout.mjs';
 import ModelSelector from './ModelSelector.jsx';
 import Icon from './Icon.jsx';
-import PresetSaveModal from './PresetSaveModal.jsx';
+import GenerationRecordCard from './GenerationRecordCard.jsx';
+import ShortcutsHelpModal from './ShortcutsHelpModal.jsx';
 import { useI18n } from '../i18n/I18nContext.jsx';
-import { progressTimeEstimate } from '../runtime/generation-time-estimate.mjs';
+import { matchingSlashCommands, parseSlashCommand } from '../runtime/slash-commands.mjs';
 
-function imageKey(image = {}) {
-  return JSON.stringify([
-    image.assetId,
-    image.path,
-    image.url,
-    image.type,
-    image.projectId,
-    image.sessionId,
-    image.taskId,
-    image.subfolder,
-    image.filename || image.name,
-    image.mediaType || image.kind,
-  ].map(value => value ?? ''));
+function conversationSearchId(message = {}) {
+  return message.messageId || message.id || `${message.turnId || 'message'}:${message.role || 'x'}`;
 }
 
-function isCurrentResultMessage(message, currentMedia) {
-  const messageMedia = message.media || [...(message.images || []), ...(message.videos || [])];
-  if (!messageMedia.length || !currentMedia.length) return false;
-  const currentKeys = new Set(currentMedia.map(imageKey));
-  return messageMedia.every(image => currentKeys.has(imageKey(image)));
+function buildConversationExport({ entries, sessionTitle, projectTitle, format }) {
+  const meta = {
+    title: sessionTitle || '会话',
+    project: projectTitle || '',
+    exportedAt: new Date().toLocaleString(),
+    entries: entries.filter(entry => entry.kind === 'message').map(entry => {
+      const message = entry.data;
+      const base = { role: message.role, time: message.time || '', content: message.content || '', prompt: message.prompt || '', negative: message.negative || '' };
+      const attachments = (message.attachments || []).map(item => ({ name: item.name || '', kind: item.kind || 'image' }));
+      const images = (message.images || []).map(image => ({ filename: image.filename || '', subfolder: image.subfolder || '' }));
+      return { ...base, attachments, images };
+    }),
+    records: entries.filter(entry => entry.kind === 'record').map(entry => ({
+      prompt: entry.data.prompt || '',
+      negative: entry.data.negative || '',
+      workflowName: entry.data.workflowName || '',
+      status: entry.data.status || '',
+      parameters: entry.data.parameters || {},
+      images: (entry.data.images || []).map(image => ({ filename: image.filename || '', subfolder: image.subfolder || '' })),
+    })),
+  };
+  if (format === 'json') return JSON.stringify(meta, null, 2);
+  const lines = [`# ${meta.title}`, '', `- 项目：${meta.project || '未指定'}`, `- 导出时间：${meta.exportedAt}`, ''];
+  for (const entry of meta.entries) {
+    if (entry.role === 'user') {
+      lines.push(`## 用户`, '', entry.content || '（图片）', '');
+      if (entry.attachments.length) lines.push(`参考素材：${entry.attachments.map(item => item.name).join('、')}`, '');
+    } else {
+      lines.push(`## 助手`, '', entry.content || '', '');
+      if (entry.prompt) lines.push(`正向提示词：${entry.prompt}`, '');
+      if (entry.negative) lines.push(`负向提示词：${entry.negative}`, '');
+    }
+  }
+  if (meta.records.length) {
+    lines.push(`## 生成记录`, '');
+    for (const record of meta.records) {
+      lines.push(`- ${record.workflowName || '未指定工作流'} · ${record.status || ''}`, `  正向：${record.prompt || '无'}`, record.negative ? `  负向：${record.negative}` : '', record.images.length ? `  图片：${record.images.map(image => image.filename).join('、')}` : '');
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
 }
 
 function formatTokens(value) {
@@ -39,18 +64,36 @@ function formatTokens(value) {
   return tokens >= 1000 ? `${(tokens / 1000).toFixed(tokens >= 10000 ? 0 : 1)}k` : String(tokens);
 }
 
-function formatDuration(milliseconds) {
-  const seconds = Math.max(0, Math.ceil((Number(milliseconds) || 0) / 1000));
-  const minutes = Math.floor(seconds / 60);
-  const remainder = seconds % 60;
-  return minutes > 0 ? `${minutes}:${String(remainder).padStart(2, '0')}` : `${remainder}s`;
-}
+const TIMING_LABELS = {
+  turn_start: '请求开始',
+  turn_end: '请求结束',
+  intent_start: '意图分类中',
+  intent_end: '意图分类结束',
+  plan_start: '规划中',
+  plan_end: '规划结束',
+  enhance_start: '提示词增强中',
+  enhance_end: '提示词增强结束',
+  planner_llm_start: '规划器 LLM 调用中',
+  planner_llm_end: '规划器 LLM 调用结束',
+  enhance_llm_start: '增强器 LLM 调用中',
+  enhance_llm_end: '增强器 LLM 调用结束',
+  enhance_vision_skipped: '已忽略参考图（当前模型不支持图像输入，参考图仍将作为工作流输入）',
+};
 
 function displayExecutionEvent(event = {}) {
-  if (event.type === 'agent:plan') return {
+  const planSteps = event.steps ?? event.plan?.steps ?? [];
+  if (event.scope === 'timing') {
+    const completed = event.stage?.endsWith('_end');
+    return {
+      ...event,
+      description: event.description || event.message || TIMING_LABELS[event.stage] || event.stage || '计时事件',
+      status: event.outcome === 'error' ? 'error' : event.outcome === 'cancelled' ? 'cancelled' : completed ? 'completed' : 'running',
+    };
+  }
+  if (event.type === 'agent:plan' && planSteps.length > 0) return {
     ...event,
     stage: 'planning',
-    description: event.description || `已创建执行计划，共 ${(event.steps || []).length} 步`,
+    description: event.description || `已创建执行计划，共 ${planSteps.length} 步`,
     status: 'planning',
   };
   if (event.type === 'agent:tool-call') return {
@@ -72,6 +115,34 @@ function displayExecutionEvent(event = {}) {
   return event;
 }
 
+function executionEventKey(event = {}) {
+  const planSteps = event.steps ?? event.plan?.steps ?? [];
+  const planKey = planSteps.map(step => step.id || step.stepId || step.tool || '').join(',');
+  return [
+    event.turnId || '',
+    event.taskId || '',
+    event.traceId || '',
+    event.type || '',
+    event.stage || '',
+    event.stepId || '',
+    event.status || '',
+    event.tool || '',
+    event.attemptId || '',
+    event.currentAttempt || event.attempt || '',
+    event.outcome || '',
+    event.duration_ms ?? '',
+    planKey,
+  ].join('|');
+}
+
+function isVisibleExecutionEvent(event = {}) {
+  // Older persisted plan records were emitted before task ownership existed.
+  // They cannot be reliably associated with a live turn, so never render them.
+  if (!event.taskId && !event.traceId && !event.turnId) return false;
+  if (event.type !== 'agent:plan') return true;
+  return (event.steps ?? event.plan?.steps ?? []).length > 0;
+}
+
 function graphStepsFor(events = []) {
   const steps = new Map();
   events.forEach((event, index) => {
@@ -83,18 +154,22 @@ function graphStepsFor(events = []) {
   return [...steps.values()].sort((a, b) => a._order - b._order);
 }
 
-function ExecutionThread({ events, progress, t }) {
+function ExecutionThread({ events, progress, active, statusMsg, t }) {
   const [open, setOpen] = useState(false);
-  const visibleEvents = events.map(displayExecutionEvent);
+  const visibleEvents = events.filter(isVisibleExecutionEvent).map(displayExecutionEvent);
   const steps = graphStepsFor(visibleEvents);
+  useEffect(() => {
+    if (active) setOpen(true);
+  }, [active]);
   if (!visibleEvents.length) return null;
   return (
     <section className="execution-thread">
       <button className="execution-thread-toggle" onClick={() => setOpen(value => !value)} aria-expanded={open}>
-        <span>{t('runtime')} · {steps.length} {t('steps')}</span>
+        <span>{t('runtime')} · {active ? (statusMsg || t('processing')) : `${steps.length} ${t('steps')}`}</span>
         <Icon name={open ? 'chevronDown' : 'chevronRight'} size={13} />
       </button>
       {open && <>
+        {active && <div className="execution-thread-summary" role="status">{statusMsg || t('processing')}</div>}
         {steps.length > 0 && <ExecutionGraph steps={steps} progress={progress} />}
         <ActivityTimeline events={visibleEvents} />
       </>}
@@ -143,55 +218,40 @@ function ContextRing({ usage, t }) {
   );
 }
 
-function GenerationResultRecord({ record, onOpenImage, onError, onRegenerate, onEdit, onSave, onAdjust, onFeedback, t }) {
-  const parameters = record.parameters || record.settings || {};
-  const mediaItems = record.media || [];
-  return (
-    <section className="thread-section output-card generation-record" data-turn-id={record.turnId}>
-      <div className="thread-section-heading">
-        <div className="thread-section-title"><span className="section-kicker">{t('generationResults')}</span><strong>{t('executionSummary')}</strong><small className="output-source">{record.generationSource || ''}</small></div>
-        <span className="output-count">{mediaItems.length} {t('items')}</span>
-      </div>
-      <div className={`image-grid chat-output-grid ${outputGalleryClass(mediaItems.length)}`}>
-        {mediaItems.map((image, index) => <article key={`${image.filename || image.name || index}-${image.subfolder || ''}`} className="image-item"><ImageAsset image={image} onOpen={preview => onOpenImage?.({ ...preview, images: mediaItems, index })} onError={onError} /><div className="image-item-info"><span title={image.filename}>{image.filename || image.name || ''}</span><b>{String(index + 1).padStart(2, '0')}</b></div></article>)}
-      </div>
-      <div className="output-prompt"><span>{t('positiveLabel')}</span><code>{record.prompt || record.positive || ''}</code>{record.negative && <><span>{t('negativeLabel')}</span><code>{record.negative}</code></>}</div>
-      <details className="generation-record-parameters"><summary>{t('parameters')}</summary><pre>{JSON.stringify(parameters, null, 2)}</pre></details>
-      <div className="output-controls">
-        <div className="output-primary-actions"><button className="btn btn-primary" onClick={onRegenerate}><Icon name="refresh" size={14} /> {t('regenerate')}</button><button className="btn output-secondary-action" onClick={onEdit}><Icon name="edit" size={13} /> {t('editPrompt')}</button><button className="btn output-secondary-action" onClick={onSave}><Icon name="bookmark" size={13} /> {t('saveAsPreset')}</button><button className="btn btn-icon output-settings-action" onClick={onAdjust} title={t('adjustParameters')} aria-label={t('adjustParameters')}><Icon name="sliders" size={14} /></button></div>
-        <div className="output-feedback"><span>{t('feedback')}</span><button onClick={() => onFeedback('satisfied')}>{t('satisfied')}</button><button onClick={() => onFeedback('new_seed')}>{t('newSeed')}</button></div>
-      </div>
-    </section>
-  );
-}
-
 export default function ChatPanel({ active = true, onReady }) {
   const { t } = useI18n();
-  const [chatAction, setChatAction] = useState('answer');
+  const session = useSession();
+  const [chatAction, setChatAction] = useState('creative');
   const [imageOptions, setImageOptions] = useState({ size: 'auto', count: 1, quality: 'auto' });
-  const [savePresetOpen, setSavePresetOpen] = useState(false);
-  const [savePresetRecord, setSavePresetRecord] = useState(null);
   const [presetFeedback, setPresetFeedback] = useState('');
+  const [skills, setSkills] = useState([]);
+  const [commandIndex, setCommandIndex] = useState(0);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchActiveId, setSearchActiveId] = useState('');
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exporting, setExporting] = useState('');
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const {
     messages,
     activityEvents,
     executionRecords,
+    generationRecords,
     images,
     media,
     removeAsset,
     generationPending,
     thinking,
-    lastGenerationRequest,
-    lastGenerationNegative,
     generationSource,
     handleRegenerate,
-    recordFeedback,
     input,
     setInput,
     attachments,
     handleAttachMedia,
+    handlePasteImage,
     removeAttachment,
     status,
+    runtimeView,
     statusMsg,
     generationProgress,
     handleSend: sendMessage,
@@ -204,12 +264,101 @@ export default function ChatPanel({ active = true, onReady }) {
     handleConversationScroll,
     setPreview,
     clearConversation,
+    compactConversation,
+    createNewSession,
+    getRuntimeStatus,
     editingMessageIndex,
     handleEditMessage,
     cancelEdit,
     contextUsage,
   } = useAgent();
-  const handleSend = () => sendMessage(chatAction, imageOptions);
+  const commandMatches = matchingSlashCommands(input, skills);
+  const slashCommand = parseSlashCommand(input, skills);
+
+  useEffect(() => {
+    window.electronAPI.skillsList().then(data => setSkills(data.registry || [])).catch(() => setSkills([]));
+  }, []);
+
+  useEffect(() => setCommandIndex(0), [input]);
+
+  useEffect(() => {
+    if (!exportOpen) return undefined;
+    const closeMenu = event => {
+      if (!event.target.closest('.composer-export')) setExportOpen(false);
+    };
+    window.addEventListener('mousedown', closeMenu);
+    return () => window.removeEventListener('mousedown', closeMenu);
+  }, [exportOpen]);
+  const handleSend = () => runCommand().then(handled => { if (!handled) return sendMessage(chatAction, imageOptions); }).catch(error => setPresetFeedback(error.message || '命令执行失败'));
+
+  async function runCommand() {
+    const parsed = parseSlashCommand(input, skills);
+    if (!parsed?.command) return false;
+    const { command, argument } = parsed;
+    if (command.type === 'skill') {
+      if (!argument.trim() && attachments.length === 0) return false;
+      setInput('');
+      await sendMessage(chatAction, imageOptions, argument, { skillId: command.id });
+      return true;
+    }
+    if (argument.trim()) return false;
+    if (command.action === 'compact') {
+      const result = await compactConversation();
+      setInput('');
+      setPresetFeedback(result.archived ? `已归档并压缩 ${result.archived} 段较早对话。` : '当前没有足够的较早对话可压缩。');
+    } else if (command.action === 'new') {
+      await createNewSession();
+      setInput('');
+    } else if (command.action === 'clear') {
+      await clearConversation();
+      setInput('');
+    } else if (command.action === 'stop') {
+      await handleCancel();
+      setInput('');
+    } else if (command.action === 'context') {
+      setInput('');
+      setPresetFeedback(contextUsage ? `上下文使用率 ${contextUsage.percent || 0}%；已归档 ${contextUsage.archiveCount || 0} 段。` : '发送消息后可显示上下文统计。');
+    } else if (command.action === 'status') {
+      const runtime = await getRuntimeStatus();
+      setInput('');
+      setPresetFeedback(`Agent：${runtime.state || 'idle'}；工作流目录：${runtime.workflowDir || '未配置'}。`);
+    } else if (command.action === 'help' || command.action === 'skills') {
+      setInput('');
+      if (command.action === 'skills') {
+        setPresetFeedback(`已启用技能：${skills.filter(skill => skill.enabled !== false).map(skill => `/${skill.id}`).join('、') || '无'}。`);
+      } else {
+        setShortcutsOpen(true);
+        setPresetFeedback('');
+        return true;
+      }
+    } else if (command.action === 'shortcuts') {
+      setInput('');
+      setShortcutsOpen(true);
+      setPresetFeedback('');
+      return true;
+    }
+    window.setTimeout(() => setPresetFeedback(''), 5000);
+    return true;
+  }
+
+  function chooseCommand(command) {
+    setInput(`${command.label}${command.type === 'skill' ? ' ' : ''}`);
+    inputRef.current?.focus();
+  }
+  const handlePasteEvent = async event => {
+    const added = await handlePasteImage(event);
+    if (added) {
+      setPresetFeedback(t('pasteImageAdded'));
+      window.setTimeout(() => setPresetFeedback(''), 3000);
+    }
+  };
+  const continueTruncatedReply = () => {
+    if (taskActive) return;
+    setInput('请从上一条回复中断处继续，不要重复已经输出的内容。');
+    inputRef.current?.focus();
+  };
+  const taskActive = runtimeView.busy;
+  const [taskStartedAt, setTaskStartedAt] = useState(0);
   const generationSourceLabel = generationSource === 'direct'
     ? t('sourceDirect')
     : generationSource === 'ai'
@@ -217,30 +366,39 @@ export default function ChatPanel({ active = true, onReady }) {
       : generationSource === 'agent'
         ? t('sourceAgent')
         : '';
-  const { setShowNodeControls, selectedFile, generationControls, workflowManifest } = useComfyUI();
+  const { setShowNodeControls } = useComfyUI();
   const [now, setNow] = useState(() => Date.now());
-  const timeProgress = progressTimeEstimate(generationProgress?.timeEstimate, {
-    startedAt: generationProgress?.startedAt || now,
-    percent: generationProgress?.percent,
-    now,
-  });
   const executionByTurn = useMemo(() => {
     const records = {};
-    for (const [turnId, events] of Object.entries(executionRecords || {})) records[turnId] = [...events];
+    for (const [turnId, events] of Object.entries(executionRecords || {})) {
+      records[turnId] = events.filter(isVisibleExecutionEvent);
+    }
     for (const event of activityEvents) {
       if (!event.turnId) continue;
       const target = records[event.turnId] || (records[event.turnId] = []);
-      const duplicate = target.some(saved => saved.timestamp === event.timestamp && saved.type === event.type && saved.stepId === event.stepId && saved.status === event.status);
+      const duplicate = target.some(saved => executionEventKey(saved) === executionEventKey(event));
       if (!duplicate) target.push(event);
     }
     return records;
   }, [activityEvents, executionRecords]);
 
   useEffect(() => {
-    if (status !== 'running' || !generationProgress?.timeEstimate) return undefined;
+    if (!taskActive) {
+      setTaskStartedAt(0);
+      return undefined;
+    }
+    if (!taskStartedAt) setTaskStartedAt(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [status, generationProgress?.timeEstimate]);
+  }, [taskActive, taskStartedAt]);
+
+  const hasStreamingReply = messages.some(message => message.role === 'agent' && message.streaming && message.content);
+  const waitSeconds = taskStartedAt ? Math.floor((now - taskStartedAt) / 1000) : 0;
+  const progressMessage = generationProgress?.percentScope === 'node' && generationProgress?.nodePercent !== null
+    ? `${t('nodes')}：${generationProgress.message || generationProgress.node || t('processing')}`
+    : generationProgress?.message || (taskActive && !hasStreamingReply && waitSeconds >= 3
+      ? `模型正在生成，已等待 ${waitSeconds} 秒`
+      : statusMsg || t('processingRequest'));
 
   useEffect(() => {
     if (active) onReady?.();
@@ -249,64 +407,88 @@ export default function ChatPanel({ active = true, onReady }) {
 
   useEffect(() => {
     if (status === 'idle' && ['ai', 'direct', 'openai-image'].includes(generationSource)) {
-      setChatAction('answer');
+      setChatAction('creative');
     }
   }, [status, generationSource]);
 
-  function editLastPrompt() {
-    if (!lastGenerationRequest) return;
-    setInput(lastGenerationRequest);
-    inputRef.current?.focus();
-  }
-
-  async function saveAsPreset(record) {
-    if (!record?.prompt && !record?.positive) return;
-    setSavePresetRecord(record);
-    setSavePresetOpen(true);
-  }
-
-  async function createSavedPreset(form) {
-    const record = savePresetRecord || {};
-    const media = record.media || [];
-    const resultRefs = form.saveResults ? media : [];
-    const coverRef = form.useFirstAsCover ? resultRefs[0] : null;
-    const saved = await window.electronAPI.globalPresetCreate({
-      ...form,
-      source: record.generationSource === 'openai-image' ? 'cloud' : 'direct',
-      origin: 'chat',
-      workflow: record.workflowName || selectedFile,
-      workflowName: record.workflowName || selectedFile,
-      parameters: form.parameters || record.parameters || {},
-      nodeOverrides: record.nodeOverrides || {},
-      outputNodeIds: record.outputNodeIds || null,
-      modelRequirements: workflowManifest?.modelRequirements || [],
-      resultRefs,
-      coverRef,
+  const conversationEntries = useMemo(() => {
+    const recordsByTurn = new Map();
+    const orphaned = [];
+    const turns = new Set(messages.map(message => message.turnId).filter(Boolean));
+    for (const record of Object.values(generationRecords || {})) {
+      if (record.turnId && turns.has(record.turnId)) {
+        const items = recordsByTurn.get(record.turnId) || [];
+        items.push(record);
+        recordsByTurn.set(record.turnId, items);
+      } else orphaned.push(record);
+    }
+    const entries = [];
+    messages.forEach((message, index) => {
+      entries.push({ kind: 'message', data: message, index });
+      if (message.role !== 'user') return;
+      for (const record of (recordsByTurn.get(message.turnId) || []).sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0))) entries.push({ kind: 'record', data: record });
     });
-    setSavePresetOpen(false);
-    setSavePresetRecord(null);
-    const detail = { id: saved?.id || '', title: saved?.title || form.title, preset: saved };
-    setPresetFeedback(t('presetSaved', { name: detail.title }));
-    window.setTimeout(() => setPresetFeedback(''), 3500);
-    window.dispatchEvent(new CustomEvent('comfy-agent:preset-saved', { detail }));
+    return [...entries, ...orphaned.sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0)).map(data => ({ kind: 'record', data }))];
+  }, [messages, generationRecords]);
+
+  const searchResults = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return [];
+    const results = [];
+    for (const entry of conversationEntries) {
+      if (entry.kind !== 'message') continue;
+      const message = entry.data;
+      const haystack = [message.content, message.prompt, message.negative, ...(message.attachments || []).map(item => item.name || '')].filter(Boolean).join('\n').toLowerCase();
+      if (!haystack.includes(query)) continue;
+      const content = message.content || message.prompt || (message.attachments || []).map(item => item.name).join('、');
+      results.push({ id: conversationSearchId(message), role: message.role, snippet: String(content || '').slice(0, 80), time: message.time || '' });
+    }
+    return results.slice(0, 50);
+  }, [conversationEntries, searchQuery]);
+
+  function jumpToSearchResult(id) {
+    setSearchActiveId(id);
+    const container = conversationRef.current;
+    const target = container?.querySelector(`[data-search-id="${CSS.escape(id)}"]`);
+    target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    window.setTimeout(() => setSearchActiveId(''), 2500);
+  }
+
+  function handleSearchKeyDown(event) {
+    if (event.key !== 'Enter' || searchResults.length === 0) return;
+    event.preventDefault();
+    const currentIndex = Math.max(0, searchResults.findIndex(result => result.id === searchActiveId));
+    jumpToSearchResult(searchResults[(currentIndex + 1) % searchResults.length].id);
+  }
+
+  async function exportConversation(format) {
+    if (exporting) return;
+    setExporting(format);
+    setExportOpen(false);
+    try {
+      const activeProject = session.projects?.find(project => project.id === session.activeProjectId);
+      const sessionTitle = activeProject?.sessions?.find(item => item.id === session.activeSessionId)?.title || '会话';
+      const content = buildConversationExport({ entries: conversationEntries, sessionTitle, projectTitle: activeProject?.name || '', format });
+      const defaultName = `${sessionTitle || 'conversation'}-${new Date().toISOString().slice(0, 10)}.${format}`;
+      const result = await window.electronAPI.saveTextFile({ defaultName, content, filterName: format === 'json' ? 'JSON 文件' : 'Markdown 文档' });
+      if (result.saved) setPresetFeedback(format === 'json' ? '对话已导出为 JSON。' : '对话已导出为 Markdown。');
+    } catch (error) {
+      setPresetFeedback(error.message || '导出失败');
+    } finally {
+      window.setTimeout(() => setPresetFeedback(''), 5000);
+      setExporting('');
+    }
   }
 
   return (
     <aside className="panel-left">
       <div className="panel-left-content">
         <div ref={conversationRef} className="conversation" onScroll={handleConversationScroll}>
-          {messages.length > 0 && <button className="btn btn-icon btn-clear conversation-clear" onClick={clearConversation} disabled={status === 'running'} title={status === 'running' ? t('stopCurrentTask') : t('clearConversation')}><Icon name="trash" /></button>}
-          {messages.length === 0 && <div className="conversation-empty"><strong>{t('startCreation')}</strong></div>}
-          {messages.map((message, index) => {
-            const record = message.media?.length > 0 && message.turnId
-              ? { ...message, prompt: message.prompt || message.positive || '', parameters: message.parameters || message.settings || {}, generationSource: message.generationSource || generationSource }
-              : null;
-            return <div key={`${message.ts || message.time || index}-${index}`} className="conversation-turn">
-              <AgentMessage msg={message} onOpenImage={setPreview} onImageError={removeAsset} onEdit={() => handleEditMessage(index)} hideImages={Boolean(record)} />
-              {message.role === 'user' && <ExecutionThread events={executionByTurn[message.turnId] || []} progress={generationProgress} t={t} />}
-              {record && <GenerationResultRecord record={record} onOpenImage={setPreview} onError={removeAsset} onRegenerate={() => handleRegenerate(record)} onEdit={() => { setInput(record.prompt); inputRef.current?.focus(); }} onSave={() => saveAsPreset(record)} onAdjust={() => setShowNodeControls(true)} onFeedback={type => type === 'new_seed' ? handleRegenerate(record, type) : recordFeedback(type)} t={t} />}
-            </div>;
-          })}
+           {conversationEntries.length === 0 && <div className="conversation-empty"><strong>{t('startCreation')}</strong></div>}
+           {conversationEntries.map((entry, entryIndex) => entry.kind === 'message' ? <div key={entry.data.messageId || entry.data.id || `${entry.data.turnId || 'message'}:${entry.index}`} className={`conversation-turn${searchActiveId && conversationSearchId(entry.data) === searchActiveId ? ' search-target' : ''}`} data-search-id={conversationSearchId(entry.data)}>
+              <AgentMessage msg={entry.data} onOpenImage={setPreview} onImageError={removeAsset} onContinue={taskActive ? undefined : continueTruncatedReply} onEdit={() => handleEditMessage(entry.index)} onInsertPrompt={text => { if (text) { setInput(text); inputRef.current?.focus(); } }} hideImages={Boolean(entry.data.turnId && Object.values(generationRecords || {}).some(record => record.turnId === entry.data.turnId))} />
+              {entry.data.role === 'user' && <ExecutionThread events={executionByTurn[entry.data.turnId] || []} progress={generationProgress} active={taskActive && entry.data.turnId === messages.filter(item => item.role === 'user').at(-1)?.turnId} statusMsg={statusMsg} t={t} />}
+            </div> : <GenerationRecordCard key={entry.data.requestId || entry.data.turnId || `record-${entry.data.createdAt || entryIndex}`} record={entry.data} onOpenImage={setPreview} onError={removeAsset} onRegenerate={handleRegenerate} onEdit={record => { setInput(record.prompt || ''); inputRef.current?.focus(); }} onAdjust={() => setShowNodeControls(true)} />)}
 
            {thinking && <section className="execution-thread execution-thread-live"><div className="thinking-live"><div className="thinking-live-label"><span className="streaming-cursor" />{t('thinking')}</div><pre ref={thinkingTextRef} className="thinking-live-text">{thinking.slice(-600)}</pre></div></section>}
 
@@ -315,30 +497,10 @@ export default function ChatPanel({ active = true, onReady }) {
       </div>
 
       <div className="chat-input-area">
-            {['preparing', 'queued', 'executing', 'archiving', 'running'].includes(status) && activityEvents.length === 0 && (
-            <div className="generation-progress-chat" role="status" aria-live="polite">
-               <div className="generation-progress-meta">
-                <span>{generationProgress?.percentScope === 'node' && generationProgress?.nodePercent !== null
-                   ? `${t('nodes')}：${generationProgress.message || generationProgress.node || t('processing')}`
-                   : generationProgress?.message || statusMsg || t('processingRequest')}</span>
-                 {Number.isFinite(generationProgress?.percent) && <strong>{generationProgress.percent}%</strong>}
-               </div>
-               {timeProgress && (
-                 <div className="generation-time-estimate">
-                   <span>{t('chatTimeElapsed', { time: formatDuration(timeProgress.elapsedMs) })}</span>
-                   <strong>{t('chatTimeRemaining', { time: formatDuration(timeProgress.remainingMs) })}</strong>
-                   <small>{timeProgress.confidence === 'calibrated' ? t('chatTimeCalibrated') : t('chatTimeEstimate')}</small>
-                 </div>
-               )}
-               <div className="generation-progress-track">
-                <span className={Number.isFinite(generationProgress?.percent) ? '' : 'indeterminate'} style={Number.isFinite(generationProgress?.percent) ? { width: `${Math.max(2, generationProgress.percent)}%` } : undefined} />
-              </div>
-            </div>
-          )}
+            {runtimeView.phase !== 'idle' && runtimeView.phase !== 'completed' && <div className={`generation-progress-chat generation-status-line tone-${runtimeView.tone}`} role="status" aria-live="polite"><strong>{runtimeView.label}</strong><span>{progressMessage}</span>{runtimeView.recoverable && <small>{t('continueWatching')}</small>}</div>}
           <div className="composer-toolbar">
-             <select className="composer-intent" value={chatAction} onChange={event => setChatAction(event.target.value)} aria-label={t('chatActions')} disabled={status === 'running'}>
-               <option value="answer">{t('answer')}</option>
-               <option value="generate">{t('aiGenerate')}</option>
+              <select className="composer-intent" value={chatAction} onChange={event => setChatAction(event.target.value)} aria-label={t('chatActions')} disabled={taskActive}>
+                <option value="creative">{t('creativeChat')}</option>
                <option value="direct">{t('directGenerate')}</option>
                <option value="openai-image">{t('cloudImage')}</option>
             </select>
@@ -361,43 +523,95 @@ export default function ChatPanel({ active = true, onReady }) {
               </select>
             </div>}
             <ModelSelector mode={chatAction === 'openai-image' ? 'image' : 'chat'} />
+            <div className="composer-actions">
+              <button className="btn btn-icon" onClick={() => setSearchOpen(value => !value)} title={t('searchConversation')} aria-label={t('searchConversation')}><Icon name="search" size={14} /></button>
+              <div className="composer-export">
+                <button className="btn btn-icon" onClick={() => setExportOpen(value => !value)} title={t('exportConversation')} aria-label={t('exportConversation')}><Icon name="download" size={14} /></button>
+                {exportOpen && <div className="composer-export-menu" role="menu">
+                  <button role="menuitem" onClick={() => void exportConversation('md')} disabled={Boolean(exporting)}>{t('exportMarkdown')}</button>
+                  <button role="menuitem" onClick={() => void exportConversation('json')} disabled={Boolean(exporting)}>{t('exportJson')}</button>
+                </div>}
+              </div>
+              <button className="btn btn-icon" onClick={() => setShortcutsOpen(true)} title={t('shortcuts')} aria-label={t('shortcuts')}><Icon name="help" size={14} /></button>
+            </div>
           </div>
+          {searchOpen && <div className="conversation-search">
+            <div className="conversation-search-input">
+              <Icon name="search" size={13} />
+              <input autoFocus value={searchQuery} onChange={event => setSearchQuery(event.target.value)} onKeyDown={handleSearchKeyDown} placeholder={t('searchPlaceholder')} aria-label={t('searchPlaceholder')} />
+              <button className="btn btn-icon" onClick={() => setSearchOpen(false)} title={t('close')}><Icon name="close" size={12} /></button>
+            </div>
+            {searchQuery.trim() && <div className="conversation-search-results">
+              {searchResults.length === 0 ? <span className="conversation-search-empty">{t('searchNoResults')}</span> : searchResults.map(result => (
+                <button key={result.id} className="conversation-search-result" onClick={() => jumpToSearchResult(result.id)}>
+                  <span className={`conversation-search-role ${result.role}`}>{result.role === 'user' ? t('searchRoleUser') : t('searchRoleAgent')}</span>
+                  <span className="conversation-search-snippet">{result.snippet || '…'}</span>
+                  <small>{result.time}</small>
+                </button>
+              ))}
+            </div>}
+          </div>}
           <div className="attachment-bar">
-             <button className="btn attachment-add" onClick={handleAttachMedia} disabled={status === 'running'} title={t('addReference')}><Icon name="paperclip" size={14} /> {t('references')}</button>
+              <button className="btn attachment-add" onClick={handleAttachMedia} disabled={taskActive} title={t('addReference')}><Icon name="paperclip" size={14} /> {t('references')}</button>
             {attachments.map(item => (
               <span className="attachment-chip" key={item.path} title={item.path}>
                  <span>{item.kind === 'video' ? t('video') : t('image')}</span>
                 <strong>{item.name}</strong>
-                 <button onClick={() => removeAttachment(item.path)} disabled={status === 'running'} title={t('remove', { name: item.name })}><Icon name="close" size={13} /></button>
+                  <button onClick={() => removeAttachment(item.path)} disabled={taskActive} title={t('remove', { name: item.name })}><Icon name="close" size={13} /></button>
               </span>
             ))}
           </div>
-          {editingMessageIndex >= 0 && (
+           {presetFeedback && <div className="composer-feedback" role="status" aria-live="polite">{presetFeedback}</div>}
+           {editingMessageIndex >= 0 && (
             <div className="edit-context-bar">
                <span>{t('editingHistory')}</span>
                <button className="btn btn-icon" onClick={cancelEdit} title={t('cancelEdit')}><Icon name="close" /></button>
             </div>
           )}
            <div className="chat-input-row">
-            <textarea
-              ref={inputRef}
-              className="chat-input"
-              value={input}
-              onChange={event => setInput(event.target.value)}
-               onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(chatAction, imageOptions); } }}
+             {commandMatches.length > 0 && <div className="slash-command-menu" role="listbox" aria-label="命令列表">
+               {commandMatches.map((command, index) => <button key={`${command.type}:${command.id}`} className={index === commandIndex ? 'active' : ''} onMouseDown={event => { event.preventDefault(); chooseCommand(command); }} role="option" aria-selected={index === commandIndex}><code>{command.label}</code><span>{command.description}</span></button>)}
+             </div>}
+              <textarea
+               ref={inputRef}
+               className="chat-input"
+               value={input}
+                onChange={event => setInput(event.target.value)}
+                onPaste={event => { void handlePasteEvent(event); }}
+                onKeyDown={event => {
+                  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+                    event.preventDefault();
+                    setSearchOpen(true);
+                    return;
+                  }
+                  if (commandMatches.length && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
+                   event.preventDefault();
+                   setCommandIndex(current => (current + (event.key === 'ArrowDown' ? 1 : -1) + commandMatches.length) % commandMatches.length);
+                   return;
+                 }
+                 if (commandMatches.length && (event.key === 'Tab' || event.key === 'Enter') && !event.shiftKey) {
+                   const parsed = parseSlashCommand(input, skills);
+                   if (!parsed?.command) { event.preventDefault(); chooseCommand(commandMatches[commandIndex]); return; }
+                 }
+                 if (event.key === 'Escape' && commandMatches.length) { event.preventDefault(); setInput(''); return; }
+                 if (event.key === 'Enter' && !event.shiftKey) {
+                   event.preventDefault();
+                   runCommand().then(handled => { if (!handled) sendMessage(chatAction, imageOptions); }).catch(error => setPresetFeedback(error.message || '命令执行失败'));
+                 }
+               }}
                placeholder={t('chatPlaceholder')}
               rows="3"
-              disabled={status === 'running'}
+               disabled={taskActive}
              />
               <ContextRing usage={contextUsage} t={t} />
-            {status === 'running' ? (
+             {taskActive ? (
                <button className="btn btn-cancel input-action" onClick={handleCancel} title={t('stopTask')}><Icon name="stop" size={14} /></button>
             ) : (
                <button className="btn btn-primary input-action" onClick={handleSend} disabled={!input.trim() && attachments.length === 0} title={t('send')}><Icon name="send" size={15} /></button>
             )}
           </div>
       </div>
-        {savePresetOpen && savePresetRecord && <PresetSaveModal initial={{ title: (savePresetRecord.prompt || savePresetRecord.positive || '').slice(0, 28) || t('newPresetDefault'), positive: savePresetRecord.prompt || savePresetRecord.positive || '', negative: savePresetRecord.negative || '', workflow: savePresetRecord.workflowName || selectedFile, parameters: savePresetRecord.parameters || {}, tags: '' }} onSave={createSavedPreset} onClose={() => { setSavePresetOpen(false); setSavePresetRecord(null); }} />}
+      {shortcutsOpen && <ShortcutsHelpModal onClose={() => setShortcutsOpen(false)} />}
     </aside>
   );
 }

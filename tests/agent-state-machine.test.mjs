@@ -218,10 +218,18 @@ test('run() does not re-record a request already added at prepare time', async (
       goal: 'g',
       steps: [{ id: 'step1', tool: 'comfyui', input: { workflowName: 'anima.json', workflowDir: '' }, description: 'generate', expected_output: 'images' }],
     },
-    compiledPrompt: { positive: 'a cat' },
+    compiledPrompt: { positive: 'a cat', negative: 'bad anatomy' },
+    workflowName: 'anima.json',
+    settings: { seed: 12, steps: 20 },
   });
 
   assert.equal(agent.state, 'completed');
+  const taskResult = agent.taskManager.get('task-x').result;
+  assert.equal(taskResult.positive, 'a cat');
+  assert.equal(taskResult.negative, 'bad anatomy');
+  assert.deepEqual(taskResult.compiledPrompt, { positive: 'a cat', negative: 'bad anatomy' });
+  assert.equal(taskResult.workflowName, 'anima.json');
+  assert.deepEqual(taskResult.settings, { seed: 12, steps: 20 });
   const roles = agent.conversation.getLLMMessages().map(message => message.role);
   assert.equal(roles.filter(role => role === 'user').length, 0);
   assert.ok(roles.some(role => role === 'assistant'));

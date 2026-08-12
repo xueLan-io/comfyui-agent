@@ -1,6 +1,6 @@
 import { validateToolInput } from './tool-schema.mjs';
 
-const EXPECTED_OUTPUTS = ['prompt', 'images', 'videos', 'files', 'validation', 'web', 'workflow', 'models', 'image', 'logs', 'patch', 'queue', 'status', 'media', 'revision', 'service', 'artifact', 'any'];
+const EXPECTED_OUTPUTS = ['prompt', 'images', 'videos', 'files', 'validation', 'web', 'workflow', 'models', 'image', 'logs', 'patch', 'queue', 'status', 'media', 'revision', 'service', 'artifact', 'results', 'any'];
 export const MAX_PLAN_STEPS = 6;
 
 const PlanStepSchema = {
@@ -106,6 +106,9 @@ function supportsExpectedOutput(step, tool) {
   if (step.expected_output === 'patch') {
     return tool.name === 'workflow_patch' || tool.name === 'workflow_mutation_preview' || Boolean(properties.diff);
   }
+  if (step.expected_output === 'results') {
+    return tool.name === 'prompt_library' || Boolean(properties.results);
+  }
   return false;
 }
 
@@ -125,6 +128,7 @@ export function matchesExpectedOutput(step, result, tool) {
   if (step.expected_output === 'models') return Array.isArray(result.results) || Boolean(result.models);
   if (step.expected_output === 'logs') return Array.isArray(result.entries) || Boolean(result.queue);
   if (step.expected_output === 'patch') return Array.isArray(result.diff);
+  if (step.expected_output === 'results') return Array.isArray(result.results);
   return Boolean(tool?.output_schema?.properties?.[step.expected_output] && result[step.expected_output] !== undefined);
 }
 

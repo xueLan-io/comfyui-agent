@@ -10,12 +10,16 @@ const ACCENTS = [
   { value: '#D0D0D0', label: 'Neutral' },
 ];
 
+const PRIMARY_THEMES = ['system', 'light', 'dark'];
+const EXTRA_THEMES = ['paper', 'mist', 'warm', 'navy', 'starry'];
+
 export default function AppearanceSettings() {
   const { language, setLanguage, t } = useI18n();
   const [preferences, setPreferences] = useState(DEFAULT_UI_PREFERENCES);
   const [savedPreferences, setSavedPreferences] = useState(DEFAULT_UI_PREFERENCES);
   const [status, setStatus] = useState('');
   const dirty = JSON.stringify(preferences) !== JSON.stringify(savedPreferences);
+  const extraTheme = EXTRA_THEMES.includes(preferences.theme) ? preferences.theme : '';
 
   useEffect(() => {
     window.electronAPI.uiPreferences().then(value => {
@@ -52,7 +56,8 @@ export default function AppearanceSettings() {
   return <div className="appearance-settings">
     <section>
       <div className="settings-section-heading"><div><h3>{t('theme')}</h3><p>{t('themeDescription')}</p></div><Icon name="spark" size={16} /></div>
-      <div className="appearance-theme-options">{[['system', t('system')], ['light', t('light')], ['dark', t('dark')]].map(([value, label]) => <button key={value} className={`appearance-theme-option${preferences.theme === value ? ' active' : ''}`} onClick={() => update({ theme: value })} aria-pressed={preferences.theme === value}><span className={`theme-preview theme-preview-${value}`} /><strong>{label}</strong></button>)}</div>
+       <div className="appearance-theme-options">{PRIMARY_THEMES.map(value => <button key={value} className={`appearance-theme-option${preferences.theme === value ? ' active' : ''}`} onClick={() => update({ theme: value })} aria-pressed={preferences.theme === value}><span className={`theme-preview theme-preview-${value}`} /><strong>{t(value)}</strong></button>)}</div>
+       <label className="settings-field appearance-extra-themes"><span>{t('moreThemes')}</span><select value={extraTheme} onChange={event => update({ theme: event.target.value || 'light' })} aria-label={t('moreThemes')}><option value="">{t('moreThemesPlaceholder')}</option>{EXTRA_THEMES.map(value => <option key={value} value={value}>{t(`theme${value[0].toUpperCase()}${value.slice(1)}`)}</option>)}</select><small>{t('moreThemesDescription')}</small></label>
       <div className="settings-grid appearance-grid">
         <div className="settings-field"><label>{t('accent')}</label><div className="accent-options">{ACCENTS.map(item => <button key={item.value} className={`accent-swatch${preferences.accent === item.value ? ' active' : ''}`} style={{ background: item.value }} onClick={() => update({ accent: item.value })} title={item.label} aria-label={item.label} />)}</div></div>
         <label className="settings-toggle"><span><strong>{t('sidebarTranslucent')}</strong><small>{t('sidebarTranslucentDescription')}</small></span><input type="checkbox" checked={preferences.sidebarTranslucent} onChange={event => update({ sidebarTranslucent: event.target.checked })} /></label>

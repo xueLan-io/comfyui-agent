@@ -2,15 +2,26 @@ import { OpenAICompatibleProvider } from './openai-compatible.mjs';
 import { OllamaProvider } from './ollama.mjs';
 import { CloudPolicyBlockedError, CloudPolicyRouter } from './cloud-policy-router.mjs';
 import { sanitizeMessages } from '../schemas/context-sanitizer.mjs';
+import { debugLog } from './debug-log.mjs';
 import { estimateTokens } from '../optimizer/prompt-guard.mjs';
 import { contextProfileFor, contextTelemetry } from './context-budget.mjs';
 
 const STRATEGIES = ['auto', 'local', 'cloud', 'manual'];
 
 const MIN_LOCAL_MAX_TOKENS = 1024;
+const MAX_LOCAL_OUTPUT_TOKENS = 2048;
 const DEFAULT_CONTEXT_WINDOW = 32768;
 const HEALTH_TTL_MS = 10000;
 const CONTEXT_RESERVE_TOKENS = 512;
+
+function isCancellationError(error, signal) {
+  return Boolean(
+    signal?.aborted
+      || error?.code === 'LLM_CANCELLED'
+      || error?.name === 'AbortError'
+      || /取消|cancelled|canceled/i.test(String(error?.message || '')),
+  );
+}
 
 export function resolveLLMStrategy(provider) {
   return provider?.strategy === 'local' || provider?.strategy === 'cloud'
@@ -30,7 +41,7 @@ function policyRequestKey(options, route, active, allowMediaToCloud) {
     kind: entry.kind || '',
     model: entry.provider?.id === active?.providerId
       ? active?.modelId || ''
-      : entry.provider?.models?.find(model => model.kind !== 'image')?.id || '',
+      : entry.provider?.models?.find(model => model.kind !== 'image' && model.enabled !== false)?.id || '',
   } : null;
   return JSON.stringify({
     messages: options.messages || [],
@@ -97,6 +108,15 @@ export function fitMessagesToContext(messages = [], maxInputTokens = DEFAULT_CON
     else conversation.push(message);
   }
 
+  // Reserve room for the current request before fitting a large system prompt.
+  // Without this, a small-context model can receive only instructions and lose
+  // the newest user turn after the first exchange.
+  const latestConversation = conversation.pop();
+  const latestBudget = latestConversation
+    ? Math.min(messageTokens(latestConversation), Math.max(1, Math.floor(limit * 0.35)))
+    : 0;
+  const fittedLatest = latestConversation ? fitMessage(latestConversation, latestBudget) : null;
+  remaining = Math.max(0, limit - (fittedLatest ? messageTokens(fittedLatest) : 0));
   const keptSystems = [];
   for (const message of systems) {
     if (remaining <= 0) break;
@@ -113,7 +133,7 @@ export function fitMessagesToContext(messages = [], maxInputTokens = DEFAULT_CON
     keptConversation.unshift(fitted);
     remaining -= messageTokens(fitted);
   }
-  return [...keptSystems, ...keptConversation];
+  return [...keptSystems, ...keptConversation, ...(fittedLatest ? [fittedLatest] : [])];
 }
 
 export function fitMessagesWithTelemetry(messages = [], {
@@ -125,7 +145,9 @@ export function fitMessagesWithTelemetry(messages = [], {
   archiveCount = 0,
 } = {}) {
   const input = Array.isArray(messages) ? messages : [];
-  const fitted = fitMessagesToContext(input, inputBudget);
+  // Reserve output room inside the context window before fitting input, so a
+  // full conversation cannot leave zero budget for the model's reply.
+  const fitted = fitMessagesToContext(input, Math.max(0, Math.floor(inputBudget) - Math.max(0, reservedOutputTokens)));
   const keptIds = new Set(fitted);
   const droppedMessageCount = input.filter(message => !keptIds.has(message)).length;
   const originalTokens = input.reduce((total, message) => total + messageTokens(message), 0);
@@ -163,7 +185,7 @@ export function providerKind(provider = {}) {
 
 function configuredProvider(provider = {}) {
   if (!provider || provider.apiKeyError) return null;
-  const hasModel = Array.isArray(provider.models) && provider.models.some(model => model.id && model.kind !== 'image');
+  const hasModel = Array.isArray(provider.models) && provider.models.some(model => model.id && model.kind !== 'image' && model.enabled !== false);
   if (!hasModel) return null;
   if (provider.type === 'ollama') return provider;
   return provider.baseUrl || provider.apiKey ? provider : null;
@@ -195,7 +217,9 @@ function normalizeSource(config = {}) {
 
 function resolveActiveConfig({ providers, active }) {
   const provider = providers.find(item => item.id === active.providerId) || providers[0] || {};
-  const model = provider.models?.find(item => item.id === active.modelId) || provider.models?.[0] || {};
+  const model = provider.models?.find(item => item.id === active.modelId && item.kind !== 'image' && item.enabled !== false)
+    || provider.models?.find(item => item.kind !== 'image' && item.enabled !== false)
+    || {};
   return {
     provider: provider.type || (provider.id === 'ollama' ? 'ollama' : 'openai-compatible'),
     providerId: provider.id,
@@ -211,7 +235,7 @@ function resolveActiveConfig({ providers, active }) {
 
 function modelConfigFor(provider, active) {
   const models = Array.isArray(provider.models) ? provider.models : [];
-  const chatModels = models.filter(model => model.kind !== 'image');
+  const chatModels = models.filter(model => model.kind !== 'image' && model.enabled !== false);
   if (provider.id === active.providerId) return chatModels.find(item => item.id === active.modelId) || chatModels[0] || {};
   return chatModels[0] || {};
 }
@@ -222,7 +246,7 @@ function contextWindowFor(provider, active) {
 }
 
 function modelFor(provider, active) {
-  const models = Array.isArray(provider.models) ? provider.models.filter(model => model.kind !== 'image') : [];
+  const models = Array.isArray(provider.models) ? provider.models.filter(model => model.kind !== 'image' && model.enabled !== false) : [];
   if (provider.id === active.providerId) {
     const found = models.find(item => item.id === active.modelId);
     if (found) return found.id;
@@ -230,9 +254,18 @@ function modelFor(provider, active) {
   return models[0]?.id || '';
 }
 
+function modelConfigForVision(provider, active) {
+  const models = Array.isArray(provider.models) ? provider.models.filter(model => model.kind !== 'image' && model.enabled !== false) : [];
+  if (provider.id === active.providerId) {
+    const found = models.find(item => item.id === active.modelId);
+    if (found) return found;
+  }
+  return models[0] || {};
+}
+
 function createInstance(provider, active) {
   const model = modelFor(provider, active);
-  if (provider.type === 'ollama') return new OllamaProvider({ baseUrl: provider.baseUrl, model, contextWindow: contextWindowFor(provider, active) });
+  if (provider.type === 'ollama') return new OllamaProvider({ baseUrl: provider.baseUrl, model, contextWindow: contextWindowFor(provider, active), vision: Boolean(modelConfigForVision(provider, active).vision) });
   const local = providerKind(provider) === 'local';
   return new OpenAICompatibleProvider({
     baseUrl: provider.baseUrl,
@@ -243,6 +276,7 @@ function createInstance(provider, active) {
     reasoningEffort: local ? '' : active.reasoningEffort || 'medium',
     local,
     contextWindow: contextWindowFor(provider, active),
+    vision: Boolean(modelConfigForVision(provider, active).vision),
   });
 }
 
@@ -267,19 +301,23 @@ export function resolveLLMRouting(config = {}) {
     kind: chosen ? providerKind(chosen) : null,
     providerId: chosen?.id || '',
     providerName: chosen?.name || '',
-    modelId: chosen ? (chosen.models?.some(model => model.kind !== 'image' && model.id === active.modelId) ? active.modelId : chosen.models?.find(model => model.kind !== 'image')?.id || '') : '',
+    modelId: chosen ? (chosen.models?.some(model => model.kind !== 'image' && model.enabled !== false && model.id === active.modelId) ? active.modelId : chosen.models?.find(model => model.kind !== 'image' && model.enabled !== false)?.id || '') : '',
   };
 }
 
 export class LLMProvider {
   constructor(config) {
     this.sourceConfig = config || {};
-    this._policyRouter = new CloudPolicyRouter();
+    this._policyStateHandler = null;
     this.rebuild();
   }
 
   setPolicyStateHandler(handler) {
-    this._policyRouter.setStateHandler(handler);
+    this._policyStateHandler = handler;
+  }
+
+  _createPolicyRouter() {
+    return new CloudPolicyRouter({ onStateChange: this._policyStateHandler });
   }
 
   reconfigure(config) {
@@ -332,7 +370,9 @@ export class LLMProvider {
         }
         return { primary: selected, fallback: null, disableLocalRetry: true };
       }
-      return { primary: selected, fallback: this._pool.local[0] || null };
+      // 用户显式选定的供应商是权威路由：失败时不得悄悄转投未选定的
+      // 本地模型，否则云端故障会被本地连接错误掩盖并产生困惑。
+      return { primary: selected, fallback: null };
     }
 
     const preferredKind = prefer === 'cloud' ? 'cloud' : 'local';
@@ -372,6 +412,19 @@ export class LLMProvider {
 
   async _call(entry, options) {
     this._active = entry;
+    debugLog('CALL', JSON.stringify({
+      providerId: entry.provider.id,
+      kind: entry.kind,
+      model: entry.instance?.model || '',
+      maxTokens: options.maxTokens || 0,
+      temperature: options.temperature ?? '(default)',
+      prefer: options.prefer || '',
+      hasCloudSystemPrompt: Boolean(options.cloudSystemPrompt),
+      messageCount: Array.isArray(options.messages) ? options.messages.length : 0,
+      messageLengths: Array.isArray(options.messages)
+        ? options.messages.map(message => typeof message.content === 'string' ? message.content.length : -1)
+        : [],
+    }));
     if (entry.kind !== 'local') return entry.instance.chat(this._request(entry, options));
     const attempts = options.disableLocalRetry ? [0] : [0, 1, 2];
     let lastError;
@@ -396,7 +449,7 @@ export class LLMProvider {
         }));
       } catch (error) {
         lastError = error;
-        if (attempt === attempts.length - 1 || /取消|cancelled|canceled/i.test(String(error?.message || ''))) throw error;
+        if (attempt === attempts.length - 1 || isCancellationError(error, options.signal)) throw error;
       } finally {
         release();
       }
@@ -430,6 +483,18 @@ export class LLMProvider {
     return this.getContextWindow();
   }
 
+  // Whether the model that would actually serve a request (per routing) can
+  // accept image content. Callers attach vision images only when this is true;
+  // image-only models would otherwise hang or reject on image_url parts.
+  async supportsVision({ prefer = '' } = {}) {
+    try {
+      const route = await this._route(prefer);
+      return Boolean(route?.primary?.instance?.supportsVision?.());
+    } catch {
+      return false;
+    }
+  }
+
   _request(entry, options) {
     const localMinimum = options.degradationAttempt === 2
       ? 512
@@ -437,7 +502,7 @@ export class LLMProvider {
         ? 768
         : MIN_LOCAL_MAX_TOKENS;
     const withBudgets = entry.kind === 'local'
-      ? { ...options, maxTokens: Math.max(options.maxTokens || 0, localMinimum) }
+      ? { ...options, maxTokens: Math.min(Math.max(options.maxTokens || 0, localMinimum), MAX_LOCAL_OUTPUT_TOKENS) }
       : options;
     const withPrompt = entry.kind === 'cloud' && options.cloudSystemPrompt
       ? {
@@ -456,6 +521,9 @@ export class LLMProvider {
 
   async chat(options = {}) {
     const allowOverride = options.allowPolicyOverride === true;
+    // Policy state belongs to one request. Sharing it lets concurrent cloud
+    // calls overwrite each other's review lifecycle.
+    const policyRouter = this._createPolicyRouter();
     const route = await this._route(options.prefer);
     if (!route || route.error || !route.primary) {
       if (route?.error) throw new Error(route.error);
@@ -471,24 +539,24 @@ export class LLMProvider {
       ...(route.disableLocalRetry ? { disableLocalRetry: true } : {}),
       policyCacheKey: policyRequestKey(options, route, this.active, this._allowMediaToCloud),
     };
-    if (route.primary.kind === 'cloud') return this._chatCloudOrLocal(route.primary, requestOptions, route);
+    if (route.primary.kind === 'cloud') return this._chatCloudOrLocal(route.primary, requestOptions, route, policyRouter);
 
     try {
       return await this._call(route.primary, requestOptions);
     } catch (error) {
-      if (!route.fallback) throw error;
-      const decision = this._policyRouter.review(requestOptions.messages, {
+      if (isCancellationError(error, requestOptions.signal) || !route.fallback) throw error;
+      const decision = policyRouter.review(requestOptions.messages, {
         forceAllow: allowOverride,
         allowMediaToCloud: this._allowMediaToCloud,
         policyCacheKey: requestOptions.policyCacheKey,
       });
       if (!allowOverride && decision.requiresLocal) {
-        this._policyRouter.block(decision);
-        this._policyRouter.complete();
+        policyRouter.block(decision);
+        policyRouter.complete();
         throw new CloudPolicyBlockedError('该请求未发送到云端：本地模型不可用，安全路由已停止云端兜底。', { ...decision, localUnavailable: true });
       }
       if (route.fallback.kind !== 'cloud') {
-        this._policyRouter.complete();
+        policyRouter.complete();
         throw new CloudPolicyBlockedError(
           allowOverride ? '该请求无法发送到云端：当前没有可用的云端模型。' : '该请求未发送到云端：本地模型不可用，安全路由已停止云端兜底。',
           { ...decision, localUnavailable: true },
@@ -499,12 +567,12 @@ export class LLMProvider {
       } catch {
         throw error;
       } finally {
-        this._policyRouter.complete();
+        policyRouter.complete();
       }
     }
   }
 
-  async _chatLocalOrBlock(localEntry, options, decision) {
+  async _chatLocalOrBlock(localEntry, options, decision, policyRouter) {
     const allowOverride = options.allowPolicyOverride === true;
     if (!localEntry) {
       if (allowOverride) {
@@ -513,17 +581,18 @@ export class LLMProvider {
           try {
             return await this._call(cloud, options);
           } finally {
-            this._policyRouter.complete();
+            policyRouter.complete();
           }
         }
       }
-      this._policyRouter.block(decision);
-      this._policyRouter.complete();
+      policyRouter.block(decision);
+      policyRouter.complete();
       throw new CloudPolicyBlockedError('该请求未发送到云端：内部审查要求使用本地模型，但当前没有可用的本地模型。', decision);
     }
     try {
       return await this._call(localEntry, options);
     } catch (error) {
+      if (isCancellationError(error, options.signal)) throw error;
       if (decision.requiresLocal) {
         if (allowOverride) {
           const cloud = this._pool.cloud[0];
@@ -531,45 +600,46 @@ export class LLMProvider {
             try {
               return await this._call(cloud, options);
             } finally {
-              this._policyRouter.complete();
+              policyRouter.complete();
             }
           }
         }
-        this._policyRouter.block(decision);
+        policyRouter.block(decision);
         throw new CloudPolicyBlockedError('该请求未发送到云端：本地模型处理失败，安全路由已停止云端发送。', { ...decision, localUnavailable: true });
       }
       throw error;
     } finally {
-      this._policyRouter.complete();
+      policyRouter.complete();
     }
   }
 
-  async _chatCloudOrLocal(cloudEntry, options, route) {
-    const decision = this._policyRouter.review(options.messages, {
+  async _chatCloudOrLocal(cloudEntry, options, route, policyRouter) {
+    const decision = policyRouter.review(options.messages, {
       forceAllow: options.allowPolicyOverride === true,
       allowMediaToCloud: this._allowMediaToCloud,
       policyCacheKey: options.policyCacheKey,
     });
     if (decision.requiresLocal) {
       const localEntry = route.localUnavailable ? null : route.fallback?.kind === 'local' ? route.fallback : this._pool.local[0];
-      return this._chatLocalOrBlock(localEntry, options, decision);
+      return this._chatLocalOrBlock(localEntry, options, decision, policyRouter);
     }
 
     try {
       return await this._call(cloudEntry, options);
     } catch (error) {
-      const localEntry = route.fallback?.kind === 'local' ? route.fallback : this._pool.local[0];
+      if (isCancellationError(error, options.signal)) throw error;
+      const localEntry = route.fallback?.kind === 'local' ? route.fallback : null;
       if (!localEntry || route.localUnavailable) {
         throw error;
       }
-      this._policyRouter.useLocal({ reason: 'cloud_failure' });
+      policyRouter.useLocal({ reason: 'cloud_failure' });
       try {
         return await this._call(localEntry, options);
       } finally {
-        this._policyRouter.complete();
+        policyRouter.complete();
       }
     } finally {
-      this._policyRouter.complete();
+      policyRouter.complete();
     }
   }
 

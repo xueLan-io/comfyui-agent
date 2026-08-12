@@ -41,6 +41,7 @@ function sessionStateDefaults() {
     taskFailure: null,
     retryAction: null,
     executionRecords: {},
+    generationRecords: {},
     contextArchive: { version: 1, segments: [], archivedMessageIds: [] },
     sessionMemory: createSessionMemory(),
   };
@@ -116,6 +117,7 @@ export class SessionManager {
     this.conversation = new ConversationMemory();
     this.sessionMemory = new SessionMemory({}, () => this._saveSessionMemory());
     this.sessionState = sessionStateDefaults();
+    this.persistencePromise = Promise.resolve();
   }
 
   async init() {
@@ -239,8 +241,7 @@ export class SessionManager {
     if (!this.sessionStates[this.activeProjectId]) this.sessionStates[this.activeProjectId] = {};
     this.sessionStates[this.activeProjectId][this.activeSessionId] = this.getSessionState();
     Object.assign(project, current, { history: this.project.history });
-    void this._persistProjects().catch(() => {});
-    void this._persistConversations().catch(() => {});
+    void this._queuePersist(() => this._persistAll());
   }
 
   _saveConversationMemory() {
@@ -249,14 +250,20 @@ export class SessionManager {
     this.sessionState = { ...this.sessionState, revision: (this.sessionState.revision || 0) + 1, updatedAt: Date.now() };
     if (!this.sessionStates[this.activeProjectId]) this.sessionStates[this.activeProjectId] = {};
     this.sessionStates[this.activeProjectId][this.activeSessionId] = this.getSessionState();
-    void this._persistConversations().catch(() => {});
+    void this._queuePersist(() => this._persistConversations());
   }
 
   _saveSessionMemory() {
     this.sessionState = { ...this.sessionState, sessionMemory: this.sessionMemory.toJSON(), revision: (this.sessionState.revision || 0) + 1, updatedAt: Date.now() };
     if (!this.sessionStates[this.activeProjectId]) this.sessionStates[this.activeProjectId] = {};
     this.sessionStates[this.activeProjectId][this.activeSessionId] = this.getSessionState();
-    void this._persistConversations().catch(() => {});
+    void this._queuePersist(() => this._persistConversations());
+  }
+
+  _queuePersist(operation) {
+    const persist = this.persistencePromise.catch(() => {}).then(operation);
+    this.persistencePromise = persist.catch(() => {});
+    return persist;
   }
 
   async _persistProjects() {
@@ -280,6 +287,7 @@ export class SessionManager {
   }
 
   async flush() {
+    await this.persistencePromise;
     await this._persistAll();
   }
 
@@ -423,6 +431,31 @@ export class SessionManager {
     return this.getSessionMemory();
   }
 
+  upsertGenerationRecord(record = {}) {
+    if (!record?.requestId) return null;
+    if (record.projectId && record.projectId !== this.activeProjectId) return null;
+    if (record.sessionId && record.sessionId !== this.activeSessionId) return null;
+    const current = this.sessionState.generationRecords || {};
+    const existing = current[record.requestId] || {};
+    const hasValue = value => typeof value === 'string' ? value.trim().length > 0 : value !== undefined && value !== null;
+    const hasObjectValues = value => Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0);
+    const merged = {
+      ...existing,
+      ...record,
+      requestId: record.requestId,
+      projectId: record.projectId || this.activeProjectId,
+      sessionId: record.sessionId || this.activeSessionId,
+      createdAt: existing.createdAt || record.createdAt || Date.now(),
+      updatedAt: Date.now(),
+    };
+    for (const field of ['prompt', 'negative', 'workflowName']) {
+      if (!hasValue(record[field]) && hasValue(existing[field])) merged[field] = existing[field];
+    }
+    if (!hasObjectValues(record.parameters) && hasObjectValues(existing.parameters)) merged.parameters = existing.parameters;
+    this.setSessionState({ generationRecords: { ...current, [record.requestId]: merged } });
+    return merged;
+  }
+
   setSessionState(patch = {}) {
     const next = {
       ...this.sessionState,
@@ -455,16 +488,26 @@ export class SessionManager {
     this.sessionState = next;
     if (!this.sessionStates[this.activeProjectId]) this.sessionStates[this.activeProjectId] = {};
     this.sessionStates[this.activeProjectId][this.activeSessionId] = this.getSessionState();
-    void this._persistConversations().catch(() => {});
+    void this._queuePersist(() => this._persistConversations());
     return this.getSessionState();
   }
 
   appendExecutionEvent(event = {}) {
     const turnId = event.turnId || this.sessionState.turnId || '';
     if (!turnId) return this.getSessionState();
+    const planSteps = event.steps ?? event.plan?.steps ?? [];
+    if (event.type === 'agent:plan' && planSteps.length === 0) return this.getSessionState();
     const records = { ...(this.sessionState.executionRecords || {}) };
-    const events = [...(records[turnId] || []), event].slice(-48);
-    records[turnId] = events;
+    const eventKey = [event.taskId || '', event.traceId || '', event.type || '', event.stage || '', event.stepId || '', event.status || '', event.tool || '', event.attemptId || '', event.currentAttempt || event.attempt || '', planSteps.map(step => step.id || step.stepId || step.tool || '').join(',')].join('|');
+    const events = records[turnId] || [];
+    if (events.some(item => {
+      const itemSteps = item.steps ?? item.plan?.steps ?? [];
+      return [item.taskId || '', item.traceId || '', item.type || '', item.stage || '', item.stepId || '', item.status || '', item.tool || '', item.attemptId || '', item.currentAttempt || item.attempt || '', itemSteps.map(step => step.id || step.stepId || step.tool || '').join(',')].join('|') === eventKey;
+    })) return this.getSessionState();
+    // A single task can legitimately emit many step/tool/retry events. Keep its
+    // complete chain so a restarted renderer can reconstruct the same timeline.
+    const nextEvents = [...events, event].slice(-500);
+    records[turnId] = nextEvents;
     return this.setSessionState({ executionRecords: records });
   }
 

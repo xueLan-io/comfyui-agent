@@ -14,7 +14,7 @@ export { ProjectMemory } from './memory/project.mjs';
 export { PreferenceMemory } from './memory/preference.mjs';
 export { SessionManager } from './runtime/session-manager.mjs';
 export { TaskManager, TASK_STATES, TASK_TRANSITIONS, canTransition } from './runtime/task-manager.mjs';
-export { configureSkills, matchSkill, SKILLS, createCustomSkill, skillManifest, skillRegistry, skillCandidates, createConfiguredSkillRegistry, SKILL_CONTRACT_VERSION } from './skills/index.mjs';
+export { configureSkills, matchSkill, SKILLS, BUILTIN_SKILLS, createCustomSkill, skillManifest, skillRegistry, skillCandidates, createConfiguredSkillRegistry, SKILL_CONTRACT_VERSION } from './skills/index.mjs';
 export { normalizeSkill, legacySkillAdapter } from './skills/skill-contract.mjs';
 export { createSkillRegistry } from './skills/registry.mjs';
 export { matchSkills } from './skills/matcher.mjs';

@@ -231,6 +231,7 @@ export class DirectService {
             sandboxInput: prepared.sandboxInput,
             onProgress: options.onProgress,
             signal: options.signal,
+            executionId: options.executionId || previewId,
           });
           if (!result || typeof result !== 'object') {
             lastError = Object.assign(new Error('No images in output'), { failureType: 'empty_output', retryable: true });
@@ -288,7 +289,7 @@ export class DirectService {
     }
   }
 
-  cancel() {
-    return this.executor.cancel();
+  cancel(previewId = '') {
+    return this.executor.cancel(previewId);
   }
 }

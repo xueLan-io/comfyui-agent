@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DEFAULT_UI_PREFERENCES, normalizeUIPreferences } from '../src/ui-preferences.mjs';
+import { DEFAULT_UI_PREFERENCES, SOUND_STYLE_IDS, UI_THEME_IDS, normalizeUIPreferences } from '../src/ui-preferences.mjs';
 import { PromptEnhanceTool } from '../src/agent/tools/prompt/enhance.mjs';
 
 test('UI preferences normalize invalid values to safe ranges', () => {
@@ -15,6 +15,21 @@ test('UI preferences normalize invalid values to safe ranges', () => {
 
 test('UI preferences accept English language', () => {
   assert.equal(normalizeUIPreferences({ language: 'en-US' }).language, 'en-US');
+});
+
+test('UI preferences accept the extra theme palettes', () => {
+  for (const theme of ['paper', 'mist', 'warm', 'navy']) assert.equal(normalizeUIPreferences({ theme }).theme, theme);
+  assert.equal(UI_THEME_IDS.includes('light'), true);
+});
+
+test('UI preferences normalize notification and sound toggles', () => {
+  const result = normalizeUIPreferences({ notifyOnComplete: 0, notifyOnFail: 'false', soundOnComplete: 1, soundStyle: 'alarm' });
+  assert.equal(result.notifyOnComplete, false);
+  assert.equal(result.notifyOnFail, true);
+  assert.equal(result.soundOnComplete, true);
+  assert.equal(result.soundStyle, DEFAULT_UI_PREFERENCES.soundStyle);
+  for (const style of SOUND_STYLE_IDS) assert.equal(normalizeUIPreferences({ soundStyle: style }).soundStyle, style);
+  assert.equal(normalizeUIPreferences({}).notifyOnComplete, DEFAULT_UI_PREFERENCES.notifyOnComplete);
 });
 
 test('prompt strategies include anime-specific workflows', () => {

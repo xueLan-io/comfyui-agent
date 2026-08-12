@@ -13,7 +13,7 @@ export function createSkillRegistry({ builtin = {}, custom = [], external = [] }
     get: id => byId.get(String(id)) || null,
     resolve: id => byId.get(String(id)) || null,
     list: ({ enabled = true } = {}) => [...byId.values()].filter(skill => !enabled || skill.enabled !== false),
-    manifest: ({ enabled = true } = {}) => [...byId.values()].filter(skill => !enabled || skill.enabled !== false).map(skill => ({ id: skill.id, name: skill.name, description: skill.description, version: skill.version, keywords: skill.keywords, capabilities: skill.capabilities, requirements: skill.requirements, external: skill.external === true, enabled: skill.enabled !== false })),
+    manifest: ({ enabled = true } = {}) => [...byId.values()].filter(skill => !enabled || skill.enabled !== false).map(skill => ({ id: skill.id, name: skill.name, description: skill.description, aliases: skill.aliases || [], version: skill.version, keywords: skill.keywords, capabilities: skill.capabilities, requirements: skill.requirements, external: skill.external === true, enabled: skill.enabled !== false })),
     candidates: (request, context) => matchSkills([...byId.values()], request, context).candidates,
     match: (request, context) => matchSkills([...byId.values()], request, context),
     validate: skill => normalizeSkill(skill),

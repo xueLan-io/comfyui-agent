@@ -12,6 +12,14 @@ function normalizeBaseUrl(value) {
   return url.toString().replace(/\/+$/, '');
 }
 
+function localLaunchTarget(baseUrl) {
+  const url = new URL(baseUrl);
+  const host = url.hostname.toLowerCase();
+  if (!['127.0.0.1', 'localhost', '::1'].includes(host)) return null;
+  if (url.protocol !== 'http:' || url.pathname !== '/' || url.search || url.hash) return null;
+  return { host: url.hostname, port: Number(url.port || 80) };
+}
+
 export function killProcessTree(child, platform = process.platform) {
   if (!child?.pid) return false;
 
@@ -193,6 +201,11 @@ export class ComfyUIManager {
       return this.getState();
     }
 
+    if (!localLaunchTarget(this.baseUrl)) {
+      this._setState('error', '远程或带路径的 ComfyUI 地址只能连接，无法由本应用托管启动');
+      return this.getState();
+    }
+
     if (!this.process) {
       const lock = this._acquireStartupLock();
       if (!lock.acquired) {
@@ -237,6 +250,9 @@ export class ComfyUIManager {
       '--windows-standalone-build',
       '--enable-manager',
     ];
+    const target = localLaunchTarget(this.baseUrl);
+    if (!target) throw new Error('ComfyUI address cannot be managed locally');
+    args.push('--listen', target.host, '--port', String(target.port));
 
     const child = spawn(pythonPath, args, {
       cwd: this.portableRoot,

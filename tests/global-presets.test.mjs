@@ -21,6 +21,13 @@ test('global presets require a positive prompt', async () => {
   await assert.rejects(() => createGlobalPreset(root, { title: 'Invalid' }), /正向提示词不能为空/);
 });
 
+test('a workflow name is retained as metadata without requiring a workflow file', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'comfy-agent-presets-'));
+  const created = await createGlobalPreset(root, { title: 'Historical', positive: 'portrait', workflowName: 'deleted-workflow.json' });
+  assert.equal(created.workflowName, 'deleted-workflow.json');
+  assert.equal(created.workflow, '');
+});
+
 test('global preset resources are copied and deleted with the preset', async () => {
   const root = await mkdtemp(join(tmpdir(), 'comfy-agent-presets-'));
   const source = join(root, 'input.png');

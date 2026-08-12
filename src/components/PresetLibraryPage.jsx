@@ -21,7 +21,17 @@ export default function PresetLibraryPage({ hidden = false, onBack, onReuse }) {
   const [feedback, setFeedback] = useState('');
   const [selectedIds, setSelectedIds] = useState([]);
   const [recommended, setRecommended] = useState(false);
+  const [maximized, setMaximized] = useState(false);
   const refreshVersion = useRef(0);
+  const windowApi = window.electronAPI;
+
+  useEffect(() => {
+    windowApi?.windowIsMaximized?.().then(setMaximized).catch(() => {});
+  }, [windowApi]);
+
+  async function toggleMaximize() {
+    if (windowApi?.windowToggleMaximize) setMaximized(await windowApi.windowToggleMaximize());
+  }
 
   async function refresh() {
     const version = ++refreshVersion.current;
@@ -107,6 +117,7 @@ export default function PresetLibraryPage({ hidden = false, onBack, onReuse }) {
 
   return (
     <main className={`preset-library-page${hidden ? ' view-hidden' : ''}`}>
+       <div className="preset-window-bar"><span>GLOBAL PRESETS</span>{windowApi && <div className="window-controls" aria-label={t('windowControls')}><button className="window-control" onClick={() => windowApi.windowMinimize()} title={t('minimize')}><Icon name="minimize" /></button><button className="window-control" onClick={toggleMaximize} title={maximized ? t('restore') : t('maximize')}><Icon name={maximized ? 'restore' : 'maximize'} /></button><button className="window-control window-control-close" onClick={() => windowApi.windowClose()} title={t('close')}><Icon name="windowClose" /></button></div>}</div>
        <header className="preset-library-header">
           <div className="preset-library-title"><span className="section-kicker">GLOBAL PRESETS</span><h1>{t('presetsTitle')}</h1><p>{t('presetsDescription')}</p></div>
           <div className="preset-library-actions"><button className="btn" onClick={onBack}>{t('back')}</button><button className="btn" onClick={importPreset}>{t('uploadPreset')}</button><button className="btn" onClick={() => void composeSelected()} disabled={selectedIds.length < 2}>{t('compose')}{selectedIds.length > 1 ? ` (${selectedIds.length})` : ''}</button><button className="btn btn-primary" onClick={() => setEditor({})}>{t('newPreset')}</button></div>

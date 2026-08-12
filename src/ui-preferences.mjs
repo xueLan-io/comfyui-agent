@@ -9,14 +9,23 @@ export const DEFAULT_UI_PREFERENCES = {
   uiFontSize: 14,
   codeFontSize: 12,
   diffMarkers: true,
+  notifyOnComplete: true,
+  notifyOnFail: true,
+  soundOnComplete: true,
+  soundStyle: 'chime',
+  soundVolume: 60,
 };
+
+export const SOUND_STYLE_IDS = ['none', 'chime', 'soft', 'ding', 'bell', 'pop', 'beep', 'success'];
+
+export const UI_THEME_IDS = ['system', 'light', 'dark', 'paper', 'mist', 'warm', 'navy', 'starry'];
 
 export function normalizeUIPreferences(value = {}) {
   const next = { ...DEFAULT_UI_PREFERENCES, ...value };
   return {
     ...next,
     language: ['zh-CN', 'en-US'].includes(next.language) ? next.language : DEFAULT_UI_PREFERENCES.language,
-    theme: ['system', 'light', 'dark'].includes(next.theme) ? next.theme : DEFAULT_UI_PREFERENCES.theme,
+    theme: UI_THEME_IDS.includes(next.theme) ? next.theme : DEFAULT_UI_PREFERENCES.theme,
     accent: /^#[0-9a-f]{6}$/i.test(next.accent) ? next.accent : DEFAULT_UI_PREFERENCES.accent,
     contrast: Math.min(100, Math.max(0, Number.isFinite(Number(next.contrast)) ? Number(next.contrast) : DEFAULT_UI_PREFERENCES.contrast)),
     uiFontSize: Math.min(18, Math.max(12, Number(next.uiFontSize) || DEFAULT_UI_PREFERENCES.uiFontSize)),
@@ -25,6 +34,11 @@ export function normalizeUIPreferences(value = {}) {
     pointerCursor: Boolean(next.pointerCursor),
     reducedMotion: Boolean(next.reducedMotion),
     diffMarkers: Boolean(next.diffMarkers),
+    notifyOnComplete: Boolean(next.notifyOnComplete),
+    notifyOnFail: Boolean(next.notifyOnFail),
+    soundOnComplete: Boolean(next.soundOnComplete),
+    soundStyle: SOUND_STYLE_IDS.includes(next.soundStyle) ? next.soundStyle : DEFAULT_UI_PREFERENCES.soundStyle,
+    soundVolume: Math.min(100, Math.max(0, Number(next.soundVolume) || DEFAULT_UI_PREFERENCES.soundVolume)),
   };
 }
 

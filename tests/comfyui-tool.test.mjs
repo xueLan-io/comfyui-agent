@@ -101,10 +101,33 @@ test('H3 workflows fail before queueing when official nodes are unavailable', as
 });
 
 test('recoverResult converts existing history into media results', async () => {
-  const result = await ComfyUITool.recoverResult('prompt-1', {
-    status: { completed: true, status_str: 'success' },
-    outputs: { '1': { images: [{ filename: 'recovered.png', subfolder: '', type: 'output' }] } },
-  });
-  assert.equal(result.promptId, 'prompt-1');
-  assert.equal(result.images[0].filename, 'recovered.png');
+  const original = ComfyUITool.client;
+  ComfyUITool.setClient({ inspectImage: async () => ({ exists: true, readable: true, validFormat: true }) });
+  try {
+    const result = await ComfyUITool.recoverResult('prompt-1', {
+      status: { completed: true, status_str: 'success' },
+      outputs: { '1': { images: [{ filename: 'recovered.png', subfolder: '', type: 'output' }] } },
+    });
+    assert.equal(result.promptId, 'prompt-1');
+    assert.equal(result.images[0].filename, 'recovered.png');
+  } finally {
+    ComfyUITool.setClient(original);
+  }
+});
+
+test('recoverResult rejects failed history and invalid media', async () => {
+  const original = ComfyUITool.client;
+  try {
+    await assert.rejects(
+      ComfyUITool.recoverResult('failed-prompt', { status: { completed: true, status_str: 'error', messages: [] }, outputs: {} }),
+      error => error.failureType === 'execution_failed',
+    );
+    ComfyUITool.setClient({ inspectImage: async () => ({ exists: false, readable: false, validFormat: false }) });
+    await assert.rejects(
+      ComfyUITool.recoverResult('bad-media', { status: { completed: true, status_str: 'success' }, outputs: { '1': { images: [{ filename: 'bad.png' }] } } }),
+      error => error.failureType === 'invalid_output',
+    );
+  } finally {
+    ComfyUITool.setClient(original);
+  }
 });

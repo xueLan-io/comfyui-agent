@@ -55,6 +55,9 @@ test('submit normalizes prompt id and marks an uncertain network response', asyn
 
   client.queuePrompt = async () => { throw new Error('ComfyUI request timed out'); };
   await assert.rejects(client.submit({}, 'client-1'), error => error.failureType === 'submit_unknown');
+
+  client.queuePrompt = async () => ({});
+  await assert.rejects(client.submit({}, 'client-1'), error => error.failureType === 'submit_unknown');
 });
 
 test('observe and fetchResult use an existing prompt id', async () => {

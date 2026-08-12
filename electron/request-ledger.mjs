@@ -23,6 +23,19 @@ const TERMINAL_STATES = new Set([
   RequestStates.CANCELLED,
 ]);
 
+// 这些状态只可能属于“上一个进程”的在途执行：进程重启后必然已死，
+// 恢复流程会依据任务账本重新入账，这里直接丢弃以免 UI 误报恢复任务。
+const STALE_ON_LOAD = new Set([
+  RequestStates.CREATED,
+  RequestStates.QUEUED,
+  RequestStates.PREPARING,
+  RequestStates.PREPARED,
+  RequestStates.EXECUTING,
+  RequestStates.OBSERVING,
+  RequestStates.SUBMIT_UNKNOWN,
+  RequestStates.STOPPING,
+]);
+
 const ACTIVE_STATES = new Set([
   RequestStates.CREATED,
   RequestStates.QUEUED,
@@ -68,7 +81,7 @@ export class RequestLedger {
     try {
       const data = JSON.parse(await readFile(filePath, 'utf8'));
       for (const entry of Array.isArray(data) ? data : []) {
-        if (entry?.requestId) this.entries.set(entry.requestId, entry);
+        if (entry?.requestId && !STALE_ON_LOAD.has(entry.state)) this.entries.set(entry.requestId, entry);
       }
       this._prune();
     } catch (error) {

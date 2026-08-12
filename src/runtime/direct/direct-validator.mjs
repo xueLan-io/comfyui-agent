@@ -39,6 +39,14 @@ export function validateDirectRequest(request, workflow) {
   if ((media.videos || []).length > 0 && ![...types].some(type => /video/.test(type)) && !modes.has('video2video')) {
     addCheck(checks, 'reference_media', 'warning', 'Reference videos were provided, but the workflow has no video loader');
   }
+  const loadImageNodes = Object.entries(workflow?.workflow?.nodes || []).filter(([, node]) => node.type === 'LoadImage');
+  for (const [nodeId, node] of loadImageNodes) {
+    const hasImageValue = node.widgets_values && node.widgets_values[0];
+    const hasLink = (node.inputs || []).some(inp => inp.name === 'image' && inp.link != null);
+    if (!hasImageValue && !hasLink) {
+      addCheck(checks, 'loadimage_empty', 'error', `LoadImage node ${nodeId} has no image selected; please provide a reference image`);
+    }
+  }
   if ((profile.promptLists || []).length > 0 || (profile.positiveTargets || []).length > 1) {
     addCheck(checks, 'prompt_routing', 'warning', 'The workflow has multiple prompt targets; review which nodes will receive the original text');
   }

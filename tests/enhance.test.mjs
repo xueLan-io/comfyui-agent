@@ -33,6 +33,41 @@ test('no LLM returns original with note', async () => {
   assert.ok(result.note);
 });
 
+test('prompt enhancement reports resolver and compiler timing through the callback', async () => {
+  const events = [];
+  let calls = 0;
+  const result = await PromptEnhanceTool.execute({
+    prompt: '根据上面的内容生成图片',
+    mode: 'cinematic',
+    requireAI: true,
+    conversation: [{ role: 'user', content: 'A red-haired woman in a garden.' }],
+    eventMeta: { taskId: 'task_timing', turnId: 'turn_timing' },
+    onTiming: event => events.push(event),
+    llmProvider: {
+      async chat() {
+        calls++;
+        if (calls === 1) return { content: JSON.stringify({ prompt: 'A red-haired woman in a garden.' }) };
+        return { content: JSON.stringify({ tags: [], narrative: 'A red-haired woman in a garden.', positive: '', negative: '', self_check: { preserved: true, issues: [] } }) };
+      },
+    },
+  });
+
+  assert.equal(result.promptResolved, true);
+  assert.deepEqual(events.map(event => event.stage), [
+    'enhance_llm_start',
+    'enhance_llm_end',
+    'enhance_llm_start',
+    'enhance_llm_end',
+  ]);
+  assert.deepEqual(events.map(event => event.timingPhase), ['resolve', 'resolve', 'compile', 'compile']);
+  assert.equal(events[2].attempt, 1);
+  for (const event of events.filter(event => event.stage.endsWith('_end'))) {
+    assert.equal(event.outcome, 'completed');
+    assert.equal(typeof event.duration_ms, 'number');
+    assert.ok(event.duration_ms >= 0);
+  }
+});
+
 test('resolves reference-only generation requests before raw injection', async () => {
   let calls = 0;
   const mockLLM = {
@@ -79,6 +114,7 @@ test('passes attached images to the prompt resolver and compiler', async () => {
     referenceImages: [{ path: 'reference.png' }],
     imageDataUrl: async () => 'data:image/png;base64,abc',
     llmProvider: {
+      supportsVision: () => true,
       async chat(input) {
         requests.push(input);
         if (requests.length === 1) return { content: JSON.stringify({ prompt: 'a blue castle at sunset' }) };
@@ -92,6 +128,58 @@ test('passes attached images to the prompt resolver and compiler', async () => {
   assert.equal(requests[1].messages[1].content.at(-1).type, 'image_url');
 });
 
+test('strips attached images when the model does not support vision', async () => {
+  const requests = [];
+  const result = await PromptEnhanceTool.execute({
+    prompt: '反推出这张图的提示词',
+    mode: 'raw',
+    requireAI: true,
+    referenceImages: [{ path: 'reference.png' }],
+    imageDataUrl: async () => 'data:image/png;base64,abc',
+    llmProvider: {
+      supportsVision: () => false,
+      async chat(input) {
+        requests.push(input);
+        if (requests.length === 1) return { content: JSON.stringify({ prompt: 'a blue castle at sunset' }) };
+        return { content: JSON.stringify({ tags: [], narrative: 'a blue castle at sunset', positive: 'a blue castle at sunset', negative: '', self_check: { preserved: true, issues: [] } }) };
+      },
+    },
+  });
+
+  assert.equal(result.positive, 'a blue castle at sunset');
+  for (const request of requests) {
+    for (const message of request.messages) {
+      assert.equal(typeof message.content, 'string', 'no image_url parts may reach a non-vision model');
+      assert.ok(!message.content.includes('image/png'));
+    }
+  }
+});
+
+test('strips attached images when the model does not declare vision support', async () => {
+  const requests = [];
+  const result = await PromptEnhanceTool.execute({
+    prompt: '反推出这张图的提示词',
+    mode: 'raw',
+    requireAI: true,
+    referenceImages: [{ path: 'reference.png' }],
+    imageDataUrl: async () => 'data:image/png;base64,abc',
+    llmProvider: {
+      async chat(input) {
+        requests.push(input);
+        if (requests.length === 1) return { content: JSON.stringify({ prompt: 'a blue castle at sunset' }) };
+        return { content: JSON.stringify({ tags: [], narrative: 'a blue castle at sunset', positive: 'a blue castle at sunset', negative: '', self_check: { preserved: true, issues: [] } }) };
+      },
+    },
+  });
+
+  assert.equal(result.positive, 'a blue castle at sunset');
+  for (const request of requests) {
+    for (const message of request.messages) {
+      assert.equal(typeof message.content, 'string');
+    }
+  }
+});
+
 test('resolves refinement requests against the previous prompt without an LLM', async () => {
   const result = await PromptEnhanceTool.execute({
     prompt: '\u6362\u6210\u7ea2\u8272',
@@ -103,25 +191,158 @@ test('resolves refinement requests against the previous prompt without an LLM', 
   assert.match(result.positive, /\u6362\u6210\u7ea2\u8272/);
 });
 
-test('keeps the previous prompt when the resolver returns only a refinement delta', async () => {
-  let calls = 0;
+test('contextual refinement compiles once from the locally merged baseline', async () => {
+  const requests = [];
   const result = await PromptEnhanceTool.execute({
-    prompt: '\u7c89\u8272\u5934\u53d1',
+    prompt: '\u4f18\u5316\u5149\u7ebf \u6784\u56fe',
     intent: 'refine',
-    mode: 'raw',
+    mode: 'anime',
     requireAI: true,
-    contextPrompt: 'a silver-haired woman, blue dress, garden',
+    contextPrompt: 'best quality, masterpiece, 1person, solo, simple background, standing, looking at viewer',
+    existingNegative: 'low quality, bad anatomy',
+    promptProfile: { family: 'anima', format: 'tag_narrative', supportsNegative: true },
     llmProvider: {
-      async chat() {
-        calls++;
-        return calls === 1
-          ? { content: JSON.stringify({ prompt: 'pink hair' }) }
-          : { content: JSON.stringify({ tags: [], narrative: 'pink hair', positive: 'pink hair', negative: '', self_check: { preserved: true, issues: [] } }) };
+      async chat(input) {
+        requests.push(input);
+        return {
+          content: JSON.stringify({
+            tags: ['best quality', 'masterpiece', '1person', 'solo'],
+            narrative: 'A single person stands in a softly lit environment, framed in a balanced medium composition, facing the viewer.',
+            positive: 'ignored compiler draft',
+            negative: 'extra fingers',
+            self_check: { preserved: true, issues: [] },
+          }),
+        };
       },
     },
   });
-  assert.equal(calls, 2);
-  assert.equal(result.positive, 'a pink-haired woman, blue dress, garden');
+
+  assert.equal(requests.length, 1);
+  assert.match(requests[0].messages[0].content, /\u63d0\u793a\u8bcd\u7f16\u8bd1\u5668/);
+  const compilerInput = JSON.parse(requests[0].messages[1].content);
+  assert.equal(compilerInput.latestRequest, '\u4f18\u5316\u5149\u7ebf \u6784\u56fe');
+  assert.match(compilerInput.interpretedPrompt, /1person/);
+  assert.match(compilerInput.interpretedPrompt, /\u4f18\u5316\u5149\u7ebf \u6784\u56fe/);
+  assert.equal(
+    result.positive,
+    'best quality, masterpiece, 1person, solo\n\nA single person stands in a softly lit environment, framed in a balanced medium composition, facing the viewer.',
+  );
+  assert.equal(result.negative, 'low quality, bad anatomy, extra fingers');
+});
+
+test('contextual refinement does not retry a failed compiler self-check', async () => {
+  let calls = 0;
+  const result = await PromptEnhanceTool.execute({
+    prompt: '\u4f18\u5316\u5149\u7ebf \u6784\u56fe',
+    intent: 'refine',
+    mode: 'cinematic',
+    requireAI: true,
+    contextPrompt: 'a silver-haired woman in a blue dress standing in a garden',
+    llmProvider: {
+      async chat() {
+        calls++;
+        return {
+          content: JSON.stringify({
+            tags: [],
+            narrative: 'A silver-haired woman in a blue dress stands in a garden with softer light and a balanced composition.',
+            positive: 'A silver-haired woman in a blue dress stands in a garden with softer light and a balanced composition.',
+            negative: '',
+            self_check: { preserved: false, issues: ['composition changed unexpectedly'] },
+          }),
+        };
+      },
+    },
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.selfCheck.preserved, false);
+  assert.ok(result.issues.some(issue => issue.detail.includes('composition changed unexpectedly')));
+  assert.ok(!result.issues.some(issue => issue.detail.includes('\u7ecf\u8fc73\u6b21\u91cd\u8bd5')));
+});
+
+test('non-contextual compilation retains self-check repair attempts', async () => {
+  let calls = 0;
+  const result = await PromptEnhanceTool.execute({
+    prompt: 'a cat in a garden',
+    mode: 'cinematic',
+    requireAI: true,
+    llmProvider: {
+      async chat() {
+        calls++;
+        return {
+          content: JSON.stringify({
+            tags: [],
+            narrative: 'A cat in a garden.',
+            positive: 'A cat in a garden.',
+            negative: '',
+            self_check: calls === 3
+              ? { preserved: true, issues: [] }
+              : { preserved: false, issues: ['missing requested detail'] },
+          }),
+        };
+      },
+    },
+  });
+
+  assert.equal(calls, 3);
+  assert.equal(result.selfCheck.preserved, true);
+});
+
+test('prompt enhancement reports every compiler retry with its attempt number', async () => {
+  const events = [];
+  let calls = 0;
+  await PromptEnhanceTool.execute({
+    prompt: 'a cat in a garden',
+    mode: 'cinematic',
+    requireAI: true,
+    onTiming: event => events.push(event),
+    llmProvider: {
+      async chat() {
+        calls++;
+        return { content: JSON.stringify({
+          tags: [],
+          narrative: 'A cat in a garden.',
+          positive: 'A cat in a garden.',
+          negative: '',
+          self_check: calls === 3 ? { preserved: true, issues: [] } : { preserved: false, issues: ['needs repair'] },
+        }) };
+      },
+    },
+  });
+
+  assert.deepEqual(events.map(event => event.stage), [
+    'enhance_llm_start', 'enhance_llm_end',
+    'enhance_llm_start', 'enhance_llm_end',
+    'enhance_llm_start', 'enhance_llm_end',
+  ]);
+  assert.deepEqual(events.filter(event => event.stage === 'enhance_llm_start').map(event => event.attempt), [1, 2, 3]);
+  assert.deepEqual(events.filter(event => event.stage === 'enhance_llm_end').map(event => event.attempt), [1, 2, 3]);
+});
+
+test('prompt enhancement marks a cancelled compiler call', async () => {
+  const events = [];
+  const controller = new AbortController();
+  await assert.rejects(
+    PromptEnhanceTool.execute({
+      prompt: 'a cat',
+      mode: 'cinematic',
+      requireAI: true,
+      signal: controller.signal,
+      onTiming: event => events.push(event),
+      llmProvider: {
+        async chat() {
+          const error = new Error('request aborted');
+          error.name = 'AbortError';
+          throw error;
+        },
+      },
+    }),
+    error => error.name === 'AbortError',
+  );
+
+  assert.deepEqual(events.map(event => event.stage), ['enhance_llm_start', 'enhance_llm_end']);
+  assert.equal(events[1].outcome, 'cancelled');
+  assert.equal(typeof events[1].duration_ms, 'number');
 });
 
 test('mode uses style template', () => {
@@ -225,6 +446,19 @@ test('execute error returns original + error', async () => {
   assert.equal(result.enhanced, 'a cat');
   assert.ok(result.error);
   assert.ok(result.error.includes('LLM unavailable'));
+});
+
+test('required AI compilation reports invalid JSON without exposing parser internals', async () => {
+  const result = await PromptEnhanceTool.execute({
+    prompt: 'a cat',
+    mode: 'anime',
+    requireAI: true,
+    llmProvider: { async chat() { return { content: '' }; } },
+  });
+  assert.equal(result.aiFailure, true);
+  assert.equal(result.code, 'MODEL_INVALID_JSON');
+  assert.match(result.error, /Prompt compiler 未返回内容/);
+  assert.doesNotMatch(result.error, /Unexpected end of JSON input/);
 });
 
 test('getStrategies returns all modes', () => {

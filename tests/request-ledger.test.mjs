@@ -40,12 +40,48 @@ test('request ledger persists and reloads entries', async () => {
     await first.load(file);
     first.begin('request-1', { source: 'ai', fingerprint: 'same', taskId: 'task-1' });
     first.update('request-1', { state: 'submit_unknown' });
+    first.complete('request-1', { images: [{ filename: 'image.png' }] });
     await first.persist();
 
     const second = new RequestLedger();
     await second.load(file);
-    assert.equal(second.snapshot('request-1').state, 'submit_unknown');
+    assert.equal(second.snapshot('request-1').state, 'completed');
     assert.equal(JSON.parse(await readFile(file, 'utf8')).length, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('request ledger drops in-flight residue from a dead process on load', async () => {
+  const { mkdtemp, readFile, rm, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'request-ledger-stale-'));
+  try {
+    const file = join(dir, 'ledger.json');
+    const now = Date.now();
+    const stale = (requestId, state, source) => ({ requestId, state, source, updatedAt: now, createdAt: now, revision: 2, preview: null, result: null, error: null });
+    await writeFile(file, JSON.stringify([
+      stale('stale-executing', 'executing', 'direct'),
+      stale('stale-prepared', 'prepared', 'ai'),
+      stale('stale-created', 'created', 'direct'),
+      stale('stale-observing', 'observing', 'ai'),
+      stale('stale-submit', 'submit_unknown', 'direct'),
+      stale('kept-timed-out', 'timed_out', 'direct'),
+      stale('kept-archive-failed', 'archive_failed', 'direct'),
+      stale('kept-completed', 'completed', 'ai'),
+    ]));
+
+    const ledger = new RequestLedger();
+    await ledger.load(file);
+    assert.equal(ledger.snapshot('stale-executing'), null);
+    assert.equal(ledger.snapshot('stale-prepared'), null);
+    assert.equal(ledger.snapshot('stale-created'), null);
+    assert.equal(ledger.snapshot('stale-observing'), null);
+    assert.equal(ledger.snapshot('stale-submit'), null);
+    assert.equal(ledger.snapshot('kept-timed-out').state, 'timed_out');
+    assert.equal(ledger.snapshot('kept-archive-failed').state, 'archive_failed');
+    assert.equal(ledger.snapshot('kept-completed').state, 'completed');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

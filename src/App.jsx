@@ -33,6 +33,7 @@ function AppLayout({ floating = false }) {
   const pendingLibraryGenerationRef = useRef(null);
   const [recoveryError, setRecoveryError] = useState('');
   const [expandedRecoveryTask, setExpandedRecoveryTask] = useState('');
+  const [recoveryPanelOpen, setRecoveryPanelOpen] = useState(false);
   const [appVersion, setAppVersion] = useState('');
   const setupDismissedRef = useRef(false);
 
@@ -152,9 +153,10 @@ function AppLayout({ floating = false }) {
       {showSetup && <ComfyUISetup onClose={closeSetup} />}
       {showTrace && <TraceView trace={trace} onClose={() => setShowTrace(false)} />}
       {recoveryTasks.length > 0 && (
-         <section className="recovery-panel" aria-label={t('recoveryTasks')}>
-            <div className="recovery-panel-heading"><strong>{t('recoveryNeeded')}</strong><span>{recoveryTasks.length} {t('items')}</span><div className="recovery-panel-actions"><button className="btn btn-icon" onClick={() => void runRecoveryAction('refresh', refreshRecoveryTasks)} disabled={Boolean(recoveryAction)} title={t('refreshRecovery')}><Icon name="refresh" size={13} /></button><button className="btn" onClick={() => { if (window.confirm(t('archiveAllConfirm', { count: recoveryTasks.length }))) void runRecoveryAction('archive-all', archiveAllRecoveryTasks); }} disabled={Boolean(recoveryAction)}>{recoveryAction === 'archive-all' ? t('archiving') : t('archiveAll')}</button></div></div>
-           {recoveryError && <div className="recovery-feedback error"><Icon name="circleAlert" size={13} />{recoveryError}</div>}
+         <section className={`recovery-panel${recoveryPanelOpen ? ' open' : ' collapsed'}`} aria-label={t('recoveryTasks')}>
+            <div className="recovery-panel-heading"><button className="recovery-panel-toggle" onClick={() => setRecoveryPanelOpen(value => !value)} aria-expanded={recoveryPanelOpen}><Icon name={recoveryPanelOpen ? 'chevronDown' : 'chevronUp'} size={13} /><strong>{t('recoveryNeeded')}</strong><span>{recoveryTasks.length} {t('items')}</span></button>{recoveryPanelOpen && <div className="recovery-panel-actions"><button className="btn btn-icon" onClick={() => void runRecoveryAction('refresh', refreshRecoveryTasks)} disabled={Boolean(recoveryAction)} title={t('refreshRecovery')}><Icon name="refresh" size={13} /></button><button className="btn" onClick={() => { if (window.confirm(t('archiveAllConfirm', { count: recoveryTasks.length }))) void runRecoveryAction('archive-all', archiveAllRecoveryTasks); }} disabled={Boolean(recoveryAction)}>{recoveryAction === 'archive-all' ? t('archiving') : t('archiveAll')}</button></div>}</div>
+           {recoveryPanelOpen && <div className="recovery-panel-list">
+             {recoveryError && <div className="recovery-feedback error"><Icon name="circleAlert" size={13} />{recoveryError}</div>}
           {recoveryTasks.map(task => (
             <div className="recovery-item" key={task.id}>
                <button className="recovery-item-heading recovery-item-toggle" onClick={() => setExpandedRecoveryTask(value => value === task.id ? '' : task.id)} aria-expanded={expandedRecoveryTask === task.id}>
@@ -172,8 +174,9 @@ function AppLayout({ floating = false }) {
                  <button className="btn btn-danger" onClick={() => void runRecoveryAction(`archive:${task.id}`, () => archiveRecoveryTask(task.id))} disabled={Boolean(recoveryAction)}>{recoveryAction === `archive:${task.id}` ? t('archiving') : t('archive')}</button>
               </div>
             </div>
-          ))}
-        </section>
+           ))}
+           </div>}
+         </section>
       )}
        {presetLibraryMounted && <PresetLibraryPage hidden={activeView !== 'presets'} onBack={() => setActiveView('chat')} onReuse={(preset, immediate, overrides = {}) => queueLibraryGeneration(preset.positive, preset.negative, { immediate, preset, overrides })} />}
       {preview && <ImagePreviewModal preview={preview} onClose={() => setPreview(null)} />}

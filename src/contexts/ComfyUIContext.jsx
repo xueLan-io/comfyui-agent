@@ -154,7 +154,7 @@ export function ComfyUIProvider({ children, floating = false }) {
   }, [connected, selectedFile, workflowDir]);
 
   useEffect(() => {
-    if (selectedFile) void window.electronAPI.projectUpdateState({ workflow: selectedFile }).catch(() => {});
+    if (!floating && selectedFile) void window.electronAPI.projectUpdateState({ workflow: selectedFile }).catch(() => {});
   }, [floating, selectedFile]);
 
   const handleShowWorkflowDir = useCallback(async () => {

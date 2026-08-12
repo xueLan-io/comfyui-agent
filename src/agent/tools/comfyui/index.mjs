@@ -26,6 +26,9 @@ export const workflowManifestCache = createManifestCache({
   metrics: runtimeMetrics,
 });
 
+// 目录级扫描缓存：签名不变则复用结果，避免意图切换时重复解析全部工作流。
+const discoverCache = new Map();
+
 const VIDEO_EXT = ['mp4', 'webm', 'mov', 'mkv', 'avi'];
 const H3_REQUIRED_NODES = ['MiniMaxH3ReferenceToVideo', 'MiniMaxH3SigmaShift', 'EmptyMiniMaxH3LatentAV'];
 
@@ -43,6 +46,43 @@ function isVideoRef(item) {
   const name = item?.filename || '';
   const dot = name.lastIndexOf('.');
   return dot >= 0 && VIDEO_EXT.includes(name.slice(dot + 1).toLowerCase());
+}
+
+function historyStatus(entry = {}) {
+  const status = entry.status || {};
+  const value = status.status_str || (status.completed ? 'success' : 'unknown');
+  if (value === 'success') return { completed: true, status: value };
+  return {
+    completed: false,
+    status: value,
+    error: status.messages?.at(-1)?.[1]?.exception_message || `ComfyUI execution ${value}`,
+  };
+}
+
+async function assertValidMedia(images, videos, { expectedBatch = null } = {}) {
+  if (images.length === 0 && videos.length === 0) {
+    throw Object.assign(new Error('ComfyUI completed without media output'), { failureType: 'empty_output' });
+  }
+  if (expectedBatch && images.length > 0 && images.length < expectedBatch) {
+    throw Object.assign(new Error(`ComfyUI returned ${images.length} images, expected at least ${expectedBatch}`), { failureType: 'output_mismatch' });
+  }
+  const imageChecks = typeof client.inspectImage === 'function' ? await Promise.all(images.map(image => client.inspectImage(image).catch(() => ({
+    filename: image.filename, exists: false, readable: false, validFormat: false,
+  })))) : [];
+  if (imageChecks.some(check => !check.exists || !check.readable || !check.validFormat)) {
+    const error = Object.assign(new Error('ComfyUI returned an invalid image output'), { failureType: 'invalid_output' });
+    error.imageChecks = imageChecks;
+    throw error;
+  }
+  const videoChecks = typeof client.inspectMedia === 'function' ? await Promise.all(videos.map(video => client.inspectMedia(video).catch(() => ({
+    filename: video.filename, exists: false, readable: false,
+  })))) : [];
+  if (videoChecks.some(check => !check.exists || !check.readable)) {
+    const error = Object.assign(new Error('ComfyUI returned an unreadable video output'), { failureType: 'invalid_output' });
+    error.videoChecks = videoChecks;
+    throw error;
+  }
+  return { imageChecks, videoChecks };
 }
 
 const MEDIA_INPUT_NAMES = {
@@ -252,6 +292,14 @@ export const ComfyUITool = {
         });
       }
     }
+    for (const [nodeId, node] of Object.entries(prompt)) {
+      if (node.class_type === 'LoadImage' && !node.inputs?.image) {
+        const error = new Error(`LoadImage node ${nodeId} has no image selected; please provide a reference image or choose one in the workflow`);
+        error.failureType = 'loadimage_empty';
+        error.retryable = false;
+        throw error;
+      }
+    }
     const clientId = input.clientId || randomUUID();
     let progressSocket = null;
     for (let attempt = 0; attempt < 3 && !progressSocket; attempt++) {
@@ -288,28 +336,25 @@ export const ComfyUITool = {
       }
       rawImages = mediaItems.filter(item => !isVideoRef(item));
       rawVideos = mediaItems.filter(isVideoRef);
-      const imageChecks = typeof client.inspectImage === 'function'
-        ? await Promise.all(rawImages.map(image => client.inspectImage(image).catch(() => ({
-          filename: image.filename,
-          exists: false,
-          readable: false,
-          validFormat: false,
-        }))))
-        : [];
+      const state = historyStatus(history);
+      if (!state.completed) throw Object.assign(new Error(state.error), { failureType: 'execution_failed' });
+      const checks = await assertValidMedia(rawImages, rawVideos, {
+        expectedBatch: Number.isInteger(input.settings?.batch) ? input.settings.batch : null,
+      });
       input.onProgress?.({ stage: 'completed', promptId, message: '工作流执行完成', percent: 100 });
-      const status = history.status || {};
-      const executionStatus = status.status_str || (status.completed ? 'success' : 'unknown');
+      const executionStatus = state.status;
       const executionResult = {
         promptId,
         images: rawImages,
         videos: rawVideos.map(v => ({ filename: v.filename, subfolder: v.subfolder || '', type: v.type || 'output' })),
         isVideoWorkflow: Boolean(input.frames ?? input.settings?.frames) || /wan|animatediff|video|minimax/i.test(String(resolved?.modelType || '')),
-        imageChecks,
+        imageChecks: checks.imageChecks,
+        videoChecks: checks.videoChecks,
         outputNodeIds: selectedOutputIds.map(String),
         imageNodeIds: [...imageNodeIds],
         expectedBatch: Number.isInteger(input.settings?.batch) ? input.settings.batch : null,
         executionStatus,
-        nodeErrors: status.status_str && status.status_str !== 'success' ? [status.status_str] : [],
+        nodeErrors: [],
         compiledPrompt,
         workflowName,
         modelType: resolved?.modelType || 'generic',
@@ -479,21 +524,35 @@ export const ComfyUITool = {
     };
     walk(workflowDir);
 
-    const result = [];
-    for (const f of files) {
+    // Signature: file name + size + mtime. Same tree means the same manifests,
+    // so intent switches (txt2img -> img2img/upscale/...) no longer re-resolve
+    // every workflow file.
+    const signature = (await Promise.all(files.map(async name => {
+      try {
+        const info = await stat(join(workflowDir, name));
+        return `${name}|${info.size}|${info.mtimeMs}`;
+      } catch {
+        return `${name}|missing`;
+      }
+    }))).join(';');
+    const cached = discoverCache.get(workflowDir);
+    if (cached && cached.signature === signature) return cached.result;
+
+    const result = await Promise.all(files.map(async f => {
       try {
         const info = await WorkflowAdapter.resolve(f, workflowDir);
-        result.push({
+        return {
           name: f,
           modelType: info?.modelType || 'generic',
           capabilities: info?.capabilities || { family: info?.modelType || 'generic', modes: [], labels: [] },
           workflowProfile: info?.workflowProfile || null,
           promptSlots: info?.info?.promptSlots || 0,
-        });
+        };
       } catch {
-        result.push({ name: f, modelType: 'unknown', promptSlots: 0 });
+        return { name: f, modelType: 'unknown', promptSlots: 0 };
       }
-    }
+    }));
+    discoverCache.set(workflowDir, { signature, result });
     return result;
   },
 
@@ -522,7 +581,12 @@ export const ComfyUITool = {
     const running = queueContains(queue.queue_running, promptId);
     const pending = queueContains(queue.queue_pending, promptId);
 
-    if (history[promptId]) return { status: 'completed', history: history[promptId] };
+    if (history[promptId]) {
+      const state = historyStatus(history[promptId]);
+      return state.completed
+        ? { status: 'completed', history: history[promptId] }
+        : { status: 'failed', history: history[promptId], message: state.error };
+    }
     if (running) return { status: 'running', progress: { stage: 'executing', message: '工作流正在执行', indeterminate: true } };
     if (pending) return { status: 'queued', progress: { stage: 'queued', message: '工作流正在排队', indeterminate: true } };
     return { status: 'unknown' };
@@ -531,14 +595,21 @@ export const ComfyUITool = {
   async recoverResult(promptId, history = null) {
     const entry = history || await client.fetchResult(promptId);
     if (!entry) throw new Error(`ComfyUI history is unavailable for prompt ${promptId}`);
+    const state = historyStatus(entry);
+    if (!state.completed) throw Object.assign(new Error(state.error), { failureType: 'execution_failed' });
     const imageNodeIds = this._imageNodeIds(entry);
     const mediaItems = this._extractMedia(entry);
+    const images = mediaItems.filter(item => !isVideoRef(item));
+    const videos = mediaItems.filter(isVideoRef);
+    const checks = await assertValidMedia(images, videos);
     return normalizeGenerationResult({
       promptId,
-      images: mediaItems.filter(item => !isVideoRef(item)),
-      videos: mediaItems.filter(isVideoRef),
+      images,
+      videos,
       imageNodeIds: [...imageNodeIds],
-      executionStatus: entry.status?.status_str || (entry.status?.completed ? 'success' : 'unknown'),
+      imageChecks: checks.imageChecks,
+      videoChecks: checks.videoChecks,
+      executionStatus: state.status,
       status: 'completed',
     });
   },

@@ -2,8 +2,17 @@ import { emit, AgentEventTypes } from '../events/agent-events.mjs';
 import { validatePlan, normalizePlan, MAX_PLAN_STEPS } from '../schemas/plan-schema.mjs';
 import { contextToPrompt } from '../schemas/context-schema.mjs';
 import { plannerToolContracts } from '../schemas/tool-schema.mjs';
-import { matchSkill, skillCandidates } from '../skills/index.mjs';
+import { createConfiguredSkillRegistry, matchSkill, skillCandidates } from '../skills/index.mjs';
 import { resolveLLMStrategy } from '../llm/provider.mjs';
+
+function isCancellationError(error, signal) {
+  return Boolean(
+    signal?.aborted
+      || error?.code === 'LLM_CANCELLED'
+      || error?.name === 'AbortError'
+      || /取消|cancelled|canceled/i.test(String(error?.message || '')),
+  );
+}
 
 const SYSTEM_PROMPT = `# 角色
 你是 ComfyUI 规划 Agent，负责任务分解和参数选择。
@@ -14,8 +23,8 @@ const SYSTEM_PROMPT = `# 角色
 3. **已选定工作流**：使用该精确文件名。不得发明工作流名称；无可选时 \`workflowName\` 留空。
 
 # 搜索决策
-- 若用户请求包含具体角色名、作品名或特定视觉风格，且 workflowContext 中没有对应角色卡、外观事实或参考图，则先用 prompt_library 查询本地提示词库（中英文标签、分类、使用次数），定位正确的英文标签。
-- 本地库查询未命中或信息不足时，再规划 web 搜索步骤提取主体的外观、配色、服装和标志性特征；使用已注册的 web 工具，步骤 id 必须符合 stepN，expected_output 必须为 web。
+- 用户明确要求搜索本地提示词库时，才使用 prompt_library 工具。
+- 否则依赖模型自身知识生成英文标签，或规划 web 搜索获取外观信息；使用已注册的 web 工具，步骤 id 必须符合 stepN，expected_output 必须为 web。
 - 若已有角色研究或参考图，不要重复搜索；搜索结果应通过后续 prompt_enhance 的 referenceContext 使用。
 
 # 思考步骤（内部，不输出）
@@ -44,8 +53,15 @@ const SYSTEM_PROMPT = `# 角色
 - 每步包含：id, tool, input, description, expected_output
 - 可选字段：skill, depends_on（步 ID 数组）, optional（true 时该步失败不影响继续）
 - 按顺序执行，总步数不超过限制
+- \`prompt_enhance\` 的 \`expected_output\` **只能**是 \`prompt\`
+- \`comfyui\` 的 \`expected_output\` **只能**是 \`images\`（图片）或 \`videos\`（视频）
+- \`prompt_library\` 的 \`expected_output\` **只能**是 \`results\`
+- 图片生成计划必须包含一个 \`comfyui\` 步骤及 \`expected_output: "images"\`；视频对应 \`"videos"\`
+- 不要使用 \`image\`、\`text\`、\`enhanced_prompt\`、\`output\` 等替代输出类型
+- 普通图片生成示例：\`{"goal":"画一只戴帽子的猫","steps":[{"id":"step1","tool":"comfyui","input":{"workflowName":""},"description":"生成一只戴帽子的猫","expected_output":"images"}]}\`
 
 # 约束
+- **可用工具**：comfyui, prompt_enhance, prompt_library, filesystem, filesystem_mutate, system, web, workflow_inspect, inspect_image, workflow_patch。不要使用任何未在此列表中的工具名
 - 仅使用已注册工具、已声明输入和 \`output_schema\` 承诺的输出
 - 尊重 \`requires_confirmation\`, \`side_effects\`, \`idempotent\`, \`retry\`
 - 未提供工作流时 \`workflowName\` 留空
@@ -85,10 +101,6 @@ export function extractRequestedSettings(message = '') {
   return settings;
 }
 
-export function needsAIPlanning(message = '') {
-  return /(?:内部节点|节点\s*(?:#?\d+|输入|参数|覆盖|控制)|输出节点|输出分支|指定输出|node\s*#?\d+|node\s+(?:input|override)|input\s+[\w-]|(?:write|edit|patch|modify)\s+(?:the\s+)?file|(?:写入|编辑|修改|应用)文件)/i.test(message);
-}
-
 export function attachMediaToPlan(plan, media) {
   if (!plan?.steps || !media) return plan;
   const kinds = ['images', 'masks', 'videos'];
@@ -114,32 +126,100 @@ export class Planner {
     this.fallbackPlan = null;
   }
 
-  async createPlan(userMessage, context = {}) {
-    emit(AgentEventTypes.PLAN, { stage: 'planning', message: 'Analyzing request...' });
+  // Reasoning models count thinking against max_tokens and can return an empty
+  // body (finish_reason "length") after burning the whole budget on thinking.
+  // Retry such budget-exhausted responses with a larger output budget and a
+  // reduced reasoning effort instead of surfacing the empty reply to the user.
+  async _chatWithBudget(options) {
+    let budgetBump = 0;
+    let effortOverride = '';
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const requestOptions = {
+        ...options,
+        maxTokens: (options.maxTokens || 0) + budgetBump,
+        ...(effortOverride ? { reasoningEffort: effortOverride } : {}),
+      };
+      try {
+        const result = await this.llm.chat(requestOptions);
+        if (!String(result?.content || '').trim()) {
+          const error = new Error('语言模型返回了空响应');
+          error.code = 'EMPTY_MODEL_RESPONSE';
+          if (result?.finishReason === 'length') error.budgetExhausted = true;
+          throw error;
+        }
+        return result;
+      } catch (error) {
+        if (error?.code === 'EMPTY_MODEL_RESPONSE' && error?.budgetExhausted === true && attempt < 2) {
+          budgetBump += 8192;
+          effortOverride = effortOverride || 'low';
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new Error('规划模型在扩大输出预算后仍无法生成内容');
+  }
 
-    if (!this.llm?.isConfigured || !needsAIPlanning(userMessage)) {
+  async createPlan(userMessage, context = {}) {
+    const eventMeta = context.eventMeta || {};
+    const emitPlan = data => emit(AgentEventTypes.PLAN, { ...eventMeta, ...data });
+    emitPlan({ stage: 'planning', message: 'Analyzing request...' });
+
+    if (!this.llm?.isConfigured) {
       return this._fallback(userMessage, context);
     }
 
     try {
       const planPrompt = this._buildPlanPrompt(userMessage, context);
       let thinking = '';
-      const result = await this.llm.chat({
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: planPrompt },
-        ],
-        temperature: 0.1,
-        maxTokens: 1200,
-        prefer: resolveLLMStrategy(this.llm),
-        timeoutMs: 120000,
-        onChunk: delta => {
-          thinking += delta;
-          emit(AgentEventTypes.PLAN, { stage: 'thinking', partial: thinking });
-        },
+      const llmStart = Date.now();
+      emit(AgentEventTypes.PROGRESS, {
+        ...eventMeta,
+        scope: 'timing',
+        stage: 'planner_llm_start',
+        timingPhase: 'plan',
+        message: '规划器 LLM 调用中',
+      });
+      let result;
+      try {
+        result = await this._chatWithBudget({
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: planPrompt },
+          ],
+          temperature: 0.1,
+          maxTokens: 8192,
+          prefer: resolveLLMStrategy(this.llm),
+          timeoutMs: 120000,
+          onChunk: delta => {
+            thinking += delta;
+            emitPlan({ stage: 'thinking', partial: thinking });
+          },
+        });
+      } catch (error) {
+        emit(AgentEventTypes.PROGRESS, {
+          ...eventMeta,
+          scope: 'timing',
+          stage: 'planner_llm_end',
+          timingPhase: 'plan',
+          duration_ms: Date.now() - llmStart,
+          outcome: isCancellationError(error) ? 'cancelled' : 'error',
+          message: '规划器 LLM 调用结束',
+        });
+        throw error;
+      }
+      emit(AgentEventTypes.PROGRESS, {
+        ...eventMeta,
+        scope: 'timing',
+        stage: 'planner_llm_end',
+        timingPhase: 'plan',
+        duration_ms: Date.now() - llmStart,
+        outcome: 'completed',
+        message: '规划器 LLM 调用结束',
       });
 
       const parsed = this._parsePlan(result.content);
+      this._normalizeExpectedOutputs(parsed);
 
       const promptMode = context.project?.promptMode || 'raw';
       if (promptMode !== 'raw') {
@@ -158,18 +238,21 @@ export class Planner {
       const normalized = this._withExecutionContext(normalizePlan(parsed), context);
       this.fallbackPlan = normalized;
 
-      emit(AgentEventTypes.PLAN, { stage: 'complete', plan: normalized });
+      emitPlan({ stage: 'complete', plan: normalized });
       return normalized;
 
     } catch (error) {
-      emit(AgentEventTypes.PLAN, { stage: 'error', message: error.message });
+      emitPlan({ stage: 'error', message: error.message });
       if (error.code === 'PLAN_VALIDATION') throw error;
-      return this._fallback(userMessage, context);
+      // A configured planner that cannot reach its model must fail explicitly.
+      // Falling back here turns ordinary conversation into a guessed ComfyUI run.
+      throw error;
     }
   }
 
   async replan(input = {}, context = {}) {
     if (!this.llm?.isConfigured) throw new Error('Unable to replan without a configured planner');
+    const eventMeta = context.eventMeta || {};
 
     const workflow = input.workflow || {};
     const compactPrompt = [
@@ -191,21 +274,22 @@ export class Planner {
 
     let thinking = '';
     try {
-      const result = await this.llm.chat({
+      const result = await this._chatWithBudget({
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: compactPrompt },
         ],
         temperature: 0.1,
-        maxTokens: 1200,
+        maxTokens: 8192,
         prefer: resolveLLMStrategy(this.llm),
         timeoutMs: 120000,
         onChunk: delta => {
           thinking += delta;
-          emit(AgentEventTypes.PLAN, { stage: 'thinking', partial: thinking });
+          emit(AgentEventTypes.PLAN, { ...eventMeta, stage: 'thinking', partial: thinking });
         },
       });
       const parsed = this._parsePlan(result.content);
+      this._normalizeExpectedOutputs(parsed);
       this._applyWorkflowContext(parsed, input.userGoal || parsed.goal || '', context);
       const validation = validatePlan(parsed, { tools: this.tools, context, maxSteps: this.maxSteps });
       if (!validation.valid) {
@@ -214,10 +298,10 @@ export class Planner {
         throw error;
       }
       const normalized = normalizePlan(parsed);
-      emit(AgentEventTypes.PLAN, { stage: 'complete', plan: normalized, replan: true });
+      emit(AgentEventTypes.PLAN, { ...eventMeta, stage: 'complete', plan: normalized, replan: true });
       return normalized;
     } catch (error) {
-      emit(AgentEventTypes.PLAN, { stage: 'error', message: error.message, replan: true });
+      emit(AgentEventTypes.PLAN, { ...eventMeta, stage: 'error', message: error.message, replan: true });
       throw error;
     }
   }
@@ -262,6 +346,8 @@ export class Planner {
   }
 
   _applyWorkflowContext(plan, userMessage, context) {
+    const currentWorkflow = context.project?.currentWorkflow || '';
+    const available = Array.isArray(context.availableWorkflows) ? context.availableWorkflows : [];
     for (const step of plan.steps || []) {
       if (!step.input || typeof step.input !== 'object' || Array.isArray(step.input)) continue;
       if (step.tool === 'prompt_enhance') {
@@ -276,16 +362,27 @@ export class Planner {
       if (Array.isArray(step.input.outputNodeIds)) {
         step.input.outputNodeIds = step.input.outputNodeIds.map(String);
       }
+      // LLM 没有能力检测工作流是否真实存在，幻觉名字会导致计划校验失败。
+      // 有可用列表时不在其中的名字一律对齐到已选工作流（与执行路径一致）；
+      // 无列表时保留技能模板写明的名字（如 img2img.json），执行阶段另有兜底。
+      if (typeof step.input.workflowName === 'string' && step.input.workflowName) {
+        if (available.length > 0 && !available.includes(step.input.workflowName)) {
+          step.input.workflowName = currentWorkflow;
+        }
+      } else if (currentWorkflow) {
+        step.input.workflowName = currentWorkflow;
+      }
     }
   }
 
   _fallback(userMessage, context) {
+    const eventMeta = context.eventMeta || {};
     const workflowName = context.project?.currentWorkflow || context.availableWorkflows?.[0] || '';
     const promptMode = context.project?.promptMode || 'raw';
     const skillMatch = skillCandidates(userMessage, { ...context, skillId: context.project?.skillId || context.skillId || '' });
     if (skillMatch.clarification) {
       const clarificationPlan = { goal: userMessage, steps: [], metadata: { status: 'clarify', skillId: skillMatch.clarification.skillId, confidence: skillMatch.clarification.confidence, clarification: skillMatch.clarification, candidates: skillMatch.clarification.candidates || [] } };
-      emit(AgentEventTypes.PLAN, { stage: 'clarification', plan: clarificationPlan });
+      emit(AgentEventTypes.PLAN, { ...eventMeta, stage: 'clarification', plan: clarificationPlan });
       return clarificationPlan;
     }
     const skill = skillMatch.candidates[0]?.skill || matchSkill(userMessage, { skillId: context.project?.skillId || context.skillId || '' });
@@ -311,8 +408,44 @@ export class Planner {
     const normalized = this._withExecutionContext(normalizePlan(template), context);
     const validation = validatePlan(normalized, { tools: this.tools, context, maxSteps: this.maxSteps });
     if (!validation.valid) throw new Error(`Plan validation failed: ${validation.errors.join('; ')}`);
-    emit(AgentEventTypes.PLAN, { stage: 'complete', plan: normalized, message: `Using ${skill.name} skill plan` });
+    emit(AgentEventTypes.PLAN, { ...eventMeta, stage: 'complete', plan: normalized, message: `Using ${skill.name} skill plan` });
     return normalized;
+  }
+
+  _normalizeExpectedOutputs(plan) {
+    for (const step of plan?.steps || []) {
+      if (!step || typeof step !== 'object') continue;
+      const output = String(step.expected_output || '').trim().toLowerCase();
+      if (step.tool === 'prompt_enhance' && ['text', 'enhanced', 'enhanced_prompt', 'prompt_text'].includes(output)) {
+        step.expected_output = 'prompt';
+      }
+      if (step.tool === 'comfyui') {
+        if (['image', 'image_url', 'generated_image', 'generated_images', 'output'].includes(output)) step.expected_output = 'images';
+        if (['video', 'generated_video', 'generated_videos'].includes(output)) step.expected_output = 'videos';
+      }
+      if (step.tool === 'prompt_library') {
+        if (['search_results', 'tags', 'tag_results', 'search', 'query', 'prompts', 'search_results', 'found'].includes(output)) {
+          step.expected_output = 'results';
+        }
+        if (!step.input || typeof step.input !== 'object') step.input = {};
+        if (!step.input.action) step.input.action = 'search';
+        if (!step.input.query && step.input.search) step.input.query = step.input.search;
+      }
+      this._autoFillRequiredInputs(step);
+    }
+  }
+
+  _autoFillRequiredInputs(step) {
+    const tool = this.tools?.[step.tool];
+    if (!tool?.input_schema?.required?.length) return;
+    if (!step.input || typeof step.input !== 'object') step.input = {};
+    for (const field of tool.input_schema.required) {
+      if (step.input[field] !== undefined && step.input[field] !== null) continue;
+      const prop = tool.input_schema.properties?.[field];
+      if (prop?.enum?.length) { step.input[field] = prop.enum[0]; continue; }
+      if (field === 'workflowDir') continue;
+      if (prop?.type === 'string') step.input[field] = '';
+    }
   }
 
   _withExecutionContext(plan, context = {}) {
@@ -327,6 +460,7 @@ export class Planner {
   }
 
   _buildPlanPrompt(userMessage, context) {
+    const skills = createConfiguredSkillRegistry().manifest().map(skill => ({ id: skill.id, name: skill.name, description: skill.description, keywords: skill.keywords, requirements: skill.requirements }));
     return contextToPrompt({
       userRequest: userMessage,
       project: context.project || {},
@@ -334,12 +468,12 @@ export class Planner {
       workflowDir: context.workflowDir || '',
       previousArtifacts: context.previousArtifacts || [],
       workflowManifest: context.workflowManifest || null,
-    }) + `\nTool contracts (authoritative):\n${JSON.stringify(plannerToolContracts(this.tools), null, 2)}\nCreate a plan with ${this.maxSteps} or fewer steps. Return ONLY valid JSON.`;
+    }) + `\nEnabled Skills (use only these IDs when assigning a step skill):\n${JSON.stringify(skills, null, 2)}\nTool contracts (authoritative):\n${JSON.stringify(plannerToolContracts(this.tools), null, 2)}\nCreate a plan with ${this.maxSteps} or fewer steps. Return ONLY valid JSON.`;
   }
 
   _parsePlan(raw) {
     try {
-      const cleaned = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+      const cleaned = String(raw || '').replace(/^```(?:json|JSON)?\s*/i, '').replace(/```\s*$/i, '').trim();
       const parsed = JSON.parse(cleaned);
       if (parsed.steps && Array.isArray(parsed.steps)) return parsed;
       if (Array.isArray(parsed)) return { goal: 'Image generation', steps: parsed };

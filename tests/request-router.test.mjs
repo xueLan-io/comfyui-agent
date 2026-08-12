@@ -79,6 +79,23 @@ test('ordinary generation language is classified as generate', () => {
   assert.equal(decision.intent, 'generate');
   assert.equal(decision.action, 'prepare');
   assert.equal(decision.target, 'new');
+  assert.equal(decision.confidence, 0.99);
+});
+
+test('intent router bypasses the model for an explicit new generation', async () => {
+  let calls = 0;
+  const router = new IntentRouter({
+    isConfigured: true,
+    async chat() {
+      calls += 1;
+      return { content: '{}' };
+    },
+  });
+
+  const decision = await router.route('画一只戴帽子的猫', { modeHint: 'creative' });
+  assert.equal(calls, 0);
+  assert.equal(decision.intent, 'generate');
+  assert.equal(decision.action, 'prepare');
 });
 
 test('prompt optimization is answered as a chat reply, not a generation', () => {
@@ -142,6 +159,39 @@ test('low-confidence LLM generation decisions become clarification', async () =>
   const decision = await router.route('帮我处理一下这个', {});
   assert.equal(decision.action, 'clarify');
   assert.ok(decision.question);
+});
+
+test('intent router lets the LLM classify project discussion containing generation terms', async () => {
+  let called = false;
+  let request;
+  const router = new IntentRouter({
+    isConfigured: true,
+    async chat(options) {
+      called = true;
+      request = options;
+      return { content: JSON.stringify({ intent: 'chat', action: 'reply', confidence: 0.95, target: 'none', reason: '用户在讨论项目维护和方向' }) };
+    },
+  });
+  const result = await router.route('我维护的 Agent 项目原本是为了给游戏项目生成 AI 参考图，但现在 bug 很多，想收敛成稳定版。');
+  assert.equal(called, true);
+  assert.equal(result.intent, 'chat');
+  assert.equal(result.action, 'reply');
+  assert.equal(result.source, 'llm');
+});
+
+test('intent router handles an explicit generation request without waiting for the LLM', async () => {
+  let called = false;
+  const router = new IntentRouter({
+    isConfigured: true,
+    async chat() {
+      called = true;
+      return { content: JSON.stringify({ intent: 'generate', action: 'prepare', confidence: 0.95, target: 'new', reason: '用户要求现在生成图片' }) };
+    },
+  });
+  const result = await router.route('请生成一张月下的猫');
+  assert.equal(called, false);
+  assert.equal(result.intent, 'generate');
+  assert.equal(result.action, 'prepare');
 });
 
 test('pending clarification combines the follow-up with the original request', () => {
@@ -229,6 +279,7 @@ test('intent router includes attached image data when classifying a visual reque
   let request;
   const router = new IntentRouter({
     isConfigured: true,
+    supportsVision: () => true,
     async chat(options) {
       request = options;
       return {
@@ -255,6 +306,31 @@ test('intent router includes attached image data when classifying a visual reque
   assert.equal(request.messages[1].content.at(-1).image_url.url, 'data:image/png;base64,abc');
 });
 
+test('intent router does not attach image data for models without vision support', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'comfy-router-novision-'));
+  const imagePath = join(directory, 'reference.png');
+  await writeFile(imagePath, 'image');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let request;
+  const router = new IntentRouter({
+    isConfigured: true,
+    supportsVision: () => false,
+    async chat(options) {
+      request = options;
+      return { content: JSON.stringify({ intent: 'generate', action: 'prepare', target: 'new', missing: [], confidence: 0.95, reason: '根据附图生成' }) };
+    },
+  }, {
+    imageDataUrl: async () => 'data:image/png;base64,abc',
+  });
+
+  await router.route('参考素材内容', {
+    attachedMedia: { images: [{ path: imagePath }] },
+  });
+
+  assert.equal(typeof request.messages[1].content, 'string');
+  assert.ok(!request.messages[1].content.includes('image/png'));
+});
+
 test('intent router lets the language model interpret an attached image before applying edit rules', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'comfy-router-visual-intent-'));
   const imagePath = join(directory, 'reference.png');
@@ -276,6 +352,59 @@ test('intent router lets the language model interpret an attached image before a
   assert.equal(called, true);
   assert.equal(result.intent, 'chat');
   assert.equal(result.action, 'reply');
+});
+
+test('intent router skips model classification for a deterministic text-only runtime query', async () => {
+  let calls = 0;
+  const router = new IntentRouter({
+    isConfigured: true,
+    async chat() {
+      calls += 1;
+      return { content: '{}' };
+    },
+  });
+
+  const result = await router.route('查看当前显存状态', { modeHint: 'creative' });
+
+  assert.equal(calls, 0);
+  assert.equal(result.intent, 'query');
+  assert.equal(result.action, 'reply');
+  assert.equal(result.source, 'rule');
+});
+
+test('intent router skips classification for a simple greeting', async () => {
+  let calls = 0;
+  const router = new IntentRouter({
+    isConfigured: true,
+    async chat() {
+      calls += 1;
+      return { content: '{}' };
+    },
+  });
+
+  const result = await router.route('你好');
+
+  assert.equal(calls, 0);
+  assert.equal(result.intent, 'chat');
+  assert.equal(result.action, 'reply');
+});
+
+test('intent router still classifies visual creative requests with the model', async () => {
+  let calls = 0;
+  const router = new IntentRouter({
+    isConfigured: true,
+    async chat() {
+      calls += 1;
+      return { content: JSON.stringify({ intent: 'chat', action: 'reply', confidence: 0.9, target: 'none' }) };
+    },
+  }, { imageDataUrl: async () => 'data:image/png;base64,abc' });
+
+  await router.route('把这张图改得更好看', {
+    modeHint: 'creative',
+    attachedMedia: { images: [{ path: 'reference.png' }] },
+  });
+
+  assert.equal(calls, 1);
 });
 
 test('intent router forwards modeHint and the active strategy preference', async () => {

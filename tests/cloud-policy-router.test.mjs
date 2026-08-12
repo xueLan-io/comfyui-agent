@@ -283,6 +283,40 @@ test('cloud request emits review before the cloud call', async () => {
   }
 });
 
+test('concurrent cloud requests keep independent policy state lifecycles', async () => {
+  const originalFetch = globalThis.fetch;
+  let releaseResponses;
+  const responsesReady = new Promise(resolve => { releaseResponses = resolve; });
+  let calls = 0;
+  const states = [];
+  globalThis.fetch = async () => {
+    calls += 1;
+    await responsesReady;
+    return response(`cloud response ${calls}`);
+  };
+  try {
+    const provider = new LLMProvider({
+      providers: [LOCAL_AND_CLOUD[1]],
+      active: { providerId: 'cloud', modelId: 'cloud-model', strategy: 'cloud' },
+    });
+    provider.setPolicyStateHandler(({ state }) => states.push(state));
+
+    const first = provider.chat({ messages: [{ role: 'user', content: 'first safe landscape' }] });
+    await new Promise(resolve => setImmediate(resolve));
+    const second = provider.chat({ messages: [{ role: 'user', content: 'second safe landscape' }] });
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(calls, 2);
+    releaseResponses();
+    const results = await Promise.all([first, second]);
+
+    assert.equal(results.length, 2);
+    assert.deepEqual(states, ['reviewing', 'cloud_allowed', 'reviewing', 'cloud_allowed', 'idle', 'idle']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 const IMAGE_MESSAGE = [{ role: 'user', content: [{ type: 'text', text: 'a portrait' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,abc' } }] }];
 
 test('images go to cloud by default when the media policy allows it', async () => {

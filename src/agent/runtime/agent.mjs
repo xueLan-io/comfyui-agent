@@ -46,30 +46,18 @@ registerAdapters();
 
 const TURN_CONFIRM = /^(?:confirm|yes|run|go|确认|确定|执行|开始)(?:执行|生成)?[.。!！]?$/i;
 
-const GENERATION_HINTS = /(?:生成|画|绘制|立绘|出图|生图|prompt|generate|draw|render|create|make)/i;
-const CHARACTER_RESEARCH_HINTS = /(?:角色|人物|立绘|人设|外观|服装|发型|发色|眼睛|还原|原作|设定|官方设定|搜索|查找|查一下|资料|网上|character|appearance|outfit|costume|hair|eyes|canon|reference|search|research|look up)/i;
-const CHARACTER_SOURCE_HINTS = /(?:原神|崩坏|明日方舟|碧蓝航线|绝区零|鸣潮|fate|blue archive|genshin|honkai|arknights|character)/i;
-
-const FILE_MUTATION_HINTS = /(?:(?:write|edit|modify|apply)\s+(?:the\s+)?(?:file|patch)|(?:写入|编辑|修改|应用)\s*(?:文件|补丁))/i;
 
 function messageAttachments(media = {}) {
+  // 默认参数只兜 undefined；前端聊天请求会显式传 media: null。
+  const source = media && typeof media === 'object' ? media : {};
   return [
-    ...(media.images || []).map(item => ({ name: item?.name || item?.path?.split(/[\\/]/).pop() || '', kind: 'image' })),
-    ...(media.videos || []).map(item => ({ name: item?.name || item?.path?.split(/[\\/]/).pop() || '', kind: 'video' })),
+    ...(source.images || []).map(item => ({ name: item?.name || item?.path?.split(/[\\/]/).pop() || '', kind: 'image' })),
+    ...(source.videos || []).map(item => ({ name: item?.name || item?.path?.split(/[\\/]/).pop() || '', kind: 'video' })),
   ].filter(item => item.name);
 }
 
 function newRequestId() {
   return `request_${randomUUID()}`;
-}
-
-function shouldResearchCharacter(request, intent) {
-  if (intent !== 'generate' || !GENERATION_HINTS.test(request)) return false;
-  return CHARACTER_RESEARCH_HINTS.test(request) || CHARACTER_SOURCE_HINTS.test(request);
-}
-
-function researchQuery(request) {
-  return `${String(request).trim().slice(0, 240)} character appearance hair eyes outfit accessories official design reference`;
 }
 
 function researchContext(result, pages) {
@@ -90,6 +78,26 @@ function emptyAppearanceFacts() {
   return { hair: '', eyes: '', outfit: '', accessories: '', silhouette: '', evidence: [] };
 }
 
+function researchQuery(request) {
+  return `${String(request).trim().slice(0, 240)} character appearance hair eyes outfit accessories official design reference`;
+}
+
+function isCancellationError(error) {
+  return Boolean(
+    error?.code === 'LLM_CANCELLED'
+      || error?.name === 'AbortError'
+      || /取消|cancelled|canceled/i.test(String(error?.message || '')),
+  );
+}
+
+function emitTiming(stage, data = {}) {
+  emit(AgentEventTypes.PROGRESS, { ...data, scope: 'timing', stage });
+}
+
+function timingOutcome(error) {
+  return isCancellationError(error) ? 'cancelled' : 'error';
+}
+
 function aiFailure(originalRequest, error) {
   const message = error instanceof Error ? error.message : String(error);
   const normalizedError = /^(?:timeout|timed out|request timed out)$/i.test(message.trim())
@@ -102,6 +110,7 @@ function aiFailure(originalRequest, error) {
     originalRequest,
     choices: ['retry_ai', 'direct_original'],
   };
+  if (error?.code) failure.code = error.code;
   if (error?.code === 'CLOUD_POLICY_BLOCKED') {
     failure.code = error.code;
     failure.policyDecision = error.policyDecision || null;
@@ -224,7 +233,8 @@ function chatProjectContext(project, availableWorkflows) {
   return parts.length > 0 ? `\nProject context:\n${parts.join('\n')}` : '';
 }
 
-function requestedWorkflowMode(request, intent, media = {}) {
+function requestedWorkflowMode(request, intent, media = {}, execution = {}) {
+  if (execution.kind && execution.kind !== 'none' && execution.kind !== 'file_edit') return execution.kind;
   if (/(?:upscale|super.?resolution|\u653e\u5927|\u9ad8\u6e05)/i.test(request)) return 'upscale';
   if (media.masks?.length > 0) return 'inpaint';
   if (media.images?.length > 0) return 'img2img';
@@ -273,7 +283,20 @@ export class Agent {
         user_override: '已通过手动确认，发送到云端模型',
         idle: '',
       };
-       emit(AgentEventTypes.PROGRESS, { scope: 'llm-policy', stage: state, policyState: state, message: messages[state] || state, percent: state === 'reviewing' ? 8 : state === 'cloud_allowed' || state === 'local_fallback' || state === 'user_override' ? 12 : state === 'blocked' ? 100 : undefined, taskId: this._taskId, traceId: this._traceId, projectId: this.projectId, sessionId: this.sessionId });
+       // Intent classification runs before a task exists. Never let that
+       // pre-processing policy check inherit the completed task's identity.
+       const preProcessing = this._policyPreprocessing === true;
+       emit(AgentEventTypes.PROGRESS, {
+         scope: 'llm-policy',
+         stage: state,
+         policyState: state,
+         message: messages[state] || state,
+         percent: state === 'reviewing' ? 8 : state === 'cloud_allowed' || state === 'local_fallback' || state === 'user_override' ? 12 : state === 'blocked' ? 100 : undefined,
+         taskId: preProcessing ? '' : this._taskId,
+         traceId: preProcessing ? '' : this._traceId,
+         projectId: this.projectId,
+         sessionId: this.sessionId,
+       });
     });
     this.tools = this._getTools();
     this.planner = new Planner(this.llm, { ...this._plannerOptions, tools: this.tools });
@@ -288,6 +311,8 @@ export class Agent {
     this._taskId = '';
     this._artifacts = [];
     this._lastManifest = null;
+    this._archivePrefetchSignal = null;
+    this._prefetchTimer = null;
     this._activePromptIds = new Set();
     this._preparedRuns = new Map();
     this._state = 'idle';
@@ -303,6 +328,8 @@ export class Agent {
     this._maxReplans = options.maxReplans ?? 2;
     this._pendingQueue = [];
     this._cancelRequested = false;
+    this._promptCompileController = null;
+    this._policyPreprocessing = false;
 
     const storageDir = this.userDataPath ? join(this.userDataPath, 'agent-data') : '';
     this.taskManager = new TaskManager(storageDir ? new JSONFileStore(storageDir, 'tasks.json') : null);
@@ -321,10 +348,14 @@ export class Agent {
     this._recoverAbandonedTasks();
     const sessionState = this.sessionManager.getSessionState?.();
     if (sessionState?.state === 'awaiting_confirmation' && sessionState.preparedPreview) {
+      this._reconstructPreparedRun(sessionState.preparedPreview);
+      this._state = 'awaiting_confirmation';
+      this._needsConfirmation = true;
+    } else {
       this._state = 'idle';
       this._needsConfirmation = false;
-      this.sessionManager.setSessionState?.({ state: 'idle', phase: 'idle', pending: null, pendingIntent: null, pendingRequest: '', preparedPreview: null, taskStatus: 'idle', needsConfirmation: false });
     }
+    this._cleanupStalePreparedRuns();
   }
 
   _recoverAbandonedTasks() {
@@ -333,6 +364,43 @@ export class Agent {
     const runningPhases = ['classifying', 'clarifying', 'planning', 'executing', 'observing', 'retrying', 'replanning', 'queued'];
     if (sessionState && runningPhases.includes(sessionState.state) && recoverable.length === 0) {
       this.sessionManager.setSessionState?.({ state: 'idle', phase: 'idle', pending: null, pendingIntent: null, pendingRequest: '', preparedPreview: null, taskStatus: 'idle' });
+    }
+  }
+
+  _reconstructPreparedRun(previewData) {
+    if (!previewData || !previewData.previewId) return;
+    const previewId = previewData.previewId;
+    if (this._preparedRuns.has(previewId)) return;
+    this._preparedRuns.set(previewId, {
+      userMessage: previewData.interpretedPrompt || '',
+      effectiveRequest: previewData.positive || '',
+      intent: previewData.intent || null,
+      plan: previewData.plan || null,
+      compiledPrompt: {
+        positive: previewData.positive || '',
+        negative: previewData.negative || '',
+        tags: previewData.tags || [],
+        narrative: previewData.narrative || '',
+        constraints: previewData.constraints || {},
+      },
+      workflowManifest: null,
+      options: previewData.options || {},
+      workflowName: previewData.workflowName || '',
+      confirmation: previewData.confirmation || null,
+      compileInput: null,
+      requestId: previewData.requestId || '',
+      status: previewData.status || 'prepared',
+      createdAt: Date.now(),
+    });
+  }
+
+  _cleanupStalePreparedRuns() {
+    const now = Date.now();
+    const maxAge = 10 * 60 * 1000;
+    for (const [previewId, run] of this._preparedRuns.entries()) {
+      if (run.createdAt && (now - run.createdAt) > maxAge) {
+        this._preparedRuns.delete(previewId);
+      }
     }
   }
 
@@ -371,6 +439,12 @@ export class Agent {
   }
 
   async handleTurn(input = {}) {
+    // 新消息到达立即取消后台压缩预取（含未触发的定时器），避免占用本地模型的串行锁
+    if (this._prefetchTimer) {
+      clearTimeout(this._prefetchTimer);
+      this._prefetchTimer = null;
+    }
+    this._archivePrefetchSignal?.abort('superseded');
     const typedText = typeof input.text === 'string' ? input.text.trim() : '';
     const hasMedia = Boolean(input.media?.images?.length || input.media?.videos?.length);
     if (!typedText && !hasMedia) return { turnId: this._newTurnId(), action: 'reply', response: '' };
@@ -379,106 +453,178 @@ export class Agent {
     initTurn(turnId);
     if (input.projectId) this.projectId = input.projectId;
     if (input.sessionId) this.sessionId = input.sessionId;
-    const modeHint = input.modeHint === 'generate' ? 'generate' : 'answer';
-    const activeProject = this.sessionManager.getActiveProject?.();
-    if (input.sessionId && activeProject?.sessions?.some(session => session.id === input.sessionId)
-      && input.sessionId !== this.sessionManager.activeSessionId) {
-      await this.useSession(this.sessionManager.activeProjectId, input.sessionId);
-    }
-    const options = {
-      workflowName: input.workflowName || '',
-      workflowManifest: input.workflowManifest || null,
-      media: input.media || null,
-      sourceTurnId: turnId,
-      allowPolicyOverride: input.allowPolicyOverride === true,
-      executionPolicy: input.executionPolicy || undefined,
+    const initialProjectId = this.projectId;
+    const initialSessionId = this.sessionId;
+    const turnStart = Date.now();
+    const timingMeta = {
+      ...(this.projectId ? { projectId: this.projectId } : {}),
+      ...(this.sessionId ? { sessionId: this.sessionId } : {}),
+      turnId,
+      taskId: '',
+      traceId: '',
     };
+    emitTiming('turn_start', {
+      ...timingMeta,
+      timingPhase: 'turn',
+      message: `开始处理：${text.slice(0, 40)}${text.length > 40 ? '…' : ''}`,
+    });
+    let turnOutcome = 'completed';
 
-    const sessionState = this.sessionManager.getSessionState?.() || {};
-    const awaitingConfirmation = this._state === 'awaiting_confirmation'
-      || sessionState.state === 'awaiting_confirmation'
-      || sessionState.phase === 'awaiting_preview';
-    if (awaitingConfirmation && TURN_CONFIRM.test(text)) {
-      if (input.recordConfirmation !== false) {
-        this._writeTurnMessage('user', text, { turnId, modeHint, attachments: messageAttachments(input.media) }, turnId);
+    try {
+      // Creative is the unified conversational entry point. Retain `generate`
+      // for older confirmation callers that explicitly require that bias.
+      const modeHint = input.modeHint === 'generate' ? 'generate' : 'creative';
+      const activeProject = this.sessionManager.getActiveProject?.();
+      if (input.sessionId && activeProject?.sessions?.some(session => session.id === input.sessionId)
+        && input.sessionId !== this.sessionManager.activeSessionId) {
+        await this.useSession(this.sessionManager.activeProjectId, input.sessionId);
       }
-      const previewId = sessionState.preparedPreview?.previewId;
-      if (!previewId || !this._preparedRuns.has(previewId)) {
+      if (this.projectId || initialProjectId) timingMeta.projectId = this.projectId || initialProjectId;
+      if (this.sessionId || initialSessionId) timingMeta.sessionId = this.sessionId || initialSessionId;
+      const options = {
+        workflowName: input.workflowName || '',
+        workflowManifest: input.workflowManifest || null,
+        media: input.media || null,
+        sourceTurnId: turnId,
+        allowPolicyOverride: input.allowPolicyOverride === true,
+        executionPolicy: input.executionPolicy || undefined,
+        skillId: input.skillId || '',
+      };
+
+      const sessionState = this.sessionManager.getSessionState?.() || {};
+      const awaitingConfirmation = this._state === 'awaiting_confirmation'
+        || sessionState.state === 'awaiting_confirmation'
+        || sessionState.phase === 'awaiting_preview';
+      if (awaitingConfirmation && TURN_CONFIRM.test(text)) {
+        if (input.recordConfirmation !== false) {
+          this._writeTurnMessage('user', text, { turnId, modeHint, attachments: messageAttachments(input.media) }, turnId);
+        }
+        const previewId = sessionState.preparedPreview?.previewId;
+        if (!previewId || !this._preparedRuns.has(previewId)) {
+          return {
+            turnId,
+            action: 'clarify',
+            response: '上次的生成预览已恢复，但执行计划已失效。请重新提交生成请求。',
+            decision: { intent: 'generate', action: 'clarify', target: 'new', missing: ['prepared_plan'] },
+          };
+        }
+        const result = await this.runPrepared(previewId, { ...(input.confirmation || {}), turnId });
+        return { turnId, action: 'execute', decision: { intent: 'generate', action: 'execute', requiresConfirmation: false, sourceTurnId: turnId }, result };
+      }
+
+      if (!input.skipUserMessage) this._writeTurnMessage('user', text, { turnId, modeHint, attachments: messageAttachments(input.media) }, turnId);
+      const hadPending = Boolean(this.sessionManager.getSessionState?.().pending);
+      if (hadPending) {
+        this.sessionManager.setSessionState?.({ supplementalInput: text });
+      }
+      this._policyPreprocessing = true;
+      let decision;
+      const intentStart = Date.now();
+      let intentOutcome = 'completed';
+      emitTiming('intent_start', {
+        ...timingMeta,
+        timingPhase: 'intent',
+        message: '意图分类中',
+      });
+      try {
+        decision = await this.routeIntent(text, { ...options, modeHint, turnId });
+      } catch (error) {
+        intentOutcome = timingOutcome(error);
+        throw error;
+      } finally {
+        this._policyPreprocessing = false;
+        emitTiming('intent_end', {
+          ...timingMeta,
+          timingPhase: 'intent',
+          duration_ms: Date.now() - intentStart,
+          outcome: intentOutcome,
+          message: '意图分类结束',
+        });
+      }
+      decision.sourceTurnId = turnId;
+
+      if (decision.intent === 'cancel') {
+        await this.cancel();
+        turnOutcome = 'cancelled';
+        const response = '已取消当前任务。';
+        this._writeTurnMessage('agent', response, { kind: 'cancelled' }, turnId);
+        return { turnId, action: 'reply', decision, response };
+      }
+      if (decision.action === 'clarify') {
+        const result = this.clarify(text, { ...decision, sourceTurnId: turnId, skipUserMessage: true });
+        return { turnId, action: 'clarify', decision, result, response: result.response };
+      }
+      if (decision.intent === 'file_edit' || options.fileMutation === true) {
+        const preview = await this.prepareFileMutation(text, { ...options, turnId, effectiveRequest: text });
         return {
           turnId,
-          action: 'clarify',
-          response: '上次的生成预览已恢复，但执行计划已失效。请重新提交生成请求。',
-          decision: { intent: 'generate', action: 'clarify', target: 'new', missing: ['prepared_plan'] },
+          action: 'prepare',
+          decision: { ...decision, intent: 'file_edit', action: 'prepare', requiresConfirmation: true, sourceTurnId: turnId },
+          preview,
         };
       }
-      const result = await this.runPrepared(previewId, { ...(input.confirmation || {}), turnId });
-      return { turnId, action: 'execute', decision: { intent: 'generate', action: 'execute', requiresConfirmation: false, sourceTurnId: turnId }, result };
-    }
+      if (decision.action === 'suggest') {
+        const response = '检测到图片生成请求。是否按当前工作流准备生成？';
+        this._writeTurnMessage('agent', response, { kind: 'generation_suggestion' }, turnId);
+        return { turnId, action: 'suggest', decision, response };
+      }
+      if (decision.action === 'reply') {
+        this.sessionManager.setSessionState?.({
+          turnId,
+          pending: null,
+          pendingIntent: null,
+          pendingRequest: '',
+          supplementalInput: '',
+        });
+        const result = await this.chat(text, { ...options, intent: decision.intent, execution: decision.execution, turnId, skipUserMessage: true });
+        return { turnId, action: 'reply', decision, result, response: result.response };
+      }
 
-    if (!input.skipUserMessage) this._writeTurnMessage('user', text, { turnId, modeHint, attachments: messageAttachments(input.media) }, turnId);
-    const hadPending = Boolean(this.sessionManager.getSessionState?.().pending);
-    if (hadPending) {
-      this.sessionManager.setSessionState?.({ supplementalInput: text });
-    }
-    const decision = await this.routeIntent(text, { ...options, modeHint });
-    decision.sourceTurnId = turnId;
-
-    if (decision.intent === 'cancel') {
-      await this.cancel();
-      const response = '已取消当前任务。';
-      this._writeTurnMessage('agent', response, { kind: 'cancelled' }, turnId);
-      return { turnId, action: 'reply', decision, response };
-    }
-    if (decision.action === 'clarify') {
-      const result = this.clarify(text, { ...decision, sourceTurnId: turnId, skipUserMessage: true });
-      return { turnId, action: 'clarify', decision, result, response: result.response };
-    }
-    if (decision.action === 'suggest' || (decision.action === 'prepare' && modeHint === 'answer' && !hadPending)) {
-      const response = '检测到图片生成请求。是否按当前工作流准备生成？';
-      this._writeTurnMessage('agent', response, { kind: 'generation_suggestion' }, turnId);
-      return { turnId, action: 'suggest', decision, response };
-    }
-    if (decision.action === 'reply') {
-      const result = await this.chat(text, { ...options, intent: decision.intent, turnId, skipUserMessage: true });
-      return { turnId, action: 'reply', decision, result, response: result.response };
-    }
-
-    if (FILE_MUTATION_HINTS.test(text) || options.fileMutation === true) {
-      const preview = await this.prepareFileMutation(text, { ...options, turnId, effectiveRequest: text });
+      this.sessionManager.setSessionState?.({
+        turnId,
+        pendingIntent: decision,
+        pendingRequest: decision.request || text,
+        supplementalInput: '',
+      });
+      const preview = await this.prepareGeneration(text, {
+        ...options,
+        intent: decision.intent,
+        execution: decision.execution,
+        effectiveRequest: decision.request || text,
+        readiness: decision.readiness || null,
+        turnId,
+        modeHint,
+      });
+      if (preview?.action === 'clarify') {
+        return { turnId, action: 'clarify', decision: { ...decision, ...preview }, result: preview, response: preview.response };
+      }
+      if (preview?.cancelled) {
+        turnOutcome = 'cancelled';
+        return { turnId, action: 'cancelled', taskId: preview.taskId || this._taskId, result: preview };
+      }
+      if (preview?.queued) {
+        return { turnId, action: 'queued', position: preview.position, taskId: this._taskId };
+      }
       return {
         turnId,
         action: 'prepare',
-        decision: { intent: 'file_edit', action: 'prepare', requiresConfirmation: true, sourceTurnId: turnId },
+        decision: { ...decision, action: 'prepare', requiresConfirmation: true, sourceTurnId: turnId },
         preview,
       };
+    } catch (error) {
+      turnOutcome = timingOutcome(error);
+      throw error;
+    } finally {
+      emitTiming('turn_end', {
+        ...timingMeta,
+        ...(this.projectId || timingMeta.projectId ? { projectId: this.projectId || timingMeta.projectId } : {}),
+        ...(this.sessionId || timingMeta.sessionId ? { sessionId: this.sessionId || timingMeta.sessionId } : {}),
+        timingPhase: 'turn',
+        duration_ms: Date.now() - turnStart,
+        outcome: turnOutcome,
+        message: '请求处理结束',
+      });
     }
-
-    this.sessionManager.setSessionState?.({
-      turnId,
-      pendingIntent: decision,
-      pendingRequest: decision.request || text,
-      supplementalInput: '',
-    });
-    const preview = await this.prepareGeneration(text, {
-      ...options,
-      intent: decision.intent,
-      effectiveRequest: decision.request || text,
-      readiness: decision.readiness || null,
-      turnId,
-      modeHint,
-    });
-    if (preview?.action === 'clarify') {
-      return { turnId, action: 'clarify', decision: { ...decision, ...preview }, result: preview, response: preview.response };
-    }
-    if (preview?.queued) {
-      return { turnId, action: 'queued', position: preview.position, taskId: this._taskId };
-    }
-    return {
-      turnId,
-      action: 'prepare',
-      decision: { ...decision, action: 'prepare', requiresConfirmation: true, sourceTurnId: turnId },
-      preview,
-    };
   }
 
   _transitionState(next, details = {}) {
@@ -496,9 +642,9 @@ export class Agent {
     const uiStatus = {
       idle: 'idle',
       classifying: 'running',
-      clarifying: 'idle',
+      clarifying: 'waiting',
       planning: 'running',
-      awaiting_confirmation: 'idle',
+      awaiting_confirmation: 'preview',
       executing: 'running',
       observing: 'running',
       retrying: 'running',
@@ -542,6 +688,7 @@ export class Agent {
       message: details.message || '',
       taskId: this._taskId,
       traceId: this._traceId,
+      requestId: this._requestId,
       currentStep: this._currentStep,
       currentAttempt: this._currentAttempt,
       promptId: this._currentPromptId,
@@ -566,6 +713,7 @@ export class Agent {
         message: details.message || next,
         taskId: this._taskId,
         traceId: this._traceId,
+        requestId: this._requestId,
       });
     }
   }
@@ -695,6 +843,33 @@ export class Agent {
     return context;
   }
 
+  // 口语消息 → 搜索关键词。cn.bing 对中文口语长句解析很差（"帮我查一下"只剩"帮"），
+  // 优先用 LLM 提炼，失败时用规则剥离口语前缀兜底
+  async _buildSearchQuery(message) {
+    const trimmed = String(message || '').trim();
+    if (!trimmed) return '';
+    if (this.llm?.isConfigured) {
+      try {
+        const result = await this.llm.chat({
+          messages: [
+            { role: 'system', content: '你是搜索关键词提炼器。把用户的口语化请求改写成适合搜索引擎的关键词（可含英文），只输出关键词本身，不要解释、标点或引号。' },
+            { role: 'user', content: trimmed },
+          ],
+          temperature: 0,
+          maxTokens: 40,
+          timeoutMs: 10000,
+          prefer: resolveLLMStrategy(this.llm),
+        });
+        const keywords = String(result?.content || '').trim().replace(/[「」“”"']/g, '');
+        if (keywords && keywords.length <= 80 && !keywords.includes('：')) return keywords;
+      } catch {}
+    }
+    const SPOKEN_PREFIX = /^(?:联网|在线|帮我|给我|请|帮忙|搜索一下|搜索|搜一下|查一?下|查查|找一?下|找找|看看|介绍一下?|推荐|现在|目前|有什么|什么|你|您|然后|顺便)[，,、\s：:]*/i;
+    let query = trimmed;
+    for (let i = 0; i < 5 && SPOKEN_PREFIX.test(query); i++) query = query.replace(SPOKEN_PREFIX, '');
+    return query.trim() || trimmed;
+  }
+
   async _chatResearch(message, settings) {
     settings = normalizeResearchSettings({
       ...settings,
@@ -706,7 +881,7 @@ export class Agent {
     const trimmed = String(message || '').trim();
     const urlPattern = /https?:\/\/[^\s，。；、""''<>]+/gi;
     const urls = [...new Set(trimmed.match(urlPattern) || [])].slice(0, Math.max(settings.maxOpenPages || 2, 1));
-    const query = trimmed.replace(urlPattern, ' ').replace(/\s+/g, ' ').trim();
+    const query = await this._buildSearchQuery(trimmed.replace(urlPattern, ' ').replace(/\s+/g, ' ').trim());
     if (!query && urls.length === 0) return { query: trimmed, sources: [], status: 'empty', message: '空的研究请求' };
     emit(AgentEventTypes.STEP, { stepId, tool: 'web', status: 'running', description: '正在联网检索公开资料', taskId: this._taskId, traceId: this._traceId });
     const sources = [];
@@ -802,6 +977,10 @@ export class Agent {
 
   setWorkflowDir(dir) {
     this.workflowDir = dir;
+    const saved = this.project.get('workflow');
+    // 仅当已选工作流文件在新目录中不存在时才清空；
+    // 否则 list-workflows 等目录未变的调用会误删用户选择，导致 Agent 不知道当前工作流
+    if (saved && dir && existsSync(join(dir, saved))) return;
     this.project.set('workflow', '');
   }
 
@@ -826,7 +1005,6 @@ export class Agent {
     this._artifacts = [];
     this._lastManifest = null;
     this._activePromptIds.clear();
-    this._preparedRuns.clear();
     this._state = 'idle';
     this._traceId = '';
     this._currentStep = '';
@@ -847,6 +1025,7 @@ export class Agent {
     this._assertSessionSwitchAllowed();
     const state = await this.sessionManager.activate(projectId, sessionId);
     this._resetRuntimeState();
+    this._preparedRuns.clear();
     initSession(state.activeProjectId, state.activeSessionId);
     return state;
   }
@@ -855,6 +1034,7 @@ export class Agent {
     this._assertSessionSwitchAllowed();
     await this.sessionManager.createProject(input);
     this._resetRuntimeState();
+    this._preparedRuns.clear();
     initSession(this.sessionManager.activeProjectId, this.sessionManager.activeSessionId);
     return this.sessionManager.getState();
   }
@@ -864,6 +1044,7 @@ export class Agent {
     await this.sessionManager.createSession(title, projectId, { activate });
     if (activate) {
       this._resetRuntimeState();
+      this._preparedRuns.clear();
       initSession(this.sessionManager.activeProjectId, this.sessionManager.activeSessionId);
     }
     return this.sessionManager.getState();
@@ -872,24 +1053,10 @@ export class Agent {
   async suggestSessionTitle(message) {
     const text = String(message || '').trim().slice(0, 200);
     if (!text) return { title: '新会话' };
-    const fallback = () => {
-      const cleaned = text.replace(/\s+/g, ' ').trim();
-      return cleaned.slice(0, 12) || '新会话';
-    };
-    if (!this.llm?.isConfigured) return { title: fallback() };
-    try {
-      const result = await this.llm.chat({
-        messages: [
-          { role: 'system', content: '给下面的用户消息起一个简短的中文会话标题，不超过 10 个字，不带标点和引号，只输出标题本身。' },
-          { role: 'user', content: text },
-        ],
-        maxTokens: 32,
-      });
-      const title = String(result?.content || '').trim().replace(/[""'“”「」『』]/g, '').split(/[\n。！？!?；;]/)[0].trim().slice(0, 12);
-      return { title: title || fallback() };
-    } catch {
-      return { title: fallback() };
-    }
+    // Session titles must not compete with a user-visible chat request for the
+    // same model connection. A stable local title is sufficient metadata.
+    const cleaned = text.replace(/\s+/g, ' ').trim();
+    return { title: cleaned.slice(0, 12) || '新会话' };
   }
 
   async deleteProject(projectId) {
@@ -898,6 +1065,7 @@ export class Agent {
     const state = await this.sessionManager.deleteProject(projectId);
     if (active) {
       this._resetRuntimeState();
+      this._preparedRuns.clear();
       initSession(state.activeProjectId, state.activeSessionId);
     }
     return state;
@@ -909,6 +1077,7 @@ export class Agent {
     const state = await this.sessionManager.deleteSession(sessionId, projectId);
     if (active) {
       this._resetRuntimeState();
+      this._preparedRuns.clear();
       initSession(state.activeProjectId, state.activeSessionId);
     }
     return state;
@@ -933,7 +1102,7 @@ export class Agent {
       return { workflowName: currentWorkflow, workflowManifest };
     }
 
-    const mode = requestedWorkflowMode(request, intent, options.media || {});
+    const mode = requestedWorkflowMode(request, intent, options.media || {}, options.execution || {});
     if (workflowManifest?.capabilities?.modes?.includes(mode)) {
       return { workflowName: currentWorkflow, workflowManifest };
     }
@@ -946,7 +1115,14 @@ export class Agent {
     if (match) return { workflowName: match.name, workflowManifest: null };
     if (mode === 'txt2img') return { workflowName: currentWorkflow, workflowManifest };
 
-    throw new Error(`No workflow supports ${mode}; add a matching local workflow before generating`);
+    const currentModes = (workflowManifest?.capabilities?.modes || []);
+    const availableModes = [...new Set(candidates.flatMap(item => item.capabilities?.modes || []))];
+    const error = new Error(`当前请求需要「${mode}」模式（如 图生图/局部重绘/放大 等），但没有任何工作流支持它。`
+      + `当前工作流「${currentWorkflow || '未选择'}」支持：${currentModes.join('、') || '无'}；`
+      + `可用模式：${availableModes.join('、') || '无'}。请选择支持该模式的工作流，或在设置中新增对应工作流。`);
+    error.failureType = 'workflow_mode_unavailable';
+    error.retryable = false;
+    throw error;
   }
 
   _enqueue(thunk) {
@@ -979,7 +1155,7 @@ export class Agent {
 
   _intentContext(options = {}) {
     return {
-      conversation: this.conversation.getMessages?.({ limit: 100 }) || this._conversationForLLM(12),
+      conversation: this.conversation.getMessages?.({ limit: 8 }) || this._conversationForLLM(8),
       sessionMemory: this.sessionManager.getSessionMemory?.() || this.sessionManager.getSessionState()?.sessionMemory || {},
       sessionState: this.sessionManager.getSessionState(),
       lastPrompt: this.project.get('lastPrompt') || '',
@@ -987,6 +1163,7 @@ export class Agent {
       attachedMedia: options.media || null,
       modeHint: options.modeHint || '',
       sourceTurnId: options.sourceTurnId || '',
+      eventMeta: { taskId: this._taskId, traceId: this._traceId, turnId: options.turnId || '', projectId: this.projectId, sessionId: this.sessionId },
     };
   }
 
@@ -1003,7 +1180,17 @@ export class Agent {
       });
       if (readiness.readiness === 'clarify') {
         const blockedByMissingMedia = readiness.missing.some(missing => missing === 'reference_media' || missing === 'previous_generation');
-        if (blockedByMissingMedia && isExplicitNewGeneration(request)) {
+        // LLM 已结合完整语境判明语义（调整方向/主体/新值）时，正则 readiness
+        // 只补充上下文事实类缺失（参考图/上一张图），不否决 LLM 的语义判断。
+        const readinessMissing = decision.source === 'llm'
+          ? readiness.missing.filter(missing => missing === 'reference_media' || missing === 'previous_generation')
+          : readiness.missing;
+        if (!readinessMissing.length) {
+          return { ...decision, request, readiness: { ...readiness, readiness: 'ready', missing: [], question: '' } };
+        }
+        // A configured intent model has already resolved the request context.
+        // Only let the keyword fallback override a local/offline classification.
+        if (decision.source !== 'llm' && blockedByMissingMedia && isExplicitNewGeneration(request)) {
           const generateReadiness = assessPromptReadiness({
             request,
             intent: 'generate',
@@ -1034,9 +1221,9 @@ export class Agent {
           ...decision,
           action: 'clarify',
           request,
-          missing: [...new Set([...(decision.missing || []), ...readiness.missing])],
-          question: decision.question || readiness.question || questionFor(decision.intent, readiness.missing, request),
-          readiness,
+          missing: [...new Set([...(decision.missing || []), ...readinessMissing])],
+          question: decision.question || readiness.question || questionFor(decision.intent, readinessMissing, request),
+          readiness: { ...readiness, missing: readinessMissing },
         };
       }
       return { ...decision, request, readiness };
@@ -1086,8 +1273,7 @@ export class Agent {
     this.taskManager.update(taskId, { status: 'clarifying', state: 'clarifying' });
     void this.taskManager.persist();
     emit(AgentEventTypes.MESSAGE, { role: 'agent', content: response, taskId, traceId });
-    emit(AgentEventTypes.STATUS, { status: 'completed', message: '需要补充信息', taskId });
-    emit(AgentEventTypes.STATUS, { status: 'clarifying', uiStatus: 'idle', state: 'clarifying', message: response, taskId, traceId });
+    emit(AgentEventTypes.STATUS, { status: 'clarifying', uiStatus: 'waiting', state: 'clarifying', message: response, taskId, traceId });
     return { response, taskId, missing: decision.missing || [] };
   }
 
@@ -1099,6 +1285,7 @@ export class Agent {
       throw new Error('有待确认的生成预览，请先确认或取消当前预览。');
     }
     this._running = true;
+    this._cancelRequested = false;
     if (options.projectId) this.projectId = options.projectId;
     if (options.sessionId) this.sessionId = options.sessionId;
     this._taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -1146,15 +1333,36 @@ export class Agent {
       let workflowManifest = options.workflowManifest
         || (this._lastManifest?.workflowName === currentWorkflow ? this._lastManifest : null);
       if (!workflowManifest && currentWorkflow && this.workflowDir) {
-        workflowManifest = await ComfyUITool.inspectWorkflow(currentWorkflow, this.workflowDir);
+        try {
+          workflowManifest = await ComfyUITool.inspectWorkflow(currentWorkflow, this.workflowDir);
+        } catch (error) {
+          const wrapped = new Error(`工作流「${currentWorkflow}」解析失败：${error.message}。请确认 ComfyUI 已启动且工作流文件可用。`);
+          wrapped.failureType = 'workflow_inspect_failed';
+          wrapped.retryable = true;
+          wrapped.cause = error;
+          throw wrapped;
+        }
       }
       const selection = await this._selectWorkflowForRequest(request, intent, options, currentWorkflow, workflowManifest);
       currentWorkflow = selection.workflowName;
       workflowManifest = selection.workflowManifest;
       if (!workflowManifest && currentWorkflow && this.workflowDir) {
-        workflowManifest = await ComfyUITool.inspectWorkflow(currentWorkflow, this.workflowDir);
+        try {
+          workflowManifest = await ComfyUITool.inspectWorkflow(currentWorkflow, this.workflowDir);
+        } catch (error) {
+          const wrapped = new Error(`工作流「${currentWorkflow}」解析失败：${error.message}。请确认 ComfyUI 已启动且工作流文件可用。`);
+          wrapped.failureType = 'workflow_inspect_failed';
+          wrapped.retryable = true;
+          wrapped.cause = error;
+          throw wrapped;
+        }
       }
-      if (!workflowManifest) throw new Error('The selected workflow could not be inspected');
+      if (!workflowManifest) {
+        const error = new Error(`无法解析所选工作流「${currentWorkflow || '未选择'}」，无法开始生成`);
+        error.failureType = 'workflow_inspect_failed';
+        error.retryable = true;
+        throw error;
+      }
       if (workflowManifest.modelReady === false) {
         const missing = (workflowManifest.missingModels || workflowManifest.modelRequirements || [])
           .filter(item => item.available === false)
@@ -1177,6 +1385,20 @@ export class Agent {
         ...(options.media || {}),
         images: options.media?.images?.length ? options.media.images : intent === 'edit' ? previousImages : options.media?.images || [],
       };
+      // 准备阶段（规划 + 提示词编译）总时限。单次 LLM 调用超时兜底后，
+      // 多次重试仍可能串联超过预期时间；若到达该时限仍未完成，强制失败，
+      // 保证前端永远收到终态而不是无限停留在"正在准备"。
+      const PREPARE_DEADLINE_MS = 150000;
+      const prepareDeadlineError = new Error('生成准备超时（150 秒）：语言模型服务长时间无响应，请检查模型配置或网络后重试。');
+      prepareDeadlineError.code = 'LLM_TIMEOUT';
+      const deadlineController = new AbortController();
+      let deadlineTimer;
+      const prepareDeadlinePromise = new Promise((_, reject) => {
+        deadlineTimer = setTimeout(() => {
+          deadlineController.abort(prepareDeadlineError);
+          reject(prepareDeadlineError);
+        }, PREPARE_DEADLINE_MS);
+      });
       this._transitionState('planning', { message: 'Planning task...' });
       const ctx = buildAgentContext(request, {
         conversation: this._conversationForLLM(6),
@@ -1199,28 +1421,53 @@ export class Agent {
         workflowManifest,
         attachedMedia,
       });
+      ctx.eventMeta = {
+        taskId: this._taskId,
+        traceId: this._traceId,
+        turnId: options.turnId || '',
+        ...(this.projectId ? { projectId: this.projectId } : {}),
+        ...(this.sessionId ? { sessionId: this.sessionId } : {}),
+      };
       ctx.filesystemRoots = this._filesystemRoots();
       ctx.comfyRoot = this.comfyRoot;
-      if (shouldResearchCharacter(request, intent)) {
-        const researchSettings = normalizeResearchSettings({
-          ...(this.project.get('researchSettings') || {}),
-          ...(options.webResearchOptions || {}),
-          ...(options.webResearch === false ? { allowNetwork: false } : {}),
-        });
-        ctx.characterResearch = this.llm?.isConfigured
-          ? await this._researchCharacter(request, researchSettings)
-          : { query: researchQuery(request), ...emptyAppearanceFacts(), sources: [], researchStatus: 'unavailable', researchMessage: '未使用在线资料：未配置资料抽取模型' };
-      }
+      const planStart = Date.now();
+      let planOutcome = 'completed';
+      emitTiming('plan_start', {
+        ...ctx.eventMeta,
+        timingPhase: 'plan',
+        message: '规划中',
+      });
       let plan;
       try {
-        plan = await this.planner.createPlan(request, ctx);
+        plan = await Promise.race([this.planner.createPlan(request, { ...ctx, signal: deadlineController.signal }), prepareDeadlinePromise]);
       } catch (error) {
+        planOutcome = timingOutcome(error);
+        clearTimeout(deadlineTimer);
+        if (this._cancelRequested || this._state === 'cancelled' || isCancellationError(error)) {
+          return { cancelled: true, taskId: this._taskId };
+        }
         const failure = aiFailure(request, error);
         this.taskManager?.complete?.(this._taskId, { error: { message: failure.error, stage: 'ai' } });
         this._transitionState('failed', { lastError: failure.error, message: failure.error });
         return failure;
+      } finally {
+        emitTiming('plan_end', {
+          ...ctx.eventMeta,
+          timingPhase: 'plan',
+          duration_ms: Date.now() - planStart,
+          outcome: planOutcome,
+          message: '规划结束',
+        });
       }
       attachMediaToPlan(plan, ctx.attachedMedia);
+      if (this._cancelRequested) return { cancelled: true, taskId: this._taskId };
+      this._transitionState('planning', {
+        message: intent === 'refine'
+          ? '正在根据修改要求编译提示词...'
+          : '正在根据执行计划编译提示词...',
+      });
+      const compileController = new AbortController();
+      this._promptCompileController = compileController;
       const enhanceStep = plan.steps.find(step => step.tool === 'prompt_enhance');
       const profile = workflowManifest.promptProfile || {};
       const enhanceMode = ctx.characterResearch?.sources?.length > 0 ? 'anime-character' : (enhanceStep?.input?.mode || 'raw');
@@ -1243,8 +1490,45 @@ export class Agent {
         onChunk: this._thinkingStream(),
         requireAI: true,
         allowPolicyOverride: options.allowPolicyOverride === true,
+        signal: compileController.signal,
+        eventMeta: ctx.eventMeta,
+        onTiming: event => emitTiming(event.stage, {
+          ...ctx.eventMeta,
+          ...event,
+          scope: 'timing',
+        }),
       };
-      const compiledPrompt = await PromptEnhanceTool.execute(compileInput);
+      const enhanceStart = Date.now();
+      let enhanceOutcome = 'completed';
+      emitTiming('enhance_start', {
+        ...ctx.eventMeta,
+        timingPhase: 'enhance',
+        message: '提示词增强中',
+      });
+      let compiledPrompt;
+      try {
+        compiledPrompt = await Promise.race([PromptEnhanceTool.execute(compileInput), prepareDeadlinePromise]);
+        if (compiledPrompt?.aiFailure) enhanceOutcome = 'error';
+      } catch (error) {
+        enhanceOutcome = timingOutcome(error);
+        throw error;
+      } finally {
+        clearTimeout(deadlineTimer);
+        if (enhanceOutcome === 'completed' && (this._cancelRequested || compileController.signal.aborted)) {
+          enhanceOutcome = 'cancelled';
+        }
+        if (this._promptCompileController === compileController) this._promptCompileController = null;
+        emitTiming('enhance_end', {
+          ...ctx.eventMeta,
+          timingPhase: 'enhance',
+          duration_ms: Date.now() - enhanceStart,
+          outcome: enhanceOutcome,
+          message: '提示词增强结束',
+        });
+      }
+      if (compiledPrompt?.cancelled || this._cancelRequested || compileController.signal.aborted) {
+        return { cancelled: true, taskId: this._taskId };
+      }
       if (compiledPrompt.aiFailure) {
         const failure = aiFailure(request, compiledPrompt.error);
         if (compiledPrompt.code) failure.code = compiledPrompt.code;
@@ -1279,6 +1563,19 @@ export class Agent {
       });
 
       plan.steps = plan.steps.filter(step => step.tool !== 'prompt_enhance');
+      // 删除提示词增强步骤后，其余步骤可能残留对它的 depends_on 引用，
+      // 二次校验会报 "depends_on: unknown step"，需同步清理悬空依赖。
+      const remainingStepIds = new Set(plan.steps.map(step => step.id));
+      for (const step of plan.steps) {
+        if (Array.isArray(step.depends_on)) {
+          step.depends_on = step.depends_on.filter(id => remainingStepIds.has(id));
+        }
+      }
+      // LLM 计划里写的工作流名没有能力检测依据，统一对齐到按模式匹配
+      // 选出的工作流，保证预览（preview.workflowName）与执行完全一致。
+      for (const step of plan.steps) {
+        if (step.tool === 'comfyui' && step.input) step.input.workflowName = currentWorkflow;
+      }
       for (const step of plan.steps) {
         if (step.tool === 'comfyui') {
           step.input.compiledPrompt = compiledPrompt;
@@ -1377,6 +1674,9 @@ export class Agent {
       });
       return preview;
     } catch (error) {
+      if (this._cancelRequested || this._state === 'cancelled' || isCancellationError(error)) {
+        return { cancelled: true, taskId: this._taskId };
+      }
       this.taskManager?.complete?.(this._taskId, { error: { message: error.message, stage: 'prepare' } });
       if (this._state !== 'cancelled' && this._state !== 'failed') {
         this._transitionState('failed', { lastError: error.message, message: error.message });
@@ -1611,7 +1911,7 @@ export class Agent {
     }).join('\n');
   }
 
-  async _compactConversationSegment(messages, mode = 'cloud') {
+  async _compactConversationSegment(messages, mode = 'cloud', signal) {
     if (!messages.length) return null;
     const fallback = {
       objective: '',
@@ -1633,8 +1933,9 @@ export class Agent {
         maxTokens: mode === 'local' ? 512 : 700,
         prefer: mode,
         allowPolicyOverride: false,
+        signal,
       });
-      const text = String(result?.content || '').replace(/^```(?:json)?\s*|\s*```$/gi, '').trim();
+      const text = String(result?.content || '').replace(/^```(?:json|JSON)?\s*/i, '').replace(/```\s*$/i, '').trim();
       const parsed = JSON.parse(text);
       return {
         ...fallback,
@@ -1651,7 +1952,7 @@ export class Agent {
     }
   }
 
-  async _prepareConversationArchive({ recentCount, mode, inputBudget, currentMessages }) {
+  async _prepareConversationArchive({ recentCount, mode, inputBudget, currentMessages, signal }) {
     const archive = this._contextArchive();
     const archivedIds = new Set(archive.archivedMessageIds || []);
     const candidate = this.conversation.getArchiveCandidate(recentCount, 100)
@@ -1661,7 +1962,7 @@ export class Agent {
     if (candidate.length < 4 || currentTokens <= inputBudget) return archive;
     const ids = candidate.map(message => message.messageId || `${message.ts}:${message.role}`);
     if (ids.every(id => archive.archivedMessageIds.includes(id))) return archive;
-    const summary = await this._compactConversationSegment(candidate, mode);
+    const summary = await this._compactConversationSegment(candidate, mode, signal);
     if (!summary) return archive;
     const segment = {
       id: `segment_${Date.now()}`,
@@ -1680,6 +1981,39 @@ export class Agent {
     return next;
   }
 
+  // 回复完成后空闲期预压缩会话：把下一次回答前的一次完整 LLM 压缩调用
+  // 提前到用户阅读回复的间隙执行。新消息到达时由 handleTurn 取消，不抢锁。
+  async _prefetchContextArchive() {
+    if (this._running || !this.llm?.isConfigured) return;
+    this._archivePrefetchSignal?.abort('superseded');
+    const controller = new AbortController();
+    this._archivePrefetchSignal = controller;
+    try {
+      const profile = this.llm.getContextProfile?.() || { mode: 'cloud', maxRecentTurns: 20, maxInputTokens: 32768 };
+      const messages = this.conversation.getMessages?.({ limit: 100 }) || [];
+      await this._prepareConversationArchive({
+        recentCount: profile.maxRecentTurns || 20,
+        mode: profile.mode,
+        inputBudget: profile.maxInputTokens,
+        currentMessages: messages,
+        signal: controller.signal,
+      });
+    } catch {
+      // 预取失败（模型不可用、已取消）静默，不影响主流程
+    }
+  }
+
+  async compactConversation({ recentCount = 8, mode = 'cloud' } = {}) {
+    const messages = this.conversation.toJSON();
+    const archive = await this._prepareConversationArchive({
+      recentCount: Math.max(2, Number(recentCount) || 8),
+      mode,
+      inputBudget: 0,
+      currentMessages: messages,
+    });
+    return { archived: archive.segments?.length || 0, archive };
+  }
+
   _archiveMessage(archive) {
     if (!archive?.segments?.length) return null;
     const summaries = archive.segments.map((segment, index) => ({
@@ -1692,12 +2026,23 @@ export class Agent {
     };
   }
 
-  async _chatWithDegradation({ buildRequest, isLocal, taskId, traceId }) {
+  async _chatWithDegradation({ buildRequest, isLocal, taskId, traceId, streamMessageId = '' }) {
+    // Retrying an empty response must not change the conversation. Context
+    // degradation is reserved for genuine local-model interruptions. A
+    // reasoning model can burn the whole output budget on thinking; retry such
+    // empty responses with a larger maxTokens instead of the same budget.
     const attempts = isLocal ? [0, 1, 2] : [0];
+    const retriedEmptyResponses = new Set();
+    const retriedTransientResponses = new Set();
+    const retriedBudgetResponses = new Set();
+    let budgetBump = 0;
+    let effortOverride = '';
     let lastError;
-    for (const attempt of attempts) {
-      const request = buildRequest(attempt);
-      if (attempt > 0) {
+    for (let index = 0; index < attempts.length; index++) {
+      const attempt = attempts[index];
+      const request = buildRequest(attempt, budgetBump);
+      if (effortOverride) request.options = { ...request.options, reasoningEffort: effortOverride };
+      if (index > 0 && attempt > attempts[index - 1]) {
         emit(AgentEventTypes.PROGRESS, {
           scope: 'llm-context',
           stage: 'degrading',
@@ -1711,9 +2056,11 @@ export class Agent {
           content: '',
           streaming: true,
           done: false,
-          messageId: `${taskId}:response`,
+          messageId: streamMessageId || `${taskId}:response`,
           taskId,
           traceId,
+          attempt,
+          reset: true,
         });
       }
       emit(AgentEventTypes.CONTEXT_USAGE, {
@@ -1724,11 +2071,79 @@ export class Agent {
       });
       try {
         const result = await this.llm.chat({ ...request.options, degradationAttempt: attempt });
+        if (!String(result?.content || '').trim()) {
+          const error = new Error('语言模型返回了空响应');
+          error.code = 'EMPTY_MODEL_RESPONSE';
+          if (result?.finishReason === 'length') error.budgetExhausted = true;
+          throw error;
+        }
         return { result, telemetry: request.telemetry, retryAttempt: attempt };
       } catch (error) {
         lastError = error;
-        if (/取消|cancelled|canceled/i.test(String(error?.message || ''))) throw error;
-        if (!isLocal || attempt === attempts.length - 1) throw error;
+        if (error?.code === 'LLM_CANCELLED' || /取消|cancelled|canceled/i.test(String(error?.message || ''))) throw error;
+        if (error?.code === 'EMPTY_MODEL_RESPONSE' && error?.budgetExhausted === true && !retriedBudgetResponses.has(attempt)) {
+          retriedBudgetResponses.add(attempt);
+          budgetBump += 4096;
+          effortOverride = effortOverride || 'low';
+          this.taskManager.recordRetry(taskId, {
+            attempt: attempt + 1,
+            code: error.code || '',
+            message: '模型输出预算被思考耗尽，已扩大输出预算后重试',
+            kind: 'budget_exhausted',
+          });
+          if (streamMessageId) {
+            emit(AgentEventTypes.MESSAGE, {
+              role: 'agent',
+              content: '',
+              streaming: true,
+              done: false,
+              messageId: streamMessageId,
+              taskId,
+              traceId,
+              attempt,
+              reset: true,
+            });
+          }
+          attempts.splice(index + 1, 0, attempt);
+          continue;
+        }
+        const retryable = error?.code === 'EMPTY_MODEL_RESPONSE'
+          || ['LLM_NETWORK_ERROR', 'LLM_STREAM_INTERRUPTED'].includes(error?.code);
+        const retrySet = error?.code === 'EMPTY_MODEL_RESPONSE'
+          ? retriedEmptyResponses
+          : retriedTransientResponses;
+        if (retryable && !retrySet.has(attempt)) {
+          retrySet.add(attempt);
+          this.taskManager.recordRetry(taskId, {
+            attempt: attempt + 1,
+            code: error.code || '',
+            message: error.message || '语言模型请求失败',
+            kind: error.code === 'EMPTY_MODEL_RESPONSE' ? 'empty_response' : 'transient_connection',
+          });
+          // A retry replaces, rather than appends to, a partial streaming reply.
+          if (streamMessageId) {
+            emit(AgentEventTypes.MESSAGE, {
+              role: 'agent',
+              content: '',
+              streaming: true,
+              done: false,
+              messageId: streamMessageId,
+              taskId,
+              traceId,
+              attempt,
+              reset: true,
+            });
+          }
+          attempts.splice(index + 1, 0, attempt);
+          continue;
+        }
+        if (error?.code === 'EMPTY_MODEL_RESPONSE') {
+          throw error;
+        }
+        if (['LLM_NETWORK_ERROR', 'LLM_STREAM_INTERRUPTED'].includes(error?.code)) {
+          throw error;
+        }
+        if (!isLocal || index === attempts.length - 1) throw error;
       }
     }
     throw lastError || new Error('本地模型请求失败');
@@ -1738,10 +2153,17 @@ export class Agent {
     const discarded = this._preparedRuns.delete(previewId);
     const persisted = this.sessionManager.getSessionState?.().preparedPreview?.previewId === previewId;
     if (discarded || persisted) {
-      if (discarded && this._taskId) this.taskManager.complete(this._taskId, { result: { cancelled: true, reason: 'confirmation_declined' } });
+      if (this._taskId && this._state === 'awaiting_confirmation') {
+        this.taskManager.complete(this._taskId, { result: { cancelled: true, reason: 'confirmation_declined' } });
+        this._transitionState('cancelled', { message: 'Confirmation declined', needsConfirmation: false });
+        this._transitionState('idle', { message: 'Ready for next turn', needsConfirmation: false });
+      } else {
+        this._state = 'idle';
+        this._needsConfirmation = false;
+      }
       void this.taskManager.persist();
-      if (this._state === 'awaiting_confirmation') this._transitionState('idle', { message: '', needsConfirmation: false });
       this.sessionManager.setSessionState?.({
+        state: 'idle',
         phase: 'idle',
         pending: null,
         pendingIntent: null,
@@ -1813,6 +2235,7 @@ export class Agent {
         commonParameters: this.project.get('commonParameters') || {},
         savedPreferences: this.project.get('savedPreferences') || {},
         researchSettings: this.project.get('researchSettings') || {},
+        skillId: options.skillId,
       },
       availableWorkflows: this._listWorkflows(),
       workflowDir: this.workflowDir,
@@ -1860,6 +2283,7 @@ export class Agent {
     ctx.compiledPrompt = options.compiledPrompt || null;
     ctx.confirmedFileMutation = options.confirmedFileMutation === true;
     ctx.executionPolicy = options.executionPolicy || { retry: false, evaluate: false, mutatePrompt: false };
+    ctx.eventMeta = { taskId: this._taskId, traceId, turnId: options.turnId || '' };
 
     try {
       if (!preparedTask) this._transitionState('planning', { message: 'Planning task...' });
@@ -1873,6 +2297,17 @@ export class Agent {
         throw new Error(`Plan validation failed: ${planValidation.errors.join('; ')}`);
       }
       attachMediaToPlan(plan, ctx.attachedMedia);
+      // 直接执行路径（无预览）没有能力匹配选择，LLM 写的工作流名无效时
+      // 回退到当前工作流，避免执行阶段因工作流文件不存在而失败。
+      for (const step of plan.steps) {
+        if (step.tool === 'comfyui' && step.input?.workflowName && step.input.workflowName !== currentWorkflow) {
+          try {
+            await this.detectWorkflow(step.input.workflowName);
+          } catch {
+            step.input.workflowName = currentWorkflow;
+          }
+        }
+      }
       this.taskManager.recordPlan(this._taskId, plan);
       emit(AgentEventTypes.TASK, { taskId: this._taskId, action: 'plan_created', stepCount: plan.steps.length, traceId });
       this.taskManager.update(this._taskId, { workflowName: currentWorkflow });
@@ -1898,7 +2333,6 @@ export class Agent {
         if (output.skipped) {
           this.taskManager.complete(this._taskId, { result: { cancelled: true, stepId: step.id } });
           if (this._state !== 'cancelled') this._transitionState('cancelled', { message: 'Cancelled', lastError: '' });
-          emit(AgentEventTypes.STATUS, { status: 'cancelled', message: 'Cancelled', taskId: this._taskId, traceId });
           this.conversation.add('agent', 'Task was cancelled.');
           this.taskManager.update(this._taskId, { status: 'cancelled', state: 'cancelled' });
           void this.taskManager.persist();
@@ -2013,6 +2447,11 @@ export class Agent {
         promptId: ctx.lastPromptId,
         taskId: this._taskId,
         artifactId: artifact?.artifactId || '',
+        positive: options.compiledPrompt?.positive || '',
+        negative: options.compiledPrompt?.negative || '',
+        compiledPrompt: options.compiledPrompt || null,
+        workflowName: currentWorkflow || '',
+        settings: ctx.executionSettings || {},
       };
       this.project.set('lastResult', this._resultSummary(finalResult));
       this.taskManager.complete(this._taskId, { result: taskResult });
@@ -2029,7 +2468,6 @@ export class Agent {
         ...(options.turnId ? { messageId: `${options.turnId}:agent`, done: true } : {}),
       });
       this._transitionState('completed', { message: 'Done', promptId: ctx.lastPromptId || '', lastError: '' });
-      emit(AgentEventTypes.STATUS, { status: 'completed', message: 'Done', taskId: this._taskId, traceId });
 
        if (finalResult?.media?.length > 0) {
         this.project.snapshot();
@@ -2070,7 +2508,6 @@ export class Agent {
       this.taskManager.complete(this._taskId, { error: { message: userMessage, rawMessage: error.message, type: failure.type } });
       emit(AgentEventTypes.ERROR, { message: userMessage, rawMessage: error.message, taskId: this._taskId, traceId });
       if (this._state !== 'failed' && this._state !== 'cancelled') this._transitionState('failed', { lastError: userMessage, message: userMessage });
-      emit(AgentEventTypes.STATUS, { status: 'failed', uiStatus: 'error', message: userMessage, taskId: this._taskId, traceId });
       this._writeTurnMessage('agent', `Error: ${userMessage}`, { kind: 'failed' }, options.turnId || '');
       this.taskManager.update(this._taskId, { status: 'failed', state: 'failed', error: userMessage, lastError: userMessage });
       void this.taskManager.persist();
@@ -2173,6 +2610,7 @@ export class Agent {
         workflowDir: this.workflowDir,
         availableWorkflows: ctx.availableWorkflows,
         workflowManifest: ctx.workflowManifest,
+        eventMeta: ctx.eventMeta,
       });
       attachMediaToPlan(replanned, ctx.attachedMedia);
       const steps = replanned.steps
@@ -2205,9 +2643,10 @@ export class Agent {
   async _executeWithRetry(step, ctx) {
     this._currentAttemptId = this.taskManager.beginAttempt(this._taskId, { stepId: step.id, attempt: 1 })?.attemptId || '';
     ctx.attemptId = this._currentAttemptId;
+    ctx.currentAttempt = 1;
     let output = await this.executor.executeStep(step, ctx);
     let attempt = 1;
-    this._recordStepAttempt(step, output, attempt);
+    this._recordStepAttempt(step, output, attempt, ctx);
     if (this._taskId) {
       this._transitionState('observing', {
         currentStep: step.id,
@@ -2218,7 +2657,9 @@ export class Agent {
       });
     }
     for (;;) {
-      if (output.skipped || this.executor.cancelled) {
+      // 取消竞态：取消标志已置位但本步已抢救回真实结果（生成已完成）时，
+      // 不应把成果当作 skipped 丢弃。
+      if (output.skipped || (this.executor.cancelled && !(output.result?.media?.length > 0))) {
         return output.skipped ? output : { skipped: true, reason: 'cancelled' };
       }
 
@@ -2266,6 +2707,8 @@ export class Agent {
         state: 'retrying',
         message: `Retry ${decision.attempt}/${decision.maxTaskRetries}: ${decision.modification}`,
         taskId: this._taskId,
+        traceId: this._traceId,
+        requestId: this._requestId,
         stepId: step.id,
         retry: {
           reason: decision.modification,
@@ -2288,9 +2731,10 @@ export class Agent {
       await backoffDelay(attempt);
       this._currentAttemptId = this.taskManager.beginAttempt(this._taskId, { stepId: step.id, attempt: attempt + 1 })?.attemptId || '';
       ctx.attemptId = this._currentAttemptId;
+      ctx.currentAttempt = attempt + 1;
       output = await this.executor.executeStep(step, ctx);
       attempt++;
-      this._recordStepAttempt(step, output, attempt);
+    this._recordStepAttempt(step, output, attempt, ctx);
       if (this._taskId) this._transitionState('observing', {
         currentStep: step.id,
         currentAttempt: decision.attempt + 1,
@@ -2351,7 +2795,7 @@ export class Agent {
     ctx._retryParamIndex = (index + 1) % 3;
   }
 
-  _recordStepAttempt(step, output, attempt) {
+  _recordStepAttempt(step, output, attempt, ctx) {
     if (!this._taskId) return;
     this.taskManager.recordStep(this._taskId, {
       stepId: step.id,
@@ -2519,40 +2963,55 @@ export class Agent {
     this._running = true;
     this._taskId = `chat_${Date.now()}`;
     this._traceId = nextTraceId();
+    const taskId = this._taskId;
     const traceId = this._traceId;
-    this.taskManager.create({ id: this._taskId, kind: 'chat', message: userMessage, traceId, intent: options.intent || 'chat', projectId: this.sessionManager.activeProjectId, sessionId: this.sessionManager.activeSessionId });
+    this.taskManager.create({ id: taskId, kind: 'chat', message: userMessage, traceId, intent: options.intent || 'chat', projectId: this.sessionManager.activeProjectId, sessionId: this.sessionManager.activeSessionId, turnId: options.turnId || '' });
     void this.taskManager.persist();
     if (this._state !== 'classifying') this._transitionState('classifying', { message: 'Classifying request...' });
-    this.sessionManager.setSessionState?.({ phase: 'running', lastIntent: options.intent || 'chat', lastTaskId: this._taskId, pending: null });
+    this.sessionManager.setSessionState?.({
+      turnId: options.turnId || '',
+      phase: 'running',
+      lastIntent: options.intent || 'chat',
+      lastTaskId: this._taskId,
+      pending: null,
+      pendingIntent: null,
+      pendingRequest: '',
+      supplementalInput: '',
+    });
 
     if (!options.skipUserMessage) this._writeTurnMessage('user', userMessage, {}, options.turnId || '');
-    emit(AgentEventTypes.MESSAGE, { role: 'user', content: userMessage, taskId: this._taskId, traceId });
-    emit(AgentEventTypes.STATUS, { status: 'running', message: '正在回复...', taskId: this._taskId, traceId });
+    emit(AgentEventTypes.MESSAGE, { role: 'user', content: userMessage, taskId, traceId });
+    emit(AgentEventTypes.STATUS, { status: 'running', message: '正在回复...', taskId, traceId });
 
    if (options.workflowManifest) this._lastManifest = options.workflowManifest;
-    const needsWebResearch = wantsWebResearch(userMessage, options.intent);
+    const needsWebResearch = this.llm?.isConfigured
+      ? options.execution?.needsResearch === true
+      : wantsWebResearch(userMessage, options.intent);
     const local = !this.llm?.isConfigured && !needsWebResearch ? this._localResponse(userMessage) : null;
     if (local) {
       this._writeTurnMessage('agent', local, { kind: 'reply' }, options.turnId || '');
-      this.taskManager.complete(this._taskId, { result: { response: local, taskId: this._taskId } });
-      emit(AgentEventTypes.MESSAGE, { role: 'agent', content: local, taskId: this._taskId, traceId });
+      this.taskManager.complete(taskId, { result: { response: local, taskId } });
+      emit(AgentEventTypes.MESSAGE, { role: 'agent', content: local, taskId, traceId });
       this._transitionState('planning', { message: 'Preparing reply...' });
       this._transitionState('completed', { message: 'Reply complete' });
-      emit(AgentEventTypes.STATUS, { status: 'completed', message: '回复完成', taskId: this._taskId, traceId });
-      this.taskManager.update(this._taskId, { status: 'completed' });
+      this.taskManager.update(taskId, { status: 'completed' });
       void this.taskManager.persist();
-      this.sessionManager.setSessionState?.({ phase: 'completed', lastIntent: options.intent || 'chat', lastTaskId: this._taskId, pending: null });
+      this.sessionManager.setSessionState?.({ turnId: options.turnId || '', phase: 'completed', lastIntent: options.intent || 'chat', lastTaskId: this._taskId, pending: null, pendingIntent: null, pendingRequest: '', supplementalInput: '' });
       this.sessionManager.clearCurrentTask?.();
       this._running = false;
       await this._drainQueue();
-      return { response: local, taskId: this._taskId };
+      this._prefetchTimer = setTimeout(() => { this._prefetchTimer = null; void this._prefetchContextArchive(); }, 800);
+      return { response: local, taskId };
     }
 
     try {
       this._transitionState('planning', { message: 'Planning response...' });
       this.taskManager.update(this._taskId, { status: 'planning' });
       void this.taskManager.persist();
-     let response;
+      let response;
+      let responseMetadata = null;
+      let responseRetryAttempt = 0;
+      const streamMessageId = options.turnId ? `${options.turnId}:agent` : `${taskId}:response`;
       if (!this.llm.isConfigured && needsWebResearch) {
         const researchSettings = normalizeResearchSettings(this.project.get('researchSettings') || {});
         const research = researchSettings.allowNetwork
@@ -2605,13 +3064,15 @@ export class Agent {
            currentMessages: chatMessages,
          });
           const archivedMessageIds = new Set(archive.archivedMessageIds || []);
-          const compiledChatMessages = await attachVisionImages(
-            chatMessages.filter(message => !archivedMessageIds.has(message.messageId || `${message.ts}:${message.role}`)),
-           visionImages,
-           image => ComfyUITool.client.imageDataUrl(image),
-         );
-         const streamMessageId = `${this._taskId}:response`;
-         const archiveMessage = this._archiveMessage(archive);
+          const visionSupported = await this.llm.supportsVision?.() ?? false;
+          const compiledChatMessages = visionSupported
+            ? await attachVisionImages(
+                chatMessages.filter(message => !archivedMessageIds.has(message.messageId || `${message.ts}:${message.role}`)),
+               visionImages,
+               image => ComfyUITool.client.imageDataUrl(image),
+             )
+            : chatMessages.filter(message => !archivedMessageIds.has(message.messageId || `${message.ts}:${message.role}`));
+          const archiveMessage = this._archiveMessage(archive);
          const rawChatMessages = [
            {
              role: 'system',
@@ -2621,7 +3082,7 @@ export class Agent {
 
 用户要求联网查询且下方提供检索结果时，基于来源作答并标注来源编号或 URL；检索失败或没有来源时如实说明，不要编造。询问当前提示词时，如实报告下方提供的 positive prompt、negative prompt 和 constraints，其他参数只能作为建议。若模型不支持普通负面提示，尤其是 Flux，不要建议负面提示。支持图生图或修复时，仅在相关时提醒可附加参考图。解释、建议和问题使用用户的语言；当用户索要可直接提交给当前本地工作流的提示词时，提示词正文必须遵循当前工作流的模型族格式与语言规则：除 MiniMax H3 视频外，本地扩散工作流的正向和负向提示词使用英文且不混用中文；MiniMax H3 视频使用中文自然语言；不支持普通负向提示词的工作流不输出负向提示词。意图确实不清楚时只问一个简短问题。
 
-${projectContext}${workflowContext}${researchContext}${visionImages.length > 0 ? '\nAttached local images were loaded and are available for visual inspection. Describe their actual contents when asked; do not claim that attachments are inaccessible.' : ''}${runtimeContext ? `\n${runtimeContext}` : ''}`,
+${projectContext}${workflowContext}${researchContext}${visionSupported && visionImages.length > 0 ? '\nAttached local images were loaded and are available for visual inspection. Describe their actual contents when asked; do not claim that attachments are inaccessible.' : ''}${runtimeContext ? `\n${runtimeContext}` : ''}`,
            },
            ...(archiveMessage ? [archiveMessage] : []),
            ...compiledChatMessages,
@@ -2634,8 +3095,8 @@ ${projectContext}${workflowContext}${researchContext}${visionImages.length > 0 ?
            stage: 'chat',
            archiveCount: archive.segments.length,
          });
-         emit(AgentEventTypes.CONTEXT_USAGE, { ...compiledContext.telemetry, archiveCount: archive.segments.length, taskId: this._taskId, traceId });
-          const buildChatRequest = retryAttempt => {
+          emit(AgentEventTypes.CONTEXT_USAGE, { ...compiledContext.telemetry, archiveCount: archive.segments.length, taskId, traceId });
+          const buildChatRequest = (retryAttempt, budgetBump = 0) => {
             const conversation = compiledChatMessages.filter(message => message.role !== 'system');
             const recentLimit = retryAttempt === 0
               ? conversation.length
@@ -2655,7 +3116,9 @@ ${projectContext}${workflowContext}${researchContext}${visionImages.length > 0 ?
               stage: 'chat',
               archiveCount: retryAttempt === 0 ? archive.segments.length : 0,
             });
-            const streamed = { value: '' };
+           const streamed = { sequence: 0 };
+           let thinkingBuffer = '';
+           let contentStarted = false;
             return {
               telemetry: { ...retryCompiled.telemetry, retryAttempt },
               options: {
@@ -2668,33 +3131,52 @@ ${projectContext}${workflowContext}${researchContext}${visionImages.length > 0 ?
 
 ${researchContext}`,
                 prefer: resolveLLMStrategy(this.llm),
-                maxTokens: retryAttempt === 0 ? 1024 : retryAttempt === 1 ? 768 : 512,
+                maxTokens: (retryAttempt === 0 ? 1024 : retryAttempt === 1 ? 768 : 512) + budgetBump,
                 timeoutMs: retryAttempt === 0 ? 90000 : retryAttempt === 1 ? 75000 : 60000,
                 degradationAttempt: retryAttempt,
                 disableLocalRetry: true,
                 allowPolicyOverride: options.allowPolicyOverride === true,
+                onReasoningStart: () => {
+                  thinkingBuffer = '';
+                  emit(AgentEventTypes.PLAN, { stage: 'thinking', partial: '正在思考…', taskId, traceId, turnId: options.turnId || '' });
+                },
+                onReasoningText: text => {
+                  thinkingBuffer += text;
+                  emit(AgentEventTypes.PLAN, { stage: 'thinking', partial: thinkingBuffer.slice(-1500), taskId, traceId, turnId: options.turnId || '' });
+                },
                 onChunk: delta => {
-                  streamed.value += delta;
+                  if (!contentStarted) {
+                    contentStarted = true;
+                    emit(AgentEventTypes.PLAN, { stage: 'complete', taskId, traceId, turnId: options.turnId || '' });
+                  }
                   emit(AgentEventTypes.MESSAGE, {
                     role: 'agent',
-                    content: streamed.value,
+                    delta,
                     streaming: true,
                     done: false,
                     messageId: streamMessageId,
-                    taskId: this._taskId,
+                     taskId,
                     traceId,
+                    attempt: retryAttempt,
+                    sequence: streamed.sequence++,
                   });
                 },
               },
             };
           };
+          // 大多数代理/模型不在流里返回 reasoning_content，先显示一个通用
+          // "正在思考…"，等第一个正文 delta 到达时由 PLAN complete 清除；
+          emit(AgentEventTypes.PLAN, { stage: 'thinking', partial: '正在思考…', taskId, traceId, turnId: options.turnId || '' });
           const requestResult = await this._chatWithDegradation({
             buildRequest: buildChatRequest,
             isLocal: contextProfile.mode === 'local',
-            taskId: this._taskId,
+             taskId,
             traceId,
+            streamMessageId,
           });
-          const result = requestResult.result;
+           const result = requestResult.result;
+           responseMetadata = result;
+           responseRetryAttempt = requestResult.retryAttempt;
           if (result?.usage) emit(AgentEventTypes.CONTEXT_USAGE, {
             ...requestResult.telemetry,
             archiveCount: archive.segments.length,
@@ -2703,42 +3185,58 @@ ${researchContext}`,
            totalTokens: result.usage.totalTokens,
             source: 'provider',
             retryAttempt: requestResult.retryAttempt,
-           taskId: this._taskId,
+            taskId,
            traceId,
          });
         response = result.content?.trim() || '模型没有返回文本。';
       }
 
       this._writeTurnMessage('agent', response, { kind: 'reply' }, options.turnId || '');
-      this.taskManager.complete(this._taskId, { result: { response, taskId: this._taskId } });
+       this.taskManager.complete(taskId, { result: { response, taskId } });
       emit(AgentEventTypes.MESSAGE, {
         role: 'agent',
         content: response,
-        taskId: this._taskId,
+         taskId,
         traceId,
-        ...(this.llm?.isConfigured ? { messageId: `${this._taskId}:response`, streaming: false, done: true } : {}),
+        ...(this.llm?.isConfigured ? {
+          messageId: streamMessageId,
+          streaming: false,
+          done: true,
+          attempt: responseRetryAttempt,
+          finishReason: responseMetadata?.finishReason || 'unknown',
+          outputTruncated: responseMetadata?.finishReason === 'length',
+          usage: responseMetadata?.usage,
+        } : {}),
       });
       this._transitionState('completed', { message: 'Reply complete' });
-      emit(AgentEventTypes.STATUS, { status: 'completed', message: '回复完成', taskId: this._taskId, traceId });
-      this.taskManager.update(this._taskId, { status: 'completed' });
+       this.taskManager.update(taskId, { status: 'completed' });
       void this.taskManager.persist();
-      this.sessionManager.setSessionState?.({ phase: 'completed', lastIntent: options.intent || 'chat', lastTaskId: this._taskId, pending: null });
+      this.sessionManager.setSessionState?.({ turnId: options.turnId || '', phase: 'completed', lastIntent: options.intent || 'chat', lastTaskId: this._taskId, pending: null, pendingIntent: null, pendingRequest: '', supplementalInput: '' });
       this.sessionManager.clearCurrentTask?.();
-      return { response, taskId: this._taskId };
+      this._prefetchTimer = setTimeout(() => { this._prefetchTimer = null; void this._prefetchContextArchive(); }, 800);
+       return { response, taskId };
     } catch (error) {
-      this.taskManager.complete(this._taskId, { error: { message: error.message } });
+      if (this._cancelRequested || this._state === 'cancelled' || error?.code === 'LLM_CANCELLED') {
+         emit(AgentEventTypes.PLAN, { stage: 'error', taskId, traceId });
+         return { cancelled: true, taskId };
+      }
+       this.taskManager.complete(taskId, { error: {
+        message: error.message,
+        code: error.code || '',
+        cause: error.cause?.message || error.cause?.code || '',
+      } });
+      emit(AgentEventTypes.PLAN, { stage: 'error', taskId, traceId });
       emit(AgentEventTypes.ERROR, {
         message: error.message,
         code: error.code || '',
         policyDecision: error.code === 'CLOUD_POLICY_BLOCKED' ? error.policyDecision || null : null,
-        taskId: this._taskId,
+         taskId,
         traceId,
       });
-      if (this._state !== 'failed') this._transitionState('failed', { lastError: error.message, message: error.message });
-      emit(AgentEventTypes.STATUS, { status: 'error', message: error.message, taskId: this._taskId, traceId });
-      this.taskManager.update(this._taskId, { status: 'failed', state: 'failed', error: error.message, lastError: error.message });
+      if (this._state !== 'failed' && this._state !== 'cancelled') this._transitionState('failed', { lastError: error.message, message: error.message });
+       this.taskManager.update(taskId, { status: 'failed', state: 'failed', error: error.message, lastError: error.message });
       void this.taskManager.persist();
-      this.sessionManager.setSessionState?.({ phase: 'error', lastIntent: options.intent || 'chat', lastTaskId: this._taskId, pending: null });
+      this.sessionManager.setSessionState?.({ turnId: options.turnId || '', phase: 'error', lastIntent: options.intent || 'chat', lastTaskId: this._taskId, pending: null, pendingIntent: null, pendingRequest: '', supplementalInput: '' });
       this.sessionManager.clearCurrentTask?.();
       throw error;
     } finally {
@@ -2780,6 +3278,7 @@ ${researchContext}`,
     this._cancelRequested = true;
     this._pendingQueue = [];
     const cancelledTaskId = this._taskId;
+    this._promptCompileController?.abort('cancelled');
     this.llm?.cancel();
     if (this.executor) this.executor.cancel();
     const promptIds = [...this._activePromptIds];
@@ -2791,22 +3290,27 @@ ${researchContext}`,
         await ComfyUITool.cancel();
       }
     } catch {}
-    if (cancelledTaskId) {
-      this.taskManager.complete(cancelledTaskId, { result: { cancelled: true } });
-      if (this._state !== 'cancelled' && canTransition(this._state, 'cancelled')) this._transitionState('cancelled', { message: 'Cancelled', needsConfirmation: false });
-      this.taskManager.update(cancelledTaskId, { status: 'cancelled', state: 'cancelled' });
-      void this.taskManager.persist();
+    // 取消竞态：等待 ComfyUI 中断返回期间执行可能已完成（取消到达太晚），
+    // 此时不能再把已完成的任务覆写成取消状态，否则已生成成果会被吞掉。
+    const alreadyCompleted = cancelledTaskId ? this.taskManager.get(cancelledTaskId)?.status === 'completed' : false;
+    if (!alreadyCompleted) {
+      if (cancelledTaskId) {
+        this.taskManager.complete(cancelledTaskId, { result: { cancelled: true } });
+        if (this._state !== 'cancelled' && canTransition(this._state, 'cancelled')) this._transitionState('cancelled', { message: 'Cancelled', needsConfirmation: false });
+        this.taskManager.update(cancelledTaskId, { status: 'cancelled', state: 'cancelled' });
+        void this.taskManager.persist();
+      }
+      this.sessionManager.setSessionState?.({
+        phase: 'cancelled',
+        lastTaskId: cancelledTaskId,
+        pending: null,
+        pendingIntent: null,
+        pendingRequest: '',
+        preparedPreview: null,
+        taskStatus: 'cancelled',
+      });
+      this.sessionManager.clearCurrentTask?.();
     }
-    this.sessionManager.setSessionState?.({
-      phase: 'cancelled',
-      lastTaskId: cancelledTaskId,
-      pending: null,
-      pendingIntent: null,
-      pendingRequest: '',
-      preparedPreview: null,
-      taskStatus: 'cancelled',
-    });
-    this.sessionManager.clearCurrentTask?.();
     this._running = false;
     return { cancelled: true, taskId: cancelledTaskId };
   }

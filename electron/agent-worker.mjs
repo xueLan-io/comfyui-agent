@@ -63,6 +63,17 @@ function send(message) {
   try { process.send(message); } catch {}
 }
 
+function sendAndWait(message) {
+  if (parentPort) {
+    try { parentPort.postMessage(message); } catch {}
+    return new Promise(resolve => setImmediate(resolve));
+  }
+  if (!process.connected) return Promise.resolve();
+  return new Promise(resolve => {
+    try { process.send(message, () => resolve()); } catch { resolve(); }
+  });
+}
+
 function runCall(message) {
   return invoke(message.method, message.args || [])
     .then(result => send({ type: 'response', id: message.id, ok: true, result, state: snapshot() }))
@@ -102,7 +113,10 @@ function wireEvents() {
       if (['agent:step', 'agent:tool-call', 'agent:tool-result', 'agent:error', 'agent:plan'].includes(eventType)) {
         agent.sessionManager.appendExecutionEvent({ ...data, type: eventType });
       }
-      publishState();
+      // Streaming deltas can arrive dozens of times per second. Their event
+      // carries all renderer state needed for incremental rendering, so avoid
+      // cloning and IPC-sending the complete session/task snapshot per token.
+      if (!(eventType === 'agent:message' && data.streaming && !data.done)) publishState();
       send({ type: 'event', eventType, data });
     });
   }
@@ -123,6 +137,12 @@ async function invoke(method, args = []) {
   if (method === 'session.setState') {
     agent.sessionManager.setSessionState(args[0] || {});
     return agent.sessionManager.getSessionState();
+  }
+  if (method === 'session.appendExecutionEvent') {
+    return agent.sessionManager.appendExecutionEvent(args[0] || {});
+  }
+  if (method === 'session.upsertGenerationRecord') {
+    return agent.sessionManager.upsertGenerationRecord(args[0] || {});
   }
   if (method === 'session.flush') {
     await agent.sessionManager.flush();
@@ -147,6 +167,13 @@ async function invoke(method, args = []) {
   if (method === 'config.research') return agent.reconfigureResearch(args[0]);
   if (method === 'config.workflowDir') return agent.setWorkflowDir(args[0]);
   if (method === 'config.promptMode') return agent.setPromptMode(args[0]);
+  if (method === 'config.comfy') {
+    const config = args[0] || {};
+    if (config.baseUrl) ComfyUITool.setClient(new ComfyUIClient({ baseUrl: config.baseUrl }));
+    if (Object.prototype.hasOwnProperty.call(config, 'comfyRoot')) agent.comfyRoot = config.comfyRoot || '';
+    if (config.workflowDir) agent.setWorkflowDir(config.workflowDir);
+    return { baseUrl: ComfyUITool.client.baseUrl, comfyRoot: agent.comfyRoot, workflowDir: agent.workflowDir };
+  }
   throw new Error(`RPC method is not allowed: ${method}`);
 }
 
@@ -201,8 +228,9 @@ const handleMessage = async message => {
   }
   if (message.type === 'stop') {
     callQueue = callQueue.then(() => stop()).then(() => {
-      send({ type: 'stopped' });
-      setImmediate(() => process.exit(0));
+      return sendAndWait({ type: 'stopped' });
+    }).then(() => {
+      process.exit(0);
     });
     return;
   }

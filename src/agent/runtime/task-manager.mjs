@@ -35,7 +35,8 @@ export const TASK_TRANSITIONS = {
   replanning: ['executing', 'failed', 'cancelled'],
   completed: ['classifying', 'idle'],
   failed: ['classifying', 'idle'],
-  cancelled: ['classifying', 'idle'],
+  // 取消到达时生成可能已完成（取消竞态），允许执行路径晚到的完成结果接管。
+  cancelled: ['classifying', 'idle', 'completed'],
   abandoned: ['classifying', 'idle'],
   submit_unknown: ['observing', 'failed', 'cancelled'],
   observe_timeout: ['observing', 'failed', 'cancelled'],
@@ -250,6 +251,11 @@ export class TaskManager {
       retries: task.retries || [],
       replans: task.replans || [],
       timings: task.timings || {},
+      status: task.status || '',
+      state: task.state || task.status || '',
+      terminalState: ['completed', 'failed', 'cancelled', 'abandoned'].includes(task.state || task.status)
+        ? (task.state || task.status)
+        : '',
       result: task.result || {},
       promptId: task.promptId || '',
       attempts: task.attempts || [],

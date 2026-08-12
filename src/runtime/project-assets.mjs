@@ -1,8 +1,12 @@
 import { dirname, join, relative, resolve } from 'node:path';
-import { readdir, rmdir, stat } from 'node:fs/promises';
+import { readFile, readdir, rmdir, stat } from 'node:fs/promises';
 
 const ASSET_EXTENSIONS = /\.(gif|jpe?g|png|webp|mp4|webm|mov)$/i;
 const ASSET_ROOTS = ['images', 'videos'];
+
+export function assetRecipePath(filePath) {
+  return `${filePath}.recipe.json`;
+}
 
 export function normalizeAssetPath(value = '') {
   return String(value)
@@ -37,6 +41,15 @@ async function readTraceSession(readTrace, taskId) {
   }
 }
 
+async function readAssetRecipe(filePath) {
+  try {
+    const value = JSON.parse(await readFile(assetRecipePath(filePath), 'utf8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
 export async function scanProjectAssets({ project, readTrace } = {}) {
   if (!project?.dir) return [];
   const assets = [];
@@ -57,8 +70,10 @@ export async function scanProjectAssets({ project, readTrace } = {}) {
       const info = await stat(filePath);
       const subfolder = normalizeAssetPath(relative(project.dir, currentDir));
       const stored = metadata.find(item => matchesAssetMetadata(item, subfolder, entry.name));
+      const recipe = await readAssetRecipe(filePath);
       const taskId = relative(join(project.dir, rootName), currentDir).split(/[\\/]/)[0] || '';
       assets.push({
+        ...recipe,
         ...(stored || {}),
         filename: entry.name,
         subfolder,

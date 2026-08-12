@@ -61,6 +61,37 @@ test('executeStep emits events', async () => {
   unsub();
 });
 
+test('executeStep preserves task and trace ownership on every event', async () => {
+  const events = [];
+  const stop = [
+    on(AgentEventTypes.STEP, event => events.push(event)),
+    on(AgentEventTypes.TOOL_CALL, event => events.push(event)),
+    on(AgentEventTypes.TOOL_RESULT, event => events.push(event)),
+  ];
+  try {
+    const executor = new Executor({ mock_tool: mockTool }, null);
+    await executor.executeStep(
+      { id: 'owned-step', tool: 'mock_tool', input: { prompt: 'x' }, description: 'owned test' },
+      {
+        eventMeta: { taskId: 'task_owned', traceId: 'trace_owned', turnId: 'turn_owned' },
+        attemptId: 'task_owned_attempt_2',
+        currentAttempt: 2,
+      },
+    );
+  } finally {
+    stop.forEach(unsubscribe => unsubscribe());
+  }
+
+  assert.ok(events.length >= 4);
+  assert.ok(events.every(event => (
+    event.taskId === 'task_owned'
+    && event.traceId === 'trace_owned'
+    && event.turnId === 'turn_owned'
+    && event.attemptId === 'task_owned_attempt_2'
+    && event.attempt === 2
+  )));
+});
+
 test('executeStep cancelled returns skipped', async () => {
   const executor = new Executor({ mock_tool: mockTool }, null);
   executor.cancel();

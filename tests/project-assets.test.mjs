@@ -4,6 +4,7 @@ import test from 'node:test';
 import { join } from 'node:path';
 import { displayPath } from '../src/runtime/path-display.mjs';
 import {
+  assetRecipePath,
   projectAssetRoot,
   removeEmptyAssetDirectories,
   scanProjectAssets,
@@ -57,6 +58,23 @@ test('preserves saved generation recipe metadata when scanning assets', async ()
       },
     });
     assert.equal(assets[0].positive, 'a saved prompt');
+    assert.equal(assets[0].negative, 'blurry');
+    assert.equal(assets[0].workflowName, 'workflow.json');
+    assert.deepEqual(assets[0].parameters, { seed: 12 });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('restores recipe metadata stored beside an asset after its session index is removed', async () => {
+  const dir = await mkdtemp(join(process.env.TEMP || process.env.TMP || '.', 'comfy-assets-sidecar-'));
+  try {
+    const image = join(dir, 'images', 'task-recipe', 'recipe.png');
+    await mkdir(join(dir, 'images', 'task-recipe'), { recursive: true });
+    await writeFile(image, 'image');
+    await writeFile(assetRecipePath(image), JSON.stringify({ positive: 'persistent prompt', negative: 'blurry', workflowName: 'workflow.json', parameters: { seed: 12 } }));
+    const assets = await scanProjectAssets({ project: { id: 'project-recipe', dir, assets: [] } });
+    assert.equal(assets[0].positive, 'persistent prompt');
     assert.equal(assets[0].negative, 'blurry');
     assert.equal(assets[0].workflowName, 'workflow.json');
     assert.deepEqual(assets[0].parameters, { seed: 12 });

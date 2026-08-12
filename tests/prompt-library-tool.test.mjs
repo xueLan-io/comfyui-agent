@@ -43,12 +43,13 @@ test('prompt library lists groups', async t => {
   assert.ok(characters && characters.count > 10000);
 });
 
-test('prompt library returns error for missing data', async () => {
+test('prompt library returns empty results for missing data', async () => {
   const original = process.env.COMFY_AGENT_PROMPT_LIB_DIR;
   process.env.COMFY_AGENT_PROMPT_LIB_DIR = 'C:\\nonexistent\\dir';
   const { PromptLibraryTool: reloaded } = await import(`../src/agent/tools/prompt-library/index.mjs?fresh=${Date.now()}`);
   const result = await reloaded.execute({ query: 'cat' });
-  assert.ok(result.error);
+  assert.ok(Array.isArray(result.results));
+  assert.strictEqual(result.results.length, 0);
   if (original === undefined) delete process.env.COMFY_AGENT_PROMPT_LIB_DIR;
   else process.env.COMFY_AGENT_PROMPT_LIB_DIR = original;
 });

@@ -7,7 +7,7 @@ import { useI18n } from '../i18n/I18nContext.jsx';
 export default function Header({ onOpenSetup }) {
   const { t } = useI18n();
   const { connected, comfyState, handleStartComfyUI } = useComfyUI();
-  const { trace, setShowTrace } = useAgent();
+  const { trace, setShowTrace, runtimeView } = useAgent();
   const [maximized, setMaximized] = useState(false);
   const windowApi = window.electronAPI;
   const comfyStatusLabels = {
@@ -27,6 +27,7 @@ export default function Header({ onOpenSetup }) {
 
   return (
     <header className="header">
+      <div className="header-brand"><span className="header-brand-mark">CM</span><span><strong>{t('appTitle')}</strong><small>{runtimeView.phase === 'idle' ? t('chatWorkspace') : runtimeView.label}</small></span></div>
       <div className="header-right">
         <div
           className={`connection-state ${connected ? 'connected' : comfyState.status}`}

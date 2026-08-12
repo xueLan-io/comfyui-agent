@@ -70,7 +70,7 @@ test('failed auto local probe errors without touching the cloud', async () => {
   }
 });
 
-test('prefer cloud falls back to local after cloud failure', async () => {
+test('prefer cloud falls back to local after cloud failure when no provider is pinned', async () => {
   const originalFetch = globalThis.fetch;
   const models = [];
   globalThis.fetch = async (_url, options) => {
@@ -81,7 +81,7 @@ test('prefer cloud falls back to local after cloud failure', async () => {
     return response('local fallback');
   };
   try {
-    const provider = new LLMProvider({ providers: [LOCAL, CLOUD], active: { providerId: 'cloud', modelId: 'cloud-model', strategy: 'auto' } });
+    const provider = new LLMProvider({ providers: [LOCAL, CLOUD], active: { providerId: '', modelId: '', strategy: 'auto' } });
     const result = await provider.chat({ prefer: 'cloud', messages: [{ role: 'user', content: 'safe request' }] });
     assert.equal(result.content, 'local fallback');
     assert.deepEqual(models, ['cloud-model', 'local-model']);

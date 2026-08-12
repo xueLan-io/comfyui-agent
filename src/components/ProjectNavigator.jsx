@@ -17,10 +17,13 @@ export default function ProjectNavigator({ activeView = 'chat', onViewChange, on
   const [dialog, setDialog] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [sessionQuery, setSessionQuery] = useState('');
   const [projectMenuPosition, setProjectMenuPosition] = useState(null);
   const projectTriggerRef = useRef(null);
   const activeProject = session.projects.find(project => project.id === session.activeProjectId);
   const dialogProject = session.projects.find(project => project.id === dialog?.projectId) || activeProject;
+  const query = sessionQuery.trim().toLowerCase();
+  const visibleSessions = (activeProject?.sessions || []).filter(item => !query || String(item.title || '').toLowerCase().includes(query));
 
   useEffect(() => {
     if (!projectMenuOpen) return undefined;
@@ -135,33 +138,33 @@ export default function ProjectNavigator({ activeView = 'chat', onViewChange, on
                 <span className="sidebar-eyebrow">AGENT WORKSPACE</span>
                  <strong>{t('workspace')}</strong>
               </div>
-               <button className="btn btn-icon sidebar-collapse" onClick={() => setCollapsed(true)} title={t('collapseSidebar')}><Icon name="panelLeft" /></button>
+               <button className="btn btn-icon sidebar-collapse" onClick={() => setCollapsed(true)} title={t('collapseSidebar')}><Icon name="chevronLeft" /></button>
             </>
           ) : (
-            <button className="btn btn-icon sidebar-collapse" onClick={() => setCollapsed(false)} title={t('expandSidebar')}><Icon name="panelLeft" /></button>
+             <button className="btn btn-icon sidebar-collapse" onClick={() => setCollapsed(false)} title={t('expandSidebar')}><Icon name="chevronRight" /></button>
           )}
         </div>
 
-        {!collapsed && <>
-          <nav className="workspace-nav" aria-label={t('workspaceView')}>
-            <button className={`workspace-nav-item${activeView === 'chat' ? ' active' : ''}`} onClick={() => { setProjectMenuOpen(false); onViewChange?.('chat'); }}>
+        <nav className="workspace-nav" aria-label={t('workspaceView')}>
+            <button className={`workspace-nav-item${activeView === 'chat' ? ' active' : ''}`} onClick={() => { setProjectMenuOpen(false); onViewChange?.('chat'); }} title={t('chatWorkspace')}>
               <span className="workspace-nav-icon"><Icon name="message" /></span>
                <span>{t('chatWorkspace')}</span>
             </button>
-            <button className={`workspace-nav-item${activeView === 'assets' ? ' active' : ''}`} onClick={() => { setProjectMenuOpen(false); onViewChange?.('assets'); }}>
+            <button className={`workspace-nav-item${activeView === 'assets' ? ' active' : ''}`} onClick={() => { setProjectMenuOpen(false); onViewChange?.('assets'); }} title={t('assetLibrary')}>
               <span className="workspace-nav-icon"><Icon name="images" /></span>
                <span>{t('assetLibrary')}</span>
             </button>
-            <button className={`workspace-nav-item${activeView === 'presets' ? ' active' : ''}`} onClick={() => { setProjectMenuOpen(false); onViewChange?.('presets'); }}>
+            <button className={`workspace-nav-item${activeView === 'presets' ? ' active' : ''}`} onClick={() => { setProjectMenuOpen(false); onViewChange?.('presets'); }} title={t('presetCards')}>
               <span className="workspace-nav-icon"><Icon name="spark" /></span>
                <span>{t('presetCards')}</span>
             </button>
-            <button className={`workspace-nav-item${activeView === 'prompt-library' ? ' active' : ''}`} onClick={() => { setProjectMenuOpen(false); onViewChange?.('prompt-library'); }}>
+            <button className={`workspace-nav-item${activeView === 'prompt-library' ? ' active' : ''}`} onClick={() => { setProjectMenuOpen(false); onViewChange?.('prompt-library'); }} title={t('promptWorkspace')}>
               <span className="workspace-nav-icon"><Icon name="library" /></span>
                <span>{t('promptWorkspace')}</span>
             </button>
           </nav>
 
+        {!collapsed && <>
           <div className="sidebar-content">
              <div className="sidebar-context-label">{t('currentProject')}</div>
             <div className="sidebar-project-picker">
@@ -218,8 +221,16 @@ export default function ProjectNavigator({ activeView = 'chat', onViewChange, on
                <button className="btn btn-icon" onClick={() => handleCreateSession()} title={t('newSession')} disabled={!activeProject}><Icon name="plus" size={15} /></button>
             </div>
 
+            {activeProject && (
+              <div className="sidebar-session-search">
+                <Icon name="search" size={12} />
+                <input value={sessionQuery} onChange={event => setSessionQuery(event.target.value)} placeholder={t('searchSessions')} aria-label={t('searchSessions')} />
+                {sessionQuery && <button className="btn btn-icon" onClick={() => setSessionQuery('')} title={t('close')}><Icon name="close" size={11} /></button>}
+              </div>
+            )}
+
             <div className="sidebar-session-list">
-              {activeProject?.sessions?.map(item => {
+              {visibleSessions.map(item => {
                 const active = item.id === session.activeSessionId;
                 return (
                   <div key={item.id} className={`sidebar-session-item${active ? ' active' : ''}`}>
@@ -235,16 +246,17 @@ export default function ProjectNavigator({ activeView = 'chat', onViewChange, on
                 );
               })}
                {!activeProject && <div className="sidebar-empty-state"><Icon name="folder" size={17} /><span>{t('noProjectSelected')}</span></div>}
-               {activeProject?.sessions?.length === 0 && <div className="sidebar-empty-state"><Icon name="message" size={17} /><span>{t('startSession')}</span></div>}
+               {activeProject && query && visibleSessions.length === 0 && <div className="sidebar-empty-state"><Icon name="search" size={17} /><span>{t('searchNoSessions')}</span></div>}
+               {activeProject?.sessions?.length === 0 && !query && <div className="sidebar-empty-state"><Icon name="message" size={17} /><span>{t('startSession')}</span></div>}
             </div>
           </div>
         </>}
 
-        {!collapsed && <div className="project-sidebar-footer">
+        <div className="project-sidebar-footer">
           {error && <div className="sidebar-inline-error" role="alert">{error}</div>}
-           <button className="sidebar-quick-generate" onClick={onOpenQuickGenerate}><Icon name="spark" size={15} /><span><strong>{t('quickGenerate')}</strong><small>{t('openFloatingController')}</small></span></button>
-           <button className="sidebar-settings" onClick={() => setShowSettings(true)}><Icon name="settings" size={15} /> {t('settings')}</button>
-        </div>}
+           <button className="sidebar-quick-generate" onClick={onOpenQuickGenerate} title={t('quickGenerate')}><Icon name="spark" size={15} /><span><strong>{t('quickGenerate')}</strong><small>{t('openFloatingController')}</small></span></button>
+           <button className="sidebar-settings" onClick={() => setShowSettings(true)} title={t('settings')}><Icon name="settings" size={15} /> <span>{t('settings')}</span></button>
+         </div>
       </aside>
 
       {dialog && <div className="modal-overlay sidebar-dialog-overlay" onClick={closeDialog}>

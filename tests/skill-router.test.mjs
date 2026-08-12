@@ -3,6 +3,7 @@ import test from 'node:test';
 import { SKILLS, configureSkills, matchSkill } from '../src/agent/skills/index.mjs';
 import { Planner } from '../src/agent/runtime/planner.mjs';
 import { PlanTemplates, normalizePlan, validatePlan } from '../src/agent/schemas/plan-schema.mjs';
+import { AgentEventTypes, on } from '../src/agent/events/agent-events.mjs';
 
 test('SKILLS registry contains all system skills', () => {
   assert.deepEqual(Object.keys(SKILLS).sort(), ['batch', 'character', 'controlnet', 'img2img', 'lora', 'txt2img', 'upscale', 'video']);
@@ -78,6 +79,86 @@ test('Planner without LLM produces a skill-based fallback plan', async () => {
   assert.equal(plan.steps[0].tool, 'comfyui');
   assert.equal(plan.steps[0].expected_output, 'images');
   assert.deepEqual(plan.steps[0].input.settings, { seed: 42, width: 512, height: 768 });
+});
+
+test('Planner uses the configured LLM for ordinary generation requests', async () => {
+  let called = false;
+  const planner = new Planner({
+    isConfigured: true,
+    async chat() {
+      called = true;
+      return { content: JSON.stringify({
+        goal: 'Generate a cat',
+        steps: [{ id: 'step1', tool: 'comfyui', input: { workflowName: 'txt2img.json' }, description: 'Generate the requested cat', expected_output: 'images' }],
+      }) };
+    },
+  }, { tools: { comfyui: { name: 'comfyui', output_types: ['images'] } } });
+  const timingEvents = [];
+  const unsubscribe = on(AgentEventTypes.PROGRESS, event => {
+    if (event.scope === 'timing' && event.taskId === 'planner_timing_task') timingEvents.push(event);
+  });
+  let plan;
+  try {
+    plan = await planner.createPlan('生成一只坐在窗边的猫', {
+      project: { promptMode: 'raw', currentWorkflow: 'txt2img.json' },
+      availableWorkflows: ['txt2img.json'],
+      eventMeta: { taskId: 'planner_timing_task', turnId: 'planner_timing_turn' },
+    });
+  } finally {
+    unsubscribe();
+  }
+  assert.equal(called, true);
+  assert.equal(plan.steps[0].description, 'Generate the requested cat');
+  assert.deepEqual(timingEvents.map(event => event.stage), ['planner_llm_start', 'planner_llm_end']);
+  assert.equal(timingEvents[0].timingPhase, 'plan');
+  assert.equal(timingEvents[1].timingPhase, 'plan');
+  assert.equal(timingEvents[1].outcome, 'completed');
+  assert.equal(typeof timingEvents[1].duration_ms, 'number');
+  assert.ok(timingEvents[1].duration_ms >= 0);
+});
+
+test('Planner normalizes common output aliases from a generation model', async () => {
+  const planner = new Planner({
+    isConfigured: true,
+    async chat() {
+      return { content: JSON.stringify({
+        goal: '画一只戴帽子的猫',
+        steps: [
+          { id: 'step1', tool: 'prompt_enhance', input: { prompt: '画一只戴帽子的猫' }, description: '优化提示词', expected_output: 'enhanced_prompt' },
+          { id: 'step2', tool: 'comfyui', input: { workflowName: 'txt2img.json' }, description: '生成图片', expected_output: 'image' },
+        ],
+      }) };
+    },
+  }, {
+    tools: {
+      prompt_enhance: { name: 'prompt_enhance', output_types: ['prompt'], input_schema: { properties: {} } },
+      comfyui: { name: 'comfyui', output_types: ['images', 'videos'], input_schema: { properties: {} } },
+    },
+  });
+
+  const plan = await planner.createPlan('画一只戴帽子的猫', {
+    project: { promptMode: 'raw', currentWorkflow: 'txt2img.json' },
+    availableWorkflows: ['txt2img.json'],
+  });
+
+  assert.equal(plan.steps[0].expected_output, 'prompt');
+  assert.equal(plan.steps[1].expected_output, 'images');
+});
+
+test('Planner propagates a configured model failure instead of guessing a fallback plan', async () => {
+  const planner = new Planner({
+    isConfigured: true,
+    async chat() {
+      const error = new Error('model unavailable');
+      error.code = 'LLM_NETWORK_ERROR';
+      throw error;
+    },
+  });
+
+  await assert.rejects(
+    planner.createPlan('生成一只坐在窗边的猫', { project: { promptMode: 'raw' } }),
+    error => error.code === 'LLM_NETWORK_ERROR',
+  );
 });
 
 test('Planner fallback routes img2img skill and fills workflow', async () => {

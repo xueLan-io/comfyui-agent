@@ -3,12 +3,15 @@ const SETTINGS = /(?:\bseed\b|种子|步数|steps?|cfg|引导系数|采样器|sc
 const ABSTRACT = /(高级感|氛围感|有感觉|好看|漂亮|大气|质感|电影感|科技感|高级|vibe|premium|beautiful|cinematic)/i;
 const CHANGE_VALUE = /(红|蓝|绿|黄|黑|白|橙|紫|粉|颜色|色调|风格|背景|光影|灯光|构图|姿势|镜头|比例|夜景|白天|油画|水彩|change|color|style|lighting|background|composition)/i;
 const DETAIL_DIRECTION = /(清晰度?|锐度|细节|动作|姿势|表情|手势|\bsharpness\b|\bdetails?\b|\bpose\b|\baction\b)/i;
+// 内容级修改指令：动词 + 宾语即构成明确调整方向（去掉帽子、换成狗、加上一只猫），
+// 与配色/构图/光影等样式方向同等有效，不应再追问“想调整哪一部分”。
+const CONTENT_CHANGE = /(?:(?:去掉|去除|移除|删除|删掉|拿掉|摘掉|脱下|拿走|移走|不要|别要|换成|换上|替换成|替换为|改成|改为|变成|变为|重画成|画成|加上|添加|加入|增加|加(?:上|个|只|条|张|一个|一只))[\s\S]{0,16})/i;
 const CONTRADICTION = /(?:8k|超高清|高清|清晰).*?(?:模糊|失焦)|(?:模糊|失焦).*?(?:8k|超高清|高清|清晰)/i;
 
 const EXECUTE_LAST_PROMPT = /^(?:\u6267\u884c|\u8fd0\u884c|\u5f00\u59cb(?:\u751f\u6210|\u6267\u884c)?|\u6309(?:\u539f\u63d0\u793a|\u4e0a\u6b21\u63d0\u793a)\u751f\u6210|run|execute)$/i;
 
 export function hasRefinementDirection(text = '') {
-  return CHANGE_VALUE.test(text) || DETAIL_DIRECTION.test(text);
+  return CHANGE_VALUE.test(text) || DETAIL_DIRECTION.test(text) || CONTENT_CHANGE.test(text);
 }
 
 function hasMedia(media = {}, lastImages = []) {

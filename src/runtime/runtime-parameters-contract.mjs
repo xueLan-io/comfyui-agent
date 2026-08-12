@@ -42,7 +42,17 @@ export function normalizeRuntimeParameters(input = {}) {
   if (settings.fps === undefined && input.fps !== undefined) settings.fps = input.fps;
   const normalizedSettings = {};
   for (const name of ['seed', 'steps', 'cfg', 'denoise', 'width', 'height', 'batch', 'frames', 'fps']) {
-    if (settings[name] !== undefined && settings[name] !== null && settings[name] !== '') normalizedSettings[name] = number(settings[name], name);
+    if (settings[name] !== undefined && settings[name] !== null && settings[name] !== '') {
+      try {
+        normalizedSettings[name] = number(settings[name], name);
+      } catch (error) {
+        if (name === 'seed') {
+          normalizedSettings[name] = Math.floor(Math.random() * (0xFFFFFFFF + 1));
+        } else {
+          throw error;
+        }
+      }
+    }
   }
   for (const name of ['sampler', 'scheduler']) if (settings[name] !== undefined) {
     if (typeof settings[name] !== 'string' || !settings[name].trim()) throw new Error(`Invalid ${name}: expected a non-empty string`);

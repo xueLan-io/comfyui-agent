@@ -3,6 +3,7 @@ import test from 'node:test';
 import { Agent } from '../src/agent/runtime/agent.mjs';
 import { ConversationMemory } from '../src/agent/memory/conversation.mjs';
 import { normalizeIntentDecision } from '../src/agent/schemas/intent-schema.mjs';
+import { AgentEventTypes, on } from '../src/agent/events/agent-events.mjs';
 
 function fakeTurnAgent(decisions) {
   const agent = Object.create(Agent.prototype);
@@ -53,22 +54,109 @@ test('intent protocol normalizes query and confirmation fields', () => {
   assert.equal(decision.sourceTurnId, 'turn_1');
 });
 
-test('handleTurn suggests generation from the creative conversation without creating a preview', async () => {
+test('intent protocol keeps the model execution decision', () => {
+  const decision = normalizeIntentDecision({
+    intent: 'generate',
+    action: 'prepare',
+    execution: { kind: 'video', needsResearch: true, needsConfirmation: true },
+  });
+  assert.deepEqual(decision.execution, { kind: 'video', needsResearch: true, needsConfirmation: true });
+});
+
+test('handleTurn preserves an LLM generation prepare decision in creative mode', async () => {
   const agent = fakeTurnAgent([
     { intent: 'chat', action: 'reply', target: 'none', missing: [], confidence: 0.9 },
     { intent: 'generate', action: 'prepare', target: 'new', missing: [], confidence: 0.9 },
   ]);
 
   const reply = await agent.handleTurn({ text: 'explain the workflow', modeHint: 'generate' });
-  const suggestion = await agent.handleTurn({ text: 'make a cat', modeHint: 'answer' });
+  const preview = await agent.handleTurn({ text: 'make a cat', modeHint: 'creative' });
   const messages = agent.conversation.toJSON();
 
   assert.equal(reply.action, 'reply');
-  assert.equal(suggestion.action, 'suggest');
+  assert.equal(preview.action, 'prepare');
   assert.equal(messages.filter(message => message.role === 'user').length, 2);
-  assert.equal(messages.filter(message => message.role === 'agent').length, 2);
+  assert.equal(messages.filter(message => message.role === 'agent').length, 1);
   assert.equal(messages[0].modeHint, 'generate');
-  assert.equal(messages[2].modeHint, 'answer');
+  assert.equal(messages[2].modeHint, 'creative');
+});
+
+test('handleTurn returns cancellation instead of a generation preview', async () => {
+  const agent = fakeTurnAgent([
+    { intent: 'generate', action: 'prepare', target: 'new', missing: [], confidence: 0.9 },
+  ]);
+  agent.prepareGeneration = async () => ({ cancelled: true, taskId: 'task_cancelled' });
+
+  const result = await agent.handleTurn({ text: 'make a cat', modeHint: 'creative' });
+
+  assert.equal(result.action, 'cancelled');
+  assert.equal(result.taskId, 'task_cancelled');
+  assert.equal(result.preview, undefined);
+});
+
+test('handleTurn marks explicit cancellation as cancelled in turn timing', async () => {
+  const agent = fakeTurnAgent([
+    { intent: 'cancel', action: 'reply', target: 'current', missing: [], confidence: 1 },
+  ]);
+  agent.cancel = async () => ({ cancelled: true, taskId: 'task_cancelled' });
+  const events = [];
+  const unsubscribe = on(AgentEventTypes.PROGRESS, event => {
+    if (event.scope === 'timing' && event.turnId === 'turn_timing_cancel') events.push(event);
+  });
+
+  try {
+    const result = await agent.handleTurn({ text: 'cancel this', turnId: 'turn_timing_cancel' });
+    assert.equal(result.action, 'reply');
+  } finally {
+    unsubscribe();
+  }
+
+  assert.equal(events.at(-1).stage, 'turn_end');
+  assert.equal(events.at(-1).outcome, 'cancelled');
+});
+
+test('handleTurn emits paired timing events for intent and turn lifecycles', async () => {
+  const agent = fakeTurnAgent([
+    { intent: 'chat', action: 'reply', target: 'none', missing: [], confidence: 0.9 },
+  ]);
+  const events = [];
+  const unsubscribe = on(AgentEventTypes.PROGRESS, event => {
+    if (event.scope === 'timing' && event.turnId === 'turn_timing') events.push(event);
+  });
+
+  try {
+    await agent.handleTurn({ text: 'explain the workflow', turnId: 'turn_timing' });
+  } finally {
+    unsubscribe();
+  }
+
+  assert.deepEqual(events.map(event => event.stage), ['turn_start', 'intent_start', 'intent_end', 'turn_end']);
+  assert.deepEqual(events.filter(event => event.stage.endsWith('_end')).map(event => event.outcome), ['completed', 'completed']);
+  for (const event of events.filter(event => event.stage.endsWith('_end'))) {
+    assert.equal(event.turnId, 'turn_timing');
+    assert.equal(typeof event.duration_ms, 'number');
+    assert.ok(event.duration_ms >= 0);
+  }
+});
+
+test('handleTurn closes timing events when intent routing fails', async () => {
+  const agent = fakeTurnAgent([]);
+  agent.routeIntent = async () => {
+    throw new Error('intent unavailable');
+  };
+  const events = [];
+  const unsubscribe = on(AgentEventTypes.PROGRESS, event => {
+    if (event.scope === 'timing' && event.turnId === 'turn_timing_error') events.push(event);
+  });
+
+  try {
+    await assert.rejects(agent.handleTurn({ text: 'make a cat', turnId: 'turn_timing_error' }), /intent unavailable/);
+  } finally {
+    unsubscribe();
+  }
+
+  assert.deepEqual(events.map(event => event.stage), ['turn_start', 'intent_start', 'intent_end', 'turn_end']);
+  assert.deepEqual(events.filter(event => event.stage.endsWith('_end')).map(event => event.outcome), ['error', 'error']);
 });
 
 test('clarification follow-up is a new turn without duplicating the original user message', async () => {
@@ -77,8 +165,8 @@ test('clarification follow-up is a new turn without duplicating the original use
     { intent: 'generate', action: 'prepare', target: 'new', missing: [], confidence: 1 },
   ]);
 
-  const first = await agent.handleTurn({ text: 'generate something', modeHint: 'answer' });
-  const second = await agent.handleTurn({ text: 'a cat', modeHint: 'answer' });
+  const first = await agent.handleTurn({ text: 'generate something', modeHint: 'creative' });
+  const second = await agent.handleTurn({ text: 'a cat', modeHint: 'creative' });
   const messages = agent.conversation.toJSON();
 
   assert.equal(first.action, 'clarify');

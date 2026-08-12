@@ -4,7 +4,7 @@ import { useI18n } from '../i18n/I18nContext.jsx';
 function statusIcon(status) {
   if (status === 'completed') return 'executionDone';
   if (['running', 'processing'].includes(status)) return 'executionActive';
-  if (['failed', 'error'].includes(status)) return 'executionError';
+  if (['failed', 'error', 'archive_failed', 'abandoned'].includes(status)) return 'executionError';
   return 'executionPending';
 };
 
@@ -22,6 +22,7 @@ function statusText(status, t) {
     error: t('graphFailed'),
     skipped: t('graphSkipped'),
     planning: t('graphPlanning'),
+    queued: '等待执行', preparing: '准备中', observing: '观察结果', retrying: '重试中', replanning: '重新规划', stopping: '正在停止', archive_failed: '归档失败', abandoned: '任务中断',
   }[status] || t('graphWaiting');
 }
 
@@ -29,7 +30,9 @@ export default function ExecutionGraph({ steps, progress }) {
   const { t } = useI18n();
   if (!steps?.length) return <div className="graph-empty">{t('graphEmpty')}</div>;
 
-  const activeIndex = steps.findIndex(step => ['running', 'processing'].includes(step.status));
+  const activeIndex = steps.reduce((current, step, index) => (
+    ['running', 'processing'].includes(step.status) ? index : current
+  ), -1);
   const progressPercent = clampPercent(progress?.overallPercent ?? progress?.percent);
   const activeProgress = clampPercent(progress?.nodePercent);
 

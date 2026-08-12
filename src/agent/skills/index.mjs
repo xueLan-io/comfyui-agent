@@ -21,12 +21,13 @@ export const SKILLS = {
   batch: BatchSkill,
 };
 
-const BUILTIN_SKILLS = { ...SKILLS, ...HighFrequencySkills };
+export const BUILTIN_SKILLS = { ...SKILLS, ...HighFrequencySkills };
 
 export const SKILL_CONTRACT_VERSION = '1.0';
 
 export function createConfiguredSkillRegistry(options = {}) {
-  return createSkillRegistry({ builtin: options.builtin || BUILTIN_SKILLS, custom: options.custom || customSkills, external: options.external || [] });
+  const builtin = options.builtin || Object.fromEntries(Object.entries(BUILTIN_SKILLS).filter(([id]) => systemEnabled[id] !== false));
+  return createSkillRegistry({ builtin, custom: options.custom || customSkills, external: options.external || [] });
 }
 
 export function skillCandidates(request, context = {}) {
@@ -38,6 +39,7 @@ export function skillManifest(skills = SKILLS, enabled = {}) {
     id,
     name: skill.name || id,
     description: skill.description || '',
+    aliases: skill.aliases || [],
     version: skill.version || SKILL_CONTRACT_VERSION,
     enabled: enabled[id] !== false,
     ...(skill.external ? externalSkillManifest(skill) : {
@@ -92,6 +94,12 @@ let systemEnabled = {
   controlnet: true,
   lora: true,
   batch: true,
+  inpaint: true,
+  outpaint: true,
+  background_replace: true,
+  style_transfer: true,
+  product_catalog: true,
+  thumbnail_batch: true,
 };
 let customSkills = [];
 

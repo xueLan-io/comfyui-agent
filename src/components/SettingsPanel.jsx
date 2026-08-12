@@ -3,21 +3,12 @@ import { useSession } from '../contexts/SessionContext.jsx';
 import { useComfyUI } from '../contexts/ComfyUIContext.jsx';
 import AppearanceSettings from './AppearanceSettings.jsx';
 import ResearchSettings from './ResearchSettings.jsx';
+import NotificationSettings from './NotificationSettings.jsx';
 import Icon from './Icon.jsx';
 import { useI18n } from '../i18n/I18nContext.jsx';
+import { TEMPLATES, EMPTY_PROVIDER } from '../provider-templates.js';
+import ProviderPickerModal from './ProviderPickerModal.jsx';
 
-const TEMPLATES = {
-  openai: { id: 'openai', name: 'OpenAI', type: 'openai-compatible', baseUrl: 'https://api.openai.com/v1', models: [{ id: 'gpt-4o', name: 'GPT-4o' }] },
-  openaiImage: { id: 'openai-image', name: 'OpenAI Image', type: 'openai-compatible', baseUrl: 'https://api.openai.com/v1', models: [{ id: 'gpt-image-2', name: 'GPT Image 2', kind: 'image', runtime: 'cloud' }] },
-  lmstudio: { id: 'lmstudio', name: 'LM Studio', type: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', models: [{ id: 'local-model', name: '本地模型（请替换 ID）' }] },
-  ollama: { id: 'ollama', name: 'Ollama', type: 'ollama', baseUrl: 'http://127.0.0.1:11434', models: [{ id: 'llama3.2', name: 'Llama 3.2' }] },
-  deepseek: { id: 'deepseek', name: 'DeepSeek', type: 'openai-compatible', baseUrl: 'https://api.deepseek.com/v1', models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }] },
-  glm: { id: 'glm', name: 'GLM', type: 'openai-compatible', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', models: [{ id: 'glm-4-plus', name: 'GLM-4 Plus' }] },
-  moonshot: { id: 'moonshot', name: 'Moonshot', type: 'openai-compatible', baseUrl: 'https://api.moonshot.cn/v1', models: [{ id: 'moonshot-v1-8k', name: 'Moonshot 8K' }] },
-  dashscope: { id: 'dashscope', name: 'DashScope', type: 'openai-compatible', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: [{ id: 'qwen-plus', name: 'Qwen Plus' }] },
-};
-
-const EMPTY_PROVIDER = { id: '', name: '', type: 'openai-compatible', baseUrl: '', apiKey: '', headers: {}, models: [{ id: '', name: '', kind: 'chat' }] };
 const EMPTY_SKILL = { id: '', name: '', description: '', keywords: '', promptMode: 'raw', enabled: true };
 
 function ProviderForm({ value, onChange, onSave, onTest, testState, saveState }) {
@@ -27,11 +18,6 @@ function ProviderForm({ value, onChange, onSave, onTest, testState, saveState })
   const template = TEMPLATES[value.id] ? value.id : '';
   const update = patch => onChange({ ...value, ...patch });
   const isBusy = saveState.status === 'saving' || testState.status === 'testing';
-
-  function applyTemplate(id) {
-    if (!id) return;
-    onChange({ ...EMPTY_PROVIDER, ...TEMPLATES[id], apiKey: value.apiKey || '', headers: {} });
-  }
 
   function updateModel(index, patch) {
     update({ models: value.models.map((model, i) => i === index ? { ...model, ...patch } : model) });
@@ -48,25 +34,10 @@ function ProviderForm({ value, onChange, onSave, onTest, testState, saveState })
        <div><span className="provider-kicker">{t('providerIntro')}</span><h3>{t('addProvider')}</h3></div>
        <p>{t('providerIntroDescription')}</p>
     </div>
-    <div className="template-picker span-2">
-      <div className="settings-field">
-         <label>{t('quickSetup')}</label>
-        <select value={template} onChange={event => applyTemplate(event.target.value)}>
-           <option value="">{t('chooseProvider')}</option>
-           <optgroup label={t('localModels')}>
-             <option value="lmstudio">LM Studio · OpenAI compatible</option>
-             <option value="ollama">Ollama · Native API</option>
-          </optgroup>
-           <optgroup label={t('cloudServices')}>
-            {['openai', 'openaiImage', 'deepseek', 'glm', 'moonshot', 'dashscope'].map(id => <option key={id} value={id}>{TEMPLATES[id].name}</option>)}
-          </optgroup>
-        </select>
+    <div className="template-note">
+        <strong>{template === 'lmstudio' ? t('providerLocalOpenai') : value.type === 'ollama' ? t('providerOllama') : t('providerOpenaiCompatible')}</strong>
+        <span>{template === 'lmstudio' ? t('providerLocalOpenaiHint') : value.type === 'ollama' ? t('providerOllamaHint') : t('providerOpenaiHint')}</span>
       </div>
-      <div className="template-note">
-         <strong>{template === 'lmstudio' ? t('providerLocalOpenai') : value.type === 'ollama' ? t('providerOllama') : t('providerOpenaiCompatible')}</strong>
-         <span>{template === 'lmstudio' ? t('providerLocalOpenaiHint') : value.type === 'ollama' ? t('providerOllamaHint') : t('providerOpenaiHint')}</span>
-      </div>
-    </div>
     <div className="settings-field"><label>{t('id')}</label><input value={value.id} onChange={event => update({ id: event.target.value })} placeholder="provider_id" />{value.id && !validId && <small className="field-error">Only a-z, 0-9, _, and - are supported</small>}</div>
     <div className="settings-field"><label>{t('displayName')}</label><input value={value.name} onChange={event => update({ name: event.target.value })} /></div>
     <div className="settings-field span-2"><label>{t('apiAddress')}</label><input value={value.baseUrl} onChange={event => update({ baseUrl: event.target.value })} placeholder="https://api.example.com/v1" /></div>
@@ -112,7 +83,7 @@ function ProviderForm({ value, onChange, onSave, onTest, testState, saveState })
   </div>;
 }
 
-function ModelManagement({ llm, activeProvider, onStrategy, onChatProvider, onChatModel, onImageProvider, onImageModel, onEditProvider }) {
+function ModelManagement({ llm, activeProvider, onStrategy, onChatProvider, onChatModel, onImageProvider, onImageModel, onEditProvider, onToggleModel }) {
   const { t } = useI18n();
   const models = llm.providers.flatMap(provider => (provider.models || []).map(model => ({ provider, model })));
   return <div className="model-management">
@@ -127,28 +98,28 @@ function ModelManagement({ llm, activeProvider, onStrategy, onChatProvider, onCh
       <div className="settings-grid model-current-grid">
          <label className="settings-field"><span>{t('chatProvider')}</span><select value={llm.active.providerId || ''} onChange={event => onChatProvider(event.target.value)}>
           <option value="">{t('noModelSelected')}</option>
-          {llm.providers.filter(item => item.models?.some(model => model.kind !== 'image')).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+          {llm.providers.filter(item => item.models?.some(model => model.kind !== 'image' && model.enabled !== false)).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
         </select></label>
          <label className="settings-field"><span>{t('chatModel')}</span><select value={llm.active.modelId || ''} onChange={event => onChatModel(event.target.value)}>
            <option value="">{t('noModelSelected')}</option>
-           {(activeProvider?.models || []).filter(model => model.kind !== 'image').map(model => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
+           {(activeProvider?.models || []).filter(model => model.kind !== 'image' && model.enabled !== false).map(model => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
          </select></label>
          <label className="settings-field"><span>{t('imageProvider')}</span><select value={llm.imageProviderId || ''} onChange={event => onImageProvider(event.target.value)}>
           <option value="">{t('disabled')}</option>
-          {llm.providers.filter(item => item.models?.some(model => model.kind === 'image')).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+          {llm.providers.filter(item => item.models?.some(model => model.kind === 'image' && model.enabled !== false)).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
         </select></label>
         <label className="settings-field span-2"><span>{t('imageModel')}</span><select value={llm.imageModelId || ''} onChange={event => onImageModel(event.target.value)}>
           <option value="">{t('selectImageModel')}</option>
-          {llm.providers.find(item => item.id === llm.imageProviderId)?.models?.filter(model => model.kind === 'image').map(model => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
+          {llm.providers.find(item => item.id === llm.imageProviderId)?.models?.filter(model => model.kind === 'image' && model.enabled !== false).map(model => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
         </select></label>
       </div>
     </section>
     <section className="model-catalog-section">
       <div className="settings-section-heading"><div><h3>{t('modelCatalog')}</h3><p>{t('modelCatalogDescription')}</p></div><span className="catalog-count">{models.length} {t('modelCount')}</span></div>
       {models.length === 0 ? <div className="settings-empty-state">{t('noModelsConfigured')}</div> : <div className="model-catalog" role="table">
-        <div className="model-catalog-header" role="row"><span>{t('modelId')}</span><span>{t('displayName')}</span><span>{t('provider')}</span><span>{t('modelCapability')}</span><span>{t('runtimeLocation')}</span><span>{t('actions')}</span></div>
-        {models.map(({ provider, model }) => <div className="model-catalog-row" role="row" key={`${provider.id}:${model.id}`}>
-           <code>{model.id || t('notConfigured')}</code><span>{model.name || model.id || t('notConfigured')}</span><span>{provider.name}</span><span>{model.kind === 'image' ? t('imageCapability') : t('chatCapability')}</span><span>{model.kind === 'image' ? (model.runtime === 'local' ? t('local') : t('cloud')) : '-'}</span><button className="btn btn-small" onClick={() => onEditProvider(provider)}>{t('editProvider')}</button>
+        <div className="model-catalog-header" role="row"><span>{t('modelId')}</span><span>{t('displayName')}</span><span>{t('provider')}</span><span>{t('modelCapability')}</span><span>{t('runtimeLocation')}</span><span>{t('enabled')}</span><span>{t('actions')}</span></div>
+        {models.map(({ provider, model }) => <div className={`model-catalog-row${model.enabled === false ? ' disabled' : ''}`} role="row" key={`${provider.id}:${model.id}`}>
+           <code>{model.id || t('notConfigured')}</code><span>{model.name || model.id || t('notConfigured')}</span><span>{provider.name}</span><span>{model.kind === 'image' ? t('imageCapability') : t('chatCapability')}</span><span>{model.kind === 'image' ? (model.runtime === 'local' ? t('local') : t('cloud')) : '-'}</span><label className="settings-toggle compact"><input type="checkbox" checked={model.enabled !== false} onChange={event => onToggleModel(provider.id, model.id, event.target.checked)} aria-label={t('enabled')} /></label><button className="btn btn-small" onClick={() => onEditProvider(provider)}>{t('editProvider')}</button>
         </div>)}
       </div>}
     </section>
@@ -170,8 +141,9 @@ export default function SettingsPanel({ onClose }) {
   const [comfyBaseUrl, setComfyBaseUrl] = useState(comfyState.baseUrl || 'http://127.0.0.1:8188');
   const [comfyStateMsg, setComfyStateMsg] = useState({ status: '', text: '' });
   const [comfyBusy, setComfyBusy] = useState(false);
-  const [mcp, setMcp] = useState({ enabled: false, host: '127.0.0.1', port: 3333, token: '' });
+  const [mcp, setMcp] = useState({ enabled: false, host: '127.0.0.1', port: 3333, token: '', modules: { web: true, files: true, comfyui: true, skills: true } });
   const [mcpStatus, setMcpStatus] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [appVersion, setAppVersion] = useState('');
   const [update, setUpdate] = useState({ status: 'idle', progress: 0, version: '', error: '', manifest: null });
 
@@ -257,6 +229,40 @@ export default function SettingsPanel({ onClose }) {
     window.dispatchEvent(new Event('llm-config-changed'));
   }
 
+  async function disconnectProvider(id) {
+    const provider = llm.providers.find(item => item.id === id);
+    if (!provider) return;
+    const template = TEMPLATES[id];
+    if (!window.confirm(template ? t('disconnectTemplateConfirm') : t('disconnectCustomConfirm'))) return;
+    const updated = await window.electronAPI.llmDisconnectProvider(id, template ? { ...template } : null);
+    setLLM(updated);
+    setEditing(updated.providers.find(item => item.id === id) || updated.providers[0] || EMPTY_PROVIDER);
+    window.dispatchEvent(new Event('llm-config-changed'));
+  }
+
+  async function toggleModel(providerId, modelId, enabled) {
+    const updated = await window.electronAPI.llmToggleModel(providerId, modelId, enabled);
+    setLLM(updated);
+    window.dispatchEvent(new Event('llm-config-changed'));
+  }
+
+  async function createFromTemplate(template, { name, apiKey }) {
+    const updated = await window.electronAPI.llmSaveProvider({ ...EMPTY_PROVIDER, ...template, name, apiKey: apiKey || '', headers: {} });
+    setLLM(updated);
+    setEditing(updated.providers.find(item => item.id === template.id) || EMPTY_PROVIDER);
+    setSaveState({ status: 'ok', message: t('saved') });
+    setPickerOpen(false);
+    setTestState({ status: '', message: '' });
+    window.dispatchEvent(new Event('llm-config-changed'));
+  }
+
+  function pickCustom() {
+    setEditing({ ...EMPTY_PROVIDER, models: [{ id: '', name: '', kind: 'chat' }] });
+    setTestState({ status: '', message: '' });
+    setSaveState({ status: '', message: '' });
+    setPickerOpen(false);
+  }
+
   async function selectStrategy(strategy) {
     const updated = await window.electronAPI.llmSelect({ strategy });
     setLLM(updated);
@@ -280,7 +286,8 @@ export default function SettingsPanel({ onClose }) {
     }
   }
   async function toggleSkill(id, enabled, isCustom, isExternal = false) {
-    setSkills(await window.electronAPI.skillSetEnabled(id, enabled, isCustom, isExternal));
+    await window.electronAPI.skillSetEnabled(id, enabled, isCustom, isExternal);
+    setSkills(await window.electronAPI.skillsList());
   }
 
   async function addCustom() {
@@ -357,23 +364,46 @@ export default function SettingsPanel({ onClose }) {
       <div className="modal-header"><div><h2>{t('settings')}</h2><p className="settings-header-note">{t('settingsDescription')}</p></div><button className="btn btn-icon" onClick={onClose} title={t('close')}><Icon name="close" /></button></div>
       <div className="settings-body">
          <div className="settings-tabs" role="tablist" aria-label={t('settings')}>
-           {[['appearance', t('appearance'), t('appearanceNote')], ['models', t('models'), `${llm.providers.reduce((total, provider) => total + (provider.models?.length || 0), 0)} ${t('modelCount')}`], ['providers', t('providers'), `${llm.providers.length} ${t('providerCount')}`], ['skills', t('skills'), t('skillsNote')], ['generation', t('generation'), t('generationNote')], ['comfyui', t('connection'), comfyState.status === 'ready' ? t('connected') : t('offline')], ['mcp', t('mcp'), mcp.enabled ? t('enabled') : t('disabledStatus')], ['updates', t('settingsUpdates'), appVersion ? t('settingsCurrentVersion', { version: appVersion }) : t('settingsVersionInfo')]].map(([id, label, note]) => (
-          <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)} role="tab" aria-selected={tab === id} title={note}><strong>{label}</strong><small>{note}</small></button>
-        ))}
+           {[
+             { key: 'look', label: t('tabGroupLook'), tabs: [['appearance', t('appearance'), t('appearanceNote'), 'spark']] },
+             { key: 'models', label: t('tabGroupModels'), tabs: [
+               ['models', t('models'), `${llm.providers.reduce((total, provider) => total + (provider.models?.length || 0), 0)} ${t('modelCount')}`, 'grid'],
+               ['providers', t('providers'), `${llm.providers.length} ${t('providerCount')}`, 'library'],
+             ] },
+             { key: 'features', label: t('tabGroupFeatures'), tabs: [
+               ['skills', t('skills'), t('skillsNote'), 'list'],
+               ['generation', t('generation'), t('generationNote'), 'sliders'],
+               ['notifications', t('notificationSettings'), t('notificationsNote'), 'circleAlert'],
+             ] },
+             { key: 'system', label: t('tabGroupSystem'), tabs: [
+               ['comfyui', t('connection'), comfyState.status === 'ready' ? t('connected') : t('offline'), 'workflow'],
+               ['mcp', t('mcp'), mcp.enabled ? `${Object.values(mcp.modules || {}).filter(Boolean).length} ${t('mcpModuleCount')}` : t('disabledStatus'), 'send'],
+               ['updates', t('settingsUpdates'), appVersion ? t('settingsCurrentVersion', { version: appVersion }) : t('settingsVersionInfo'), 'refresh'],
+             ] },
+           ].map(group => <div className="settings-nav-group" key={group.key}>
+             <div className="settings-nav-group-title">{group.label}</div>
+             {group.tabs.map(([id, label, note, icon]) => (
+              <button key={id} className={`settings-tab${tab === id ? ' active' : ''}`} onClick={() => setTab(id)} role="tab" aria-selected={tab === id} title={note}>
+                 <Icon name={icon} size={14} />
+                 <span className="settings-tab-label"><strong>{label}</strong><small>{note}</small></span>
+              </button>
+            ))}
+          </div>)}
       </div>
       <div className="settings-content">
-         {tab === 'appearance' ? <AppearanceSettings /> : tab === 'models' ? <ModelManagement llm={llm} activeProvider={activeProvider} onStrategy={async patch => { const updated = await window.electronAPI.llmSelect(typeof patch === 'string' ? { strategy: patch } : patch); setLLM(updated); window.dispatchEvent(new Event('llm-config-changed')); }} onChatProvider={async providerId => { const updated = await window.electronAPI.llmSelect({ providerId }); setLLM(updated); window.dispatchEvent(new Event('llm-config-changed')); }} onChatModel={async modelId => { const updated = await window.electronAPI.llmSelect({ modelId }); setLLM(updated); window.dispatchEvent(new Event('llm-config-changed')); }} onImageProvider={async imageProviderId => { const updated = await window.electronAPI.llmSelect({ imageProviderId }); setLLM(updated); }} onImageModel={async imageModelId => { const updated = await window.electronAPI.llmSelect({ imageModelId }); setLLM(updated); }} onEditProvider={provider => { setEditing(provider); setTab('providers'); setTestState({ status: '', message: '' }); setSaveState({ status: '', message: '' }); }} /> : tab === 'providers' ? <div className="provider-management">
+         {tab === 'appearance' ? <AppearanceSettings /> : tab === 'models' ? <ModelManagement llm={llm} activeProvider={activeProvider} onStrategy={async patch => { const updated = await window.electronAPI.llmSelect(typeof patch === 'string' ? { strategy: patch } : patch); setLLM(updated); window.dispatchEvent(new Event('llm-config-changed')); }} onChatProvider={async providerId => { const updated = await window.electronAPI.llmSelect({ providerId }); setLLM(updated); window.dispatchEvent(new Event('llm-config-changed')); }} onChatModel={async modelId => { const updated = await window.electronAPI.llmSelect({ modelId }); setLLM(updated); window.dispatchEvent(new Event('llm-config-changed')); }} onImageProvider={async imageProviderId => { const updated = await window.electronAPI.llmSelect({ imageProviderId }); setLLM(updated); }} onImageModel={async imageModelId => { const updated = await window.electronAPI.llmSelect({ imageModelId }); setLLM(updated); }} onEditProvider={provider => { setEditing(provider); setTab('providers'); setTestState({ status: '', message: '' }); setSaveState({ status: '', message: '' }); }} onToggleModel={toggleModel} /> : tab === 'providers' ? <div className="provider-management">
             <div className="provider-management-heading"><div><h3>{t('providerCatalog')}</h3><p>{t('providerCatalogDescription')}</p></div><span className="catalog-count">{llm.providers.length} {t('providerCount')}</span></div>
             <aside className="provider-list">
             {llm.providers.map(provider => <div key={provider.id} className={`provider-card${editing.id === provider.id ? ' active' : ''}`}>
-               <button onClick={() => { setEditing(provider); setTestState({ status: '', message: '' }); setSaveState({ status: '', message: '' }); }}><strong>{provider.name}</strong><span>{provider.models?.length || 0} {t('modelCount')}{activeProvider?.id === provider.id ? ` · ${t('current')}` : ''}</span></button>
+               <button onClick={() => { setEditing(provider); setTestState({ status: '', message: '' }); setSaveState({ status: '', message: '' }); }}><strong>{provider.name}</strong><span>{provider.models?.filter(model => model.enabled !== false).length || 0}/{provider.models?.length || 0} {t('modelCount')}{activeProvider?.id === provider.id ? ` · ${t('current')}` : ''}</span></button>
+               <button className="provider-disconnect" onClick={() => disconnectProvider(provider.id)} title={t('disconnect')}><Icon name="minus" size={14} /></button>
                {llm.providers.length > 1 && <button className="provider-delete" onClick={() => deleteProvider(provider.id)} title={t('delete')}><Icon name="trash" size={14} /></button>}
             </div>)}
-              <button className="sidebar-command" onClick={() => { setEditing({ ...EMPTY_PROVIDER, models: [{ id: '', name: '', kind: 'chat' }] }); setTestState({ status: '', message: '' }); setSaveState({ status: '', message: '' }); }}><Icon name="plus" size={14} /> {t('newProvider')}</button>
+              <button className="sidebar-command" onClick={() => setPickerOpen(true)}><Icon name="plus" size={14} /> {t('newProvider')}</button>
           </aside>
           <ProviderForm value={editing} onChange={next => { setEditing(next); setSaveState({ status: '', message: '' }); }} onSave={saveProvider} onTest={testProvider} testState={testState} saveState={saveState} />
-          </div> : tab === 'generation' || tab === 'comfyui' || tab === 'mcp' || tab === 'updates' ? null : <div className="skills-settings">
-           <section><h3>{t('systemSkills')}</h3>{Object.entries(skills.system).map(([id, enabled]) => <label className="skill-item" key={id}><span><strong>{id}</strong><small>{t('builtinSkill')}</small></span><input type="checkbox" checked={enabled} onChange={event => toggleSkill(id, event.target.checked, false)} /></label>)}</section>
+          </div> : tab === 'generation' || tab === 'notifications' || tab === 'comfyui' || tab === 'mcp' || tab === 'updates' ? null : <div className="skills-settings">
+            <section><h3>{t('systemSkills')}</h3>{(skills.registry || []).filter(skill => !skill.custom && !skill.external).map(skill => <label className="skill-item" key={skill.id}><span><strong>{skill.name || skill.id} <small>/{skill.id}</small></strong><small>{skill.description || t('builtinSkill')}</small></span><input type="checkbox" checked={skill.enabled !== false} onChange={event => toggleSkill(skill.id, event.target.checked, false)} /></label>)}</section>
             <section><h3>{t('customSkills')}</h3>{skills.custom.map(skill => <div className="skill-item" key={skill.id}><span><strong>{skill.name}</strong><small>{skill.description || skill.keywords?.join(', ')}</small></span><input type="checkbox" checked={skill.enabled !== false} onChange={event => toggleSkill(skill.id, event.target.checked, true)} /><button className="btn btn-icon" onClick={async () => setSkills(await window.electronAPI.skillDeleteCustom(skill.id))} title={t('delete')}><Icon name="trash" size={14} /></button></div>)}</section>
             <section><div className="settings-section-heading"><div><h3>{t('externalSkill')}</h3><p>{t('externalSkillDescription')}</p></div><button className="btn" onClick={async () => setSkills(await window.electronAPI.skillImportExternal())}>{t('importJson')}</button></div>{(skills.external || []).map(skill => <div className="skill-item" key={skill.id}><span><strong>{skill.name} <small>v{skill.version || '1.0'}</small></strong><small>{skill.description} · {skill.source}</small></span><input type="checkbox" checked={skill.enabled !== false} onChange={event => toggleSkill(skill.id, event.target.checked, true, true)} /><button className="btn btn-icon" onClick={async () => setSkills(await window.electronAPI.skillDeleteExternal(skill.id))} title={t('delete')}><Icon name="trash" size={14} /></button></div>)}</section>
            <section className="custom-skill-form"><h3>{t('addCustomSkill')}</h3>
@@ -402,6 +432,7 @@ export default function SettingsPanel({ onClose }) {
             </div>
           </section>
         </div>}
+        {tab === 'notifications' && <div className="generation-settings"><NotificationSettings /></div>}
         {tab === 'comfyui' && <div className="comfyui-settings">
           <section>
              <div className="settings-section-heading"><div><h3>{t('comfyConnectionTitle')}</h3><p>{t('comfyConnectionDescription')}</p></div><Icon name="workflow" size={16} /></div>
@@ -449,9 +480,13 @@ export default function SettingsPanel({ onClose }) {
          {tab === 'mcp' && <div className="comfyui-settings">
           <section>
              <div className="settings-section-heading"><div><h3>{t('mcpServiceTitle')}</h3><p>{t('mcpDescription')}</p></div><Icon name="settings" size={16} /></div>
-             <p className="settings-muted">{t('mcpSafetyHint')}</p>
-             <label className="settings-toggle"><span><strong>{t('enableEmbeddedMcp')}</strong><small>{t('mcpDefaultHost')}</small></span><input type="checkbox" checked={mcp.enabled} onChange={event => setMcp(current => ({ ...current, enabled: event.target.checked }))} /></label>
-             <div className="settings-grid">
+<p className="settings-muted">{t('mcpSafetyHint')}</p>
+              <label className="settings-toggle"><span><strong>{t('enableEmbeddedMcp')}</strong><small>{t('mcpDefaultHost')}</small></span><input type="checkbox" checked={mcp.enabled} onChange={event => setMcp(current => ({ ...current, enabled: event.target.checked }))} /></label>
+              <div className="mcp-modules">
+                <strong>{t('mcpModuleTitle')}</strong><small>{t('mcpModuleDescription')}</small>
+                {[['web', t('mcpModuleWeb'), t('mcpModuleWebDesc')], ['files', t('mcpModuleFiles'), t('mcpModuleFilesDesc')], ['comfyui', t('mcpModuleComfyui'), t('mcpModuleComfyuiDesc')], ['skills', t('mcpModuleSkills'), t('mcpModuleSkillsDesc')]].map(([key, label, description]) => <label className="settings-toggle" key={key}><span><strong>{label}</strong><small>{description}</small></span><input type="checkbox" checked={mcp.modules?.[key] !== false} onChange={event => setMcp(current => ({ ...current, modules: { ...current.modules, [key]: event.target.checked } }))} /></label>)}
+              </div>
+              <div className="settings-grid">
                <label className="settings-field"><span>{t('listenAddress')}</span><input value={mcp.host} onChange={event => setMcp(current => ({ ...current, host: event.target.value }))} placeholder="127.0.0.1" /></label>
                <label className="settings-field"><span>{t('port')}</span><input type="number" min="1" max="65535" value={mcp.port} onChange={event => setMcp(current => ({ ...current, port: event.target.value }))} /></label>
                <label className="settings-field span-2"><span>{t('accessToken')}</span><input type="password" value={mcp.token} onChange={event => setMcp(current => ({ ...current, token: event.target.value }))} placeholder={mcp.hasToken ? t('tokenSetKeep') : t('lanTokenRequired')} /></label>
@@ -462,5 +497,6 @@ export default function SettingsPanel({ onClose }) {
       </div>
       </div>
     </section>
+    {pickerOpen && <ProviderPickerModal onPick={createFromTemplate} onCustom={pickCustom} onClose={() => setPickerOpen(false)} />}
   </div>;
 }

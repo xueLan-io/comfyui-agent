@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AgentProcessClient } from '../electron/agent-process.mjs';
@@ -92,6 +92,32 @@ test('agent process forwards events and stops cleanly', async t => {
   assert.equal(client.child?.connected, true);
   await client.stop();
   assert.equal(client.child, null);
+});
+
+test('agent process flushes conversation and execution records before stop resolves', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'comfy-agent-process-persist-'));
+  const client = new AgentProcessClient({ useJobObject: false, rpcTimeoutMs: 30000 });
+  t.after(async () => {
+    await client.stop();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  await client.start({ workflowDir: dataDir, userDataPath: dataDir, comfyRoot: dataDir, skills: {} });
+  const turnId = 'turn_shutdown_persist';
+  await client.recordConversationMessage('user', 'persist this conversation', { turnId, messageId: `${turnId}:user` });
+  await client.sessionManager.setSessionState({
+    executionRecords: {
+      [turnId]: [{ turnId, type: 'agent:step', stepId: 'persist', status: 'completed', description: 'Persisted before shutdown' }],
+    },
+  });
+
+  await client.stop();
+
+  const stored = JSON.parse(await readFile(join(dataDir, 'agent-data', 'conversations.json'), 'utf8'));
+  const projectId = client.cache.sessionManager.activeProjectId;
+  const sessionId = client.cache.sessionManager.activeSessionId;
+  assert.equal(stored.conversations[projectId][sessionId][0].content, 'persist this conversation');
+  assert.equal(stored.sessionStates[projectId][sessionId].executionRecords[turnId][0].description, 'Persisted before shutdown');
 });
 
 test('Windows Job Object host can attach to the agent process', async t => {

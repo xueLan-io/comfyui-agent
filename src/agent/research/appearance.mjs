@@ -3,7 +3,7 @@ const MAX_FACT_LENGTH = 500;
 const MAX_QUOTE_LENGTH = 600;
 
 function parseJson(content) {
-  const cleaned = String(content || '').replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+  const cleaned = String(content || '').replace(/^```(?:json|JSON)?\s*/i, '').replace(/```\s*$/i, '').trim();
   const parsed = JSON.parse(cleaned);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Appearance extractor returned an invalid JSON shape');

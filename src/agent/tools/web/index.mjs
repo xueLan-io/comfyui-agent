@@ -619,12 +619,23 @@ export function createWebTool(fetchImpl = globalThis.fetch, lookupImpl = lookup,
         if (cached) return cached;
       }
       const request = createAbortSignal(Math.min(timeoutMs, DEFAULT_TIMEOUT_MS), signal);
+      const startedAt = Date.now();
+      // 每个 provider 独立计时（上限 4s 且不超过总预算）：
+      // 单个卡死的源（如被墙的 duckduckgo）超时后跳过，已合并的结果不会丢失
+      const providerTimeoutMs = () => Math.max(1000, Math.min(4000, Math.min(timeoutMs, DEFAULT_TIMEOUT_MS) - (Date.now() - startedAt)));
       const fetchForProvider = async (target, targetPolicy) => {
+        const perRequest = createAbortSignal(providerTimeoutMs(), request.signal);
         try {
-          return await fetchText(fetchImpl, target, request.signal, 0, lookupImpl, targetPolicy, proxy);
+          return await fetchText(fetchImpl, target, perRequest.signal, 0, lookupImpl, targetPolicy, proxy);
         } catch (error) {
-          if (error.name === 'AbortError' || !fallbackProxy || !NETWORK_ERROR.test(error?.message || '')) throw error;
-          return fetchText(fetchImpl, target, request.signal, 0, lookupImpl, targetPolicy, fallbackProxy);
+          if (error.name === 'AbortError') {
+            if (request.signal.aborted) throw error;
+            throw new Error('Provider request timed out');
+          }
+          if (!fallbackProxy || !NETWORK_ERROR.test(error?.message || '')) throw error;
+          return fetchText(fetchImpl, target, perRequest.signal, 0, lookupImpl, targetPolicy, fallbackProxy);
+        } finally {
+          perRequest.cleanup();
         }
       };
       try {
@@ -635,11 +646,18 @@ export function createWebTool(fetchImpl = globalThis.fetch, lookupImpl = lookup,
           if (String(baiduApiKey).trim()) {
             try {
               let apiResult;
+              const apiRequest = createAbortSignal(providerTimeoutMs(), request.signal);
               try {
-                apiResult = await fetchBaiduApi(fetchImpl, lookupImpl, request.signal, proxy, String(baiduApiKey).trim(), trimmed, maxResults, policy);
+                apiResult = await fetchBaiduApi(fetchImpl, lookupImpl, apiRequest.signal, proxy, String(baiduApiKey).trim(), trimmed, maxResults, policy);
               } catch (error) {
-                if (error.name === 'AbortError' || !fallbackProxy || !NETWORK_ERROR.test(error?.message || '')) throw error;
-                apiResult = await fetchBaiduApi(fetchImpl, lookupImpl, request.signal, fallbackProxy, String(baiduApiKey).trim(), trimmed, maxResults, policy);
+                if (error.name === 'AbortError') {
+                  if (request.signal.aborted) throw error;
+                  throw new Error('Baidu AI Search timed out');
+                }
+                if (!fallbackProxy || !NETWORK_ERROR.test(error?.message || '')) throw error;
+                apiResult = await fetchBaiduApi(fetchImpl, lookupImpl, apiRequest.signal, fallbackProxy, String(baiduApiKey).trim(), trimmed, maxResults, policy);
+              } finally {
+                apiRequest.cleanup();
               }
               if (apiResult.results.length > 0 || apiResult.answer) {
                 const result = { action, query: trimmed, provider: 'baidu-api', answer: apiResult.answer, results: apiResult.results };

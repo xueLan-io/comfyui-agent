@@ -2,19 +2,19 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Agent } from '../src/agent/runtime/agent.mjs';
 
-test('suggestSessionTitle uses the LLM and cleans the result', async () => {
+test('suggestSessionTitle derives a local stable title without calling the LLM', async () => {
   const agent = new Agent({ llmConfig: { provider: 'openai-compatible', model: 'test-model', apiKey: 'test-key' } });
-  let request;
+  let called = false;
   agent.llm = {
     isConfigured: true,
-    async chat(input) {
-      request = input;
+    async chat() {
+      called = true;
       return { content: '「画一只猫。」' };
     },
   };
   const result = await agent.suggestSessionTitle('帮我画一只猫在草地上');
-  assert.equal(result.title, '画一只猫');
-  assert.ok(request.messages[1].content.includes('画一只猫'));
+  assert.equal(result.title, '帮我画一只猫在草地上');
+  assert.equal(called, false);
 });
 
 test('suggestSessionTitle falls back to truncation when no LLM is configured', async () => {

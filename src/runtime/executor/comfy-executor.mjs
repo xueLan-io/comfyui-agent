@@ -3,7 +3,7 @@ import { ComfyUITool } from '../../agent/tools/comfyui/index.mjs';
 export class ComfyExecutor {
   constructor(tool = ComfyUITool) {
     this.tool = tool;
-    this._promptId = '';
+    this._promptIds = new Map();
   }
 
   inspect(workflowName, workflowDir) {
@@ -14,7 +14,7 @@ export class ComfyExecutor {
     return this.tool.discover(workflowDir);
   }
 
-  async execute(request, { workflowDir, clientId = '', sandboxInput, onProgress, signal } = {}) {
+  async execute(request, { workflowDir, clientId = '', sandboxInput, onProgress, signal, executionId = '' } = {}) {
     return this.executeToolInput({
       workflowName: request.workflowName,
       workflowDir,
@@ -35,12 +35,13 @@ export class ComfyExecutor {
       videos: request.media?.videos || [],
       outputType: request.outputType || 'auto',
       clientId,
-    }, { workflowDir, sandboxInput, onProgress, signal });
+    }, { workflowDir, sandboxInput, onProgress, signal, executionId });
   }
 
-  async executeToolInput(input, { workflowDir = input.workflowDir, sandboxInput, onProgress, signal } = {}) {
+  async executeToolInput(input, { workflowDir = input.workflowDir, sandboxInput, onProgress, signal, executionId = '' } = {}) {
+    const id = executionId || `execution_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const progress = data => {
-      if (data?.promptId) this._promptId = data.promptId;
+      if (data?.promptId) this._promptIds.set(id, data.promptId);
       onProgress?.({ scope: 'generation', ...data });
     };
     try {
@@ -52,11 +53,13 @@ export class ComfyExecutor {
         signal,
       });
     } finally {
-      this._promptId = '';
+      this._promptIds.delete(id);
     }
   }
 
-  async cancel() {
-    return this.tool.cancel(this._promptId || undefined);
+  async cancel(executionId = '') {
+    const promptId = executionId ? this._promptIds.get(executionId) : '';
+    if (!promptId) return { status: 'cancelled', promptId: '', pending: true };
+    return this.tool.cancel(promptId);
   }
 }

@@ -1,4 +1,5 @@
-import { access, copyFile, mkdir, readFile, rename, writeFile } from 'fs/promises';
+import { randomUUID } from 'node:crypto';
+import { access, copyFile, mkdir, readFile, rename, rm, writeFile } from 'fs/promises';
 import { dirname, join } from 'node:path';
 
 export class JSONFileStore {
@@ -44,9 +45,14 @@ export class JSONFileStore {
     const content = JSON.stringify(this.data, null, 2);
     this._savePromise = this._savePromise.catch(() => {}).then(async () => {
       await mkdir(dirname(this.filePath), { recursive: true });
-      const tmp = `${this.filePath}.tmp`;
+      const tmp = `${this.filePath}.${randomUUID()}.tmp`;
       await writeFile(tmp, content);
-      await rename(tmp, this.filePath);
+      try {
+        await rename(tmp, this.filePath);
+      } catch (error) {
+        await rm(tmp, { force: true }).catch(() => {});
+        throw error;
+      }
     });
     return this._savePromise;
   }

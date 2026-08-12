@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionManager } from '../src/agent/runtime/session-manager.mjs';
+import { assetRecipePath, scanProjectAssets } from '../src/runtime/project-assets.mjs';
 
 test('session manager isolates conversations and shares project state', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'comfy-session-'));
@@ -65,6 +66,7 @@ test('session state uses a monotonic revision for snapshot synchronization', asy
     assert.ok(next.revision > initial.revision);
     assert.ok(next.updatedAt >= initial.updatedAt);
     assert.equal(next.requestId, 'request-1');
+    await manager.flush();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -81,6 +83,93 @@ test('execution events persist with their conversation turn', async () => {
     const restored = new SessionManager(dir);
     await restored.init();
     assert.equal(restored.getSessionState().executionRecords.turn_1[0].description, 'Created plan');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('flush preserves rapid conversation and execution updates before restart', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'comfy-session-flush-'));
+  try {
+    const manager = new SessionManager(dir);
+    await manager.init();
+    const projectId = manager.activeProjectId;
+    const sessionId = manager.activeSessionId;
+
+    for (let index = 1; index <= 12; index++) {
+      manager.conversation.add('user', `message ${index}`, { turnId: `turn_${index}`, messageId: `turn_${index}:user` });
+      manager.appendExecutionEvent({ turnId: `turn_${index}`, type: 'agent:step', stepId: `step_${index}`, status: 'completed', description: `Completed ${index}` });
+    }
+    await manager.flush();
+
+    const restored = new SessionManager(dir);
+    await restored.init();
+    assert.equal(restored.activeProjectId, projectId);
+    assert.equal(restored.activeSessionId, sessionId);
+    assert.equal(restored.conversation.messages.length, 12);
+    assert.equal(restored.conversation.messages.at(-1).content, 'message 12');
+    assert.equal(restored.getSessionState().executionRecords.turn_12[0].description, 'Completed 12');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('execution history ignores empty and duplicate plan events', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'comfy-session-execution-filter-'));
+  try {
+    const manager = new SessionManager(dir);
+    await manager.init();
+    manager.appendExecutionEvent({ turnId: 'turn_1', type: 'agent:plan', plan: { steps: [] } });
+    manager.appendExecutionEvent({ turnId: 'turn_1', taskId: 'task_1', type: 'agent:plan', plan: { steps: [{ id: 'step_1' }] } });
+    manager.appendExecutionEvent({ turnId: 'turn_1', taskId: 'task_1', type: 'agent:plan', plan: { steps: [{ id: 'step_1' }] } });
+    assert.equal(manager.getSessionState().executionRecords.turn_1.length, 1);
+    await manager.flush();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('execution history retains distinct retry attempts after restart', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'comfy-session-execution-retry-'));
+  try {
+    const manager = new SessionManager(dir);
+    await manager.init();
+    const base = { turnId: 'turn_retry', taskId: 'task_retry', traceId: 'trace_retry', type: 'agent:step', stepId: 'generate', tool: 'comfyui', status: 'running' };
+    manager.appendExecutionEvent({ ...base, attemptId: 'task_retry_attempt_1', attempt: 1, description: 'First attempt' });
+    manager.appendExecutionEvent({ ...base, attemptId: 'task_retry_attempt_2', attempt: 2, description: 'Second attempt' });
+    await manager.flush();
+
+    const restored = new SessionManager(dir);
+    await restored.init();
+    const events = restored.getSessionState().executionRecords.turn_retry;
+    assert.equal(events.length, 2);
+    assert.deepEqual(events.map(event => event.attempt), [1, 2]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('execution history retains a long task chain after restart', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'comfy-session-execution-long-'));
+  try {
+    const manager = new SessionManager(dir);
+    await manager.init();
+    for (let index = 0; index < 60; index++) {
+      manager.appendExecutionEvent({
+        turnId: 'turn_long',
+        taskId: 'task_long',
+        traceId: 'trace_long',
+        type: 'agent:step',
+        stepId: `step_${index}`,
+        tool: 'comfyui',
+        status: 'completed',
+      });
+    }
+    await manager.flush();
+
+    const restored = new SessionManager(dir);
+    await restored.init();
+    assert.equal(restored.getSessionState().executionRecords.turn_long.length, 60);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -170,6 +259,8 @@ test('keeps recent generation state with its session', async () => {
     assert.equal(restored.activeSessionId, second.id);
     assert.equal(restored.project.get('lastPrompt'), '');
     assert.equal(restored.getSessionState().lastGenerationSource, '');
+    await manager.flush();
+    await restored.flush();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -203,6 +294,83 @@ test('migrates legacy recent generation state into the active session', async ()
     assert.equal(manager.project.get('lastPrompt'), 'legacy prompt');
     assert.equal(manager.getSessionState().lastGenerationSource, 'direct');
     assert.equal(manager.getProject(projectId).lastPrompt, undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('preserves generation metadata when an empty completion patch arrives', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'comfy-session-generation-merge-'));
+  try {
+    const manager = new SessionManager(dir);
+    await manager.init();
+    const requestId = 'request-generation-merge';
+    manager.upsertGenerationRecord({
+      requestId,
+      prompt: 'complete prompt',
+      negative: 'bad anatomy',
+      workflowName: 'workflow.json',
+      parameters: { seed: 12, steps: 20 },
+    });
+    const merged = manager.upsertGenerationRecord({
+      requestId,
+      prompt: '',
+      negative: '',
+      workflowName: '',
+      parameters: {},
+      status: 'completed',
+    });
+
+    assert.equal(merged.prompt, 'complete prompt');
+    assert.equal(merged.negative, 'bad anatomy');
+    assert.equal(merged.workflowName, 'workflow.json');
+    assert.deepEqual(merged.parameters, { seed: 12, steps: 20 });
+    assert.equal(merged.status, 'completed');
+    await manager.flush();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('keeps recipe metadata available after deleting its session', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'comfy-session-delete-assets-recipe-'));
+  try {
+    const projectDir = join(dir, 'project');
+    const manager = new SessionManager(dir, { defaultProjectDir: projectDir });
+    await manager.init();
+    const projectId = manager.activeProjectId;
+    const sessionId = manager.activeSessionId;
+    await manager.createSession('Keep');
+    const project = manager.getProject(projectId);
+    const image = join(project.dir, 'images', 'task-persisted', 'portrait.png');
+    await mkdir(join(project.dir, 'images', 'task-persisted'), { recursive: true });
+    await writeFile(image, 'image');
+    await writeFile(assetRecipePath(image), JSON.stringify({
+      positive: 'persistent portrait',
+      negative: 'blurry',
+      workflowName: 'anima.json',
+      parameters: { seed: 12, steps: 20 },
+      source: 'ai',
+    }));
+    project.assets = [{
+      filename: 'portrait.png',
+      subfolder: 'images/task-persisted',
+      taskId: 'task-persisted',
+      sessionId,
+      positive: 'persistent portrait',
+      negative: 'blurry',
+      workflowName: 'anima.json',
+      parameters: { seed: 12, steps: 20 },
+    }];
+
+    await manager.deleteSession(sessionId, projectId);
+
+    const assets = await scanProjectAssets({ project: manager.getProject(projectId) });
+    assert.equal(assets.length, 1);
+    assert.equal(assets[0].positive, 'persistent portrait');
+    assert.equal(assets[0].negative, 'blurry');
+    assert.equal(assets[0].workflowName, 'anima.json');
+    assert.deepEqual(assets[0].parameters, { seed: 12, steps: 20 });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

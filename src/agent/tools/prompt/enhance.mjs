@@ -65,10 +65,42 @@ function needsPromptResolution(prompt, contextPrompt = '') {
 }
 
 function parsePromptResolution(content) {
-  const cleaned = String(content || '').replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
-  const parsed = JSON.parse(cleaned);
+  const parsed = parseModelJson(content, 'Prompt resolver');
   if (!parsed || typeof parsed.prompt !== 'string' || !parsed.prompt.trim()) throw new Error('Prompt resolver returned an invalid JSON shape');
   return parsed.prompt.trim();
+}
+
+function parseModelJson(content, source) {
+  if (!content) {
+    const error = new Error(`${source} 未返回内容，请检查语言模型后重试。`);
+    error.code = 'MODEL_INVALID_JSON';
+    throw error;
+  }
+  const cleaned = String(content).replace(/^```(?:json|JSON)?\s*/i, '').replace(/```\s*$/i, '').trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const error = new Error(`${source} 返回的 JSON 不完整或无效，请检查语言模型后重试。`);
+    error.code = 'MODEL_INVALID_JSON';
+    throw error;
+  }
+}
+
+function isCancellationError(error, signal) {
+  return Boolean(
+    signal?.aborted
+      || error?.code === 'LLM_CANCELLED'
+      || error?.name === 'AbortError'
+      || /取消|cancelled|canceled/i.test(String(error?.message || '')),
+  );
+}
+
+function emitTiming(callback, stage, data = {}) {
+  callback?.({ ...data, stage });
+}
+
+function timingOutcome(error, signal) {
+  return isCancellationError(error, signal) ? 'cancelled' : 'error';
 }
 
 async function resolvePrompt(prompt, conversation, contextPrompt, llmProvider, onChunk, requireAI = false, intent = '', referenceImages = [], imageDataUrl = null, options = {}) {
@@ -76,6 +108,13 @@ async function resolvePrompt(prompt, conversation, contextPrompt, llmProvider, o
   if (!needsPromptResolution(prompt, contextPrompt) && !(contextPrompt && isRefinement)) return { prompt, resolved: false };
   if (contextPrompt && EXECUTE_LAST_PROMPT.test(String(prompt).trim())) {
     return { prompt: contextPrompt, resolved: true, source: 'lastPrompt' };
+  }
+  if (intent === 'refine' && contextPrompt) {
+    return {
+      prompt: mergeRefinementPrompt(contextPrompt, prompt),
+      resolved: true,
+      source: 'localRefinement',
+    };
   }
 
   const context = [
@@ -85,11 +124,18 @@ async function resolvePrompt(prompt, conversation, contextPrompt, llmProvider, o
 
   if (llmProvider) {
     try {
-      const resolverMessages = await attachVisionImages(
-        [
-          {
-            role: 'system',
-            content: `# 角色
+      const visionSupported = await llmProvider.supportsVision?.({ prefer: 'local' }) ?? false;
+      if (referenceImages.length > 0 && !visionSupported) {
+        emitTiming(options.onTiming, 'enhance_vision_skipped', {
+          ...options.eventMeta,
+          timingPhase: 'resolve',
+          message: `当前模型不支持图像输入，已忽略 ${referenceImages.length} 张参考图（仍将作为工作流输入）`,
+        });
+      }
+      const baseResolverMessages = [
+        {
+          role: 'system',
+          content: `# 角色
 你将用户的最新生成请求解析为发送给图像模型的视觉提示词。
 
 # 输出
@@ -120,27 +166,53 @@ async function resolvePrompt(prompt, conversation, contextPrompt, llmProvider, o
 - 全部用英文撰写（专有名词保留原样）
 - 保留上下文和最新请求中的明确视觉细节
 - 若无法解析引用，则使用最新请求的内容本身`,
-          },
-          {
-            role: 'user',
-            content: JSON.stringify({
-              latestRequest: prompt,
-              recentContext: context,
-              referenceImages: referenceImages.length,
-            }),
-          },
-        ],
-        referenceImages,
-        imageDataUrl,
-      );
-      const result = await llmProvider.chat({
-        messages: resolverMessages,
-        temperature: 0,
-        maxTokens: 500,
-        prefer: 'local',
-        timeoutMs: 30000,
-        onChunk,
-        allowPolicyOverride: options.allowPolicyOverride === true,
+        },
+        {
+          role: 'user',
+          content: JSON.stringify({
+            latestRequest: prompt,
+            recentContext: context,
+            referenceImages: referenceImages.length,
+          }),
+        },
+      ];
+      const resolverMessages = visionSupported
+        ? await attachVisionImages(baseResolverMessages, referenceImages, imageDataUrl)
+        : baseResolverMessages;
+      const llmStart = Date.now();
+      emitTiming(options.onTiming, 'enhance_llm_start', {
+        ...options.eventMeta,
+        timingPhase: 'resolve',
+        message: '提示词引用解析中',
+      });
+      let result;
+      try {
+        result = await llmProvider.chat({
+          messages: resolverMessages,
+          temperature: 0,
+          maxTokens: 2048,
+          prefer: 'local',
+          timeoutMs: 30000,
+          onChunk,
+          signal: options.signal,
+          allowPolicyOverride: options.allowPolicyOverride === true,
+        });
+      } catch (error) {
+        emitTiming(options.onTiming, 'enhance_llm_end', {
+          ...options.eventMeta,
+          timingPhase: 'resolve',
+          duration_ms: Date.now() - llmStart,
+          outcome: timingOutcome(error, options.signal),
+          message: '提示词引用解析结束',
+        });
+        throw error;
+      }
+      emitTiming(options.onTiming, 'enhance_llm_end', {
+        ...options.eventMeta,
+        timingPhase: 'resolve',
+        duration_ms: Date.now() - llmStart,
+        outcome: 'completed',
+        message: '提示词引用解析结束',
       });
       const resolved = parsePromptResolution(result.content);
       return {
@@ -149,6 +221,7 @@ async function resolvePrompt(prompt, conversation, contextPrompt, llmProvider, o
         source: 'conversation',
       };
     } catch (error) {
+      if (isCancellationError(error, options.signal)) throw error;
       if (requireAI) throw error;
       // The normal prompt compiler can still handle the original request.
     }
@@ -188,6 +261,7 @@ function aiFailureResult(originalRequest, error) {
     originalRequest,
     error: error instanceof Error ? error.message : String(error),
   };
+  if (error?.code) failure.code = error.code;
   if (error?.code === 'CLOUD_POLICY_BLOCKED') {
     failure.code = error.code;
     failure.policyDecision = error.policyDecision || null;
@@ -264,8 +338,7 @@ ${feedback}` : ''}`;
 }
 
 function parseCompiled(content) {
-  const cleaned = String(content || '').replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
-  const parsed = JSON.parse(cleaned);
+  const parsed = parseModelJson(content, 'Prompt compiler');
   if (!parsed || !Array.isArray(parsed.tags) || typeof parsed.narrative !== 'string' || typeof parsed.positive !== 'string' || typeof parsed.negative !== 'string') {
     throw new Error('Prompt compiler returned an invalid JSON shape');
   }
@@ -371,6 +444,7 @@ export const PromptEnhanceTool = {
       contextPrompt: { type: 'string', description: 'Last actual visual prompt, used as a local fallback' },
       intent: { type: 'string', description: 'Generation intent; refine keeps the previous prompt as the baseline' },
       referenceContext: { type: 'object', description: 'Untrusted public web references for character appearance' },
+      eventMeta: { type: 'object', description: 'Event metadata forwarded by the caller' },
     },
     required: ['prompt'],
   },
@@ -410,12 +484,19 @@ export const PromptEnhanceTool = {
         intent,
         referenceImages,
         imageDataUrl,
-        { allowPolicyOverride: input.allowPolicyOverride === true },
+        {
+          allowPolicyOverride: input.allowPolicyOverride === true,
+          signal: input.signal,
+          eventMeta: input.eventMeta,
+          onTiming: input.onTiming,
+        },
       );
     } catch (error) {
+      if (isCancellationError(error, input.signal)) throw error;
       return aiFailureResult(prompt, error);
     }
     const sourcePrompt = resolution.prompt;
+    const contextualRefinement = intent === 'refine' && Boolean(contextPrompt);
 
     if (mode === 'raw' && !customInstruction && (!requireAI || resolution.source === 'lastPrompt')) {
       return rawResult(sourcePrompt, mode, promptProfile, existingNegative, constraints, undefined, prompt, resolution);
@@ -437,41 +518,78 @@ export const PromptEnhanceTool = {
     try {
       let compiled;
       let lastIssues = [];
-      for (let attempt = 0; attempt < 3; attempt++) {
+      const visionSupported = await llmProvider.supportsVision?.({ prefer: 'local' }) ?? false;
+      if (referenceImages.length > 0 && !visionSupported) {
+        emitTiming(input.onTiming, 'enhance_vision_skipped', {
+          ...input.eventMeta,
+          timingPhase: 'compile',
+          message: `当前模型不支持图像输入，已忽略 ${referenceImages.length} 张参考图（仍将作为工作流输入）`,
+        });
+      }
+      const maxAttempts = contextualRefinement ? 1 : 3;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
         const feedback = attempt > 0
           ? lastIssues.map((issue, index) => `${index + 1}. ${issue}`).join('\n')
           : '';
-        const compilerMessages = await attachVisionImages(
-          [
-            { role: 'system', content: compilerInstructions(promptProfile, template.instruction, instruction, feedback) },
-            {
-              role: 'user',
-              content: JSON.stringify({
-                modelType: promptProfile.family || input.modelType || 'generic',
-                format: promptProfile.format || 'narrative',
-                latestRequest: prompt,
-                interpretedPrompt: sourcePrompt,
-                recentContext: conversation,
-                existingNegative,
-                supportsNegative: promptProfile.supportsNegative !== false,
-                constraints,
-                budgets: input.budgets || null,
-                referenceContext: publicAppearanceContext(referenceContext),
-                referenceImages: referenceImages.length,
-              }),
-            },
-          ],
-          referenceImages,
-          imageDataUrl,
-        );
-        const result = await llmProvider.chat({
-          messages: compilerMessages,
-          temperature: 0.3,
-          maxTokens: 1200,
-          prefer: 'local',
-          timeoutMs: 45000,
-          onChunk,
-          allowPolicyOverride: input.allowPolicyOverride === true,
+        const baseCompilerMessages = [
+          { role: 'system', content: compilerInstructions(promptProfile, template.instruction, instruction, feedback) },
+          {
+            role: 'user',
+            content: JSON.stringify({
+              modelType: promptProfile.family || input.modelType || 'generic',
+              format: promptProfile.format || 'narrative',
+              latestRequest: prompt,
+              interpretedPrompt: sourcePrompt,
+              recentContext: conversation,
+              existingNegative,
+              supportsNegative: promptProfile.supportsNegative !== false,
+              constraints,
+              budgets: input.budgets || null,
+              referenceContext: publicAppearanceContext(referenceContext),
+              referenceImages: referenceImages.length,
+            }),
+          },
+        ];
+        const compilerMessages = visionSupported
+          ? await attachVisionImages(baseCompilerMessages, referenceImages, imageDataUrl)
+          : baseCompilerMessages;
+        const llmStart = Date.now();
+        emitTiming(input.onTiming, 'enhance_llm_start', {
+          ...input.eventMeta,
+          timingPhase: 'compile',
+          attempt: attempt + 1,
+          message: `提示词编译中（第 ${attempt + 1} 次）`,
+        });
+        let result;
+        try {
+          result = await llmProvider.chat({
+            messages: compilerMessages,
+            temperature: 0.3,
+            maxTokens: 4096,
+            prefer: 'local',
+            timeoutMs: 90000,
+            onChunk,
+            signal: input.signal,
+            allowPolicyOverride: input.allowPolicyOverride === true,
+          });
+        } catch (error) {
+          emitTiming(input.onTiming, 'enhance_llm_end', {
+            ...input.eventMeta,
+            timingPhase: 'compile',
+            attempt: attempt + 1,
+            duration_ms: Date.now() - llmStart,
+            outcome: timingOutcome(error, input.signal),
+            message: `提示词编译结束（第 ${attempt + 1} 次）`,
+          });
+          throw error;
+        }
+        emitTiming(input.onTiming, 'enhance_llm_end', {
+          ...input.eventMeta,
+          timingPhase: 'compile',
+          attempt: attempt + 1,
+          duration_ms: Date.now() - llmStart,
+          outcome: 'completed',
+          message: `提示词编译结束（第 ${attempt + 1} 次）`,
         });
 
         compiled = normalizeCompiled(parseCompiled(result.content), {
@@ -496,7 +614,7 @@ export const PromptEnhanceTool = {
         }
         lastIssues = compiled.selfCheck?.issues || [];
         if (compiled.selfCheck?.preserved === true) break;
-        if (attempt === 2) {
+        if (maxAttempts === 3 && attempt === maxAttempts - 1) {
           const unresolved = 'UNRESOLVED: 经过3次重试仍无法通过自检';
           compiled.selfCheck.issues.push(unresolved);
           compiled.issues.push({ type: 'constraint', severity: 'high', detail: unresolved });
@@ -504,6 +622,7 @@ export const PromptEnhanceTool = {
       }
       return applyGuard(compiled, { userPrompt: sourcePrompt, budgets: input.budgets });
     } catch (error) {
+      if (isCancellationError(error, input.signal)) throw error;
       if (requireAI) return aiFailureResult(prompt, error);
       return { ...rawResult(sourcePrompt, mode, promptProfile, existingNegative, constraints, undefined, prompt, resolution), error: error.message };
     }

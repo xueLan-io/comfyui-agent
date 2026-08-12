@@ -75,7 +75,8 @@ export class Evaluator {
         prefer: resolveLLMStrategy(this.llm),
       });
       const content = typeof reply.content === 'string' ? reply.content : JSON.stringify(reply.content || {});
-      const parsed = JSON.parse(content.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim());
+      const cleaned = String(content || '').replace(/^```(?:json|JSON)?\s*/i, '').replace(/```\s*$/i, '').trim();
+      const parsed = JSON.parse(cleaned);
       const alignment = Number(parsed.alignment);
       const creative = Number(parsed.creative);
       if (!Number.isFinite(alignment) || !Number.isFinite(creative)) return null;

@@ -261,6 +261,25 @@ test('direct service retries technical failures without changing the prompt', as
   assert.equal(result.executionPolicy.mutatePrompt, false);
 });
 
+test('shared Comfy executor only cancels the requested execution', async () => {
+  const cancelled = [];
+  const executor = new ComfyExecutor({
+    async execute(input) {
+      input.onProgress?.({ promptId: input.clientId });
+      return new Promise(() => {});
+    },
+    async cancel(promptId) { cancelled.push(promptId); },
+  });
+  const request = directGenerationRequest({ workflowName: 'anima.json', positive: 'cat', negative: '' });
+  void executor.execute(request, { workflowDir: 'workflows', clientId: 'prompt-a', executionId: 'execution-a' });
+  void executor.execute(request, { workflowDir: 'workflows', clientId: 'prompt-b', executionId: 'execution-b' });
+  await new Promise(resolve => setImmediate(resolve));
+
+  await executor.cancel('execution-a');
+  await executor.cancel('missing-execution');
+  assert.deepEqual(cancelled, ['prompt-a']);
+});
+
 test('direct service stops retrying when cancellation is requested during backoff', async () => {
   let attempts = 0;
   const controller = new AbortController();

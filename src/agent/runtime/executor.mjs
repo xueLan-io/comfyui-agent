@@ -32,8 +32,15 @@ export class Executor {
   }
 
   async executeStep(step, context = {}) {
+    // Task and trace ownership originates in Agent and must follow every step event.
+    const eventMeta = {
+      ...(context.eventMeta || {}),
+      attemptId: context.attemptId || '',
+      attempt: context.currentAttempt || 0,
+    };
     if (this._abort) {
       emit(AgentEventTypes.STEP, {
+        ...eventMeta,
         stepId: step.id,
         tool: step.tool,
         status: 'skipped',
@@ -53,6 +60,7 @@ export class Executor {
     }
 
     emit(AgentEventTypes.STEP, {
+      ...eventMeta,
       stepId: step.id,
       tool: step.tool,
       skill: step.skill || '',
@@ -61,6 +69,7 @@ export class Executor {
     });
 
     emit(AgentEventTypes.TOOL_CALL, {
+      ...eventMeta,
       stepId: step.id,
       tool: step.tool,
       input: step.input,
@@ -175,6 +184,7 @@ export class Executor {
       if (result?.error) {
         const failure = classifyFailure(result.error, { tool: step.tool, action: stepInput.action });
         emit(AgentEventTypes.TOOL_RESULT, {
+          ...eventMeta,
           stepId: step.id,
           tool: step.tool,
           success: false,
@@ -183,6 +193,7 @@ export class Executor {
           duration_ms: duration,
         });
         emit(AgentEventTypes.STEP, {
+          ...eventMeta,
           stepId: step.id,
           tool: step.tool,
           skill: step.skill || '',
@@ -198,6 +209,7 @@ export class Executor {
         const error = `Unexpected output for step "${step.id}": expected ${step.expected_output}`;
         const failure = { type: 'output_mismatch', retryable: false, replan: true, reason: error };
         emit(AgentEventTypes.TOOL_RESULT, {
+          ...eventMeta,
           stepId: step.id,
           tool: step.tool,
           success: false,
@@ -206,6 +218,7 @@ export class Executor {
           duration_ms: duration,
         });
         emit(AgentEventTypes.STEP, {
+          ...eventMeta,
           stepId: step.id,
           tool: step.tool,
           skill: step.skill || '',
@@ -235,6 +248,7 @@ export class Executor {
       }
 
       emit(AgentEventTypes.TOOL_RESULT, {
+        ...eventMeta,
         stepId: step.id,
         tool: step.tool,
         result,
@@ -243,6 +257,7 @@ export class Executor {
       });
 
       emit(AgentEventTypes.STEP, {
+        ...eventMeta,
         stepId: step.id,
         tool: step.tool,
         skill: step.skill || '',
@@ -258,6 +273,7 @@ export class Executor {
 
       if (this._abort || controller.signal.aborted || error.name === 'AbortError') {
         emit(AgentEventTypes.STEP, {
+          ...eventMeta,
           stepId: step.id,
           tool: step.tool,
           status: 'skipped',
@@ -269,6 +285,7 @@ export class Executor {
 
       const failure = classifyFailure(error, { tool: step.tool, action: step.input?.action });
       emit(AgentEventTypes.TOOL_RESULT, {
+        ...eventMeta,
         stepId: step.id,
         tool: step.tool,
         success: false,
@@ -278,6 +295,7 @@ export class Executor {
       });
 
       emit(AgentEventTypes.STEP, {
+        ...eventMeta,
         stepId: step.id,
         tool: step.tool,
         skill: step.skill || '',

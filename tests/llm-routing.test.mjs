@@ -61,7 +61,7 @@ test('resolveLLMRouting honors an explicit local or cloud strategy', () => {
   assert.equal(cloud.providerId, 'cloud');
 });
 
-test('auto mode routes to the active cloud provider first and falls back to local on failure', async () => {
+test('auto mode with an explicit cloud selection never falls back to a local provider after a cloud failure', async () => {
   const originalFetch = globalThis.fetch;
   const requestedModels = [];
   globalThis.fetch = async (_url, options) => {
@@ -76,9 +76,8 @@ test('auto mode routes to the active cloud provider first and falls back to loca
       providers: BOTH_PROVIDERS,
       active: { providerId: 'cloud', modelId: 'cloud-model', strategy: 'auto' },
     });
-    const result = await provider.chat({ messages: [{ role: 'user', content: 'hi' }] });
-    assert.equal(result.content, 'local ok');
-    assert.deepEqual(requestedModels, ['cloud-model', 'local-model']);
+    await assert.rejects(provider.chat({ messages: [{ role: 'user', content: 'hi' }] }), /cloud down/);
+    assert.deepEqual(requestedModels, ['cloud-model']);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -169,6 +168,50 @@ test('manual strategy routes exactly to the active provider', async () => {
   }
 });
 
+test('explicit cloud strategy never falls back to a local provider after a cloud failure', async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedModels = [];
+  globalThis.fetch = async (_url, options) => {
+    if (options.method === 'GET') return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    const model = JSON.parse(options.body).model;
+    requestedModels.push(model);
+    if (model === 'cloud-model') throw new Error('cloud unreachable');
+    return new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'local' } }] }), { status: 200 });
+  };
+  try {
+    const provider = new LLMProvider({
+      providers: BOTH_PROVIDERS,
+      active: { providerId: 'cloud', modelId: 'cloud-model', strategy: 'cloud' },
+    });
+    await assert.rejects(provider.chat({ messages: [{ role: 'user', content: 'hi' }] }), /cloud unreachable/);
+    assert.deepEqual(requestedModels, ['cloud-model']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('manual strategy never falls back to a local provider after a cloud failure', async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedModels = [];
+  globalThis.fetch = async (_url, options) => {
+    if (options.method === 'GET') return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    const model = JSON.parse(options.body).model;
+    requestedModels.push(model);
+    if (model === 'cloud-model') throw new Error('cloud unreachable');
+    return new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'local' } }] }), { status: 200 });
+  };
+  try {
+    const provider = new LLMProvider({
+      providers: BOTH_PROVIDERS,
+      active: { providerId: 'cloud', modelId: 'cloud-model', strategy: 'manual' },
+    });
+    await assert.rejects(provider.chat({ messages: [{ role: 'user', content: 'hi' }] }), /cloud unreachable/);
+    assert.deepEqual(requestedModels, ['cloud-model']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('isConfigured reflects the active strategy', () => {
   const localOnly = new LLMProvider({ providers: [BOTH_PROVIDERS[0]], active: { providerId: 'lmstudio', modelId: 'local-model', strategy: 'cloud' } });
   assert.equal(localOnly.isConfigured, false);
@@ -183,7 +226,7 @@ test('chat throws a clear error when the selected strategy has no configured pro
   await assert.rejects(provider.chat({ messages: [{ role: 'user', content: 'hi' }] }), /未配置云端模型/);
 });
 
-test('local requests get a min maxTokens floor; cloud requests keep their budget', async () => {
+test('local requests get a min maxTokens floor; cloud reasoning requests reserve output headroom', async () => {
   const originalFetch = globalThis.fetch;
   const seen = [];
   globalThis.fetch = async (_url, options) => {
@@ -197,7 +240,7 @@ test('local requests get a min maxTokens floor; cloud requests keep their budget
       active: { providerId: 'cloud', modelId: 'cloud-model', strategy: 'manual' },
     });
     await provider.chat({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 300 });
-    assert.equal(seen[0].max_tokens, 300, 'cloud keeps the caller budget');
+    assert.ok(seen[0].max_tokens > 300, 'cloud reasoning model reserves headroom above the caller budget');
     const localProvider = new LLMProvider({
       providers: BOTH_PROVIDERS,
       active: { providerId: 'lmstudio', modelId: 'local-model', strategy: 'local' },
@@ -250,4 +293,23 @@ test('cloud dispatch replaces the system prompt when cloudSystemPrompt is set; l
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('supportsVision reflects the vision declaration of the routed model', async () => {
+  const providers = [
+    { id: 'lmstudio', name: 'LM Studio', type: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', models: [{ id: 'local-model', vision: true }] },
+    { id: 'cloud', name: 'Cloud', type: 'openai-compatible', baseUrl: 'https://api.example.com/v1', apiKey: 'key', models: [{ id: 'cloud-model' }] },
+  ];
+  const noVision = new LLMProvider({
+    providers,
+    active: { providerId: 'cloud', modelId: 'cloud-model', strategy: 'auto' },
+  });
+  assert.equal(await noVision.supportsVision(), false);
+  assert.equal(await noVision.supportsVision({ prefer: 'local' }), false, 'explicit cloud selection stays authoritative');
+
+  const withVision = new LLMProvider({
+    providers,
+    active: { providerId: 'lmstudio', modelId: 'local-model', strategy: 'manual' },
+  });
+  assert.equal(await withVision.supportsVision(), true);
 });
