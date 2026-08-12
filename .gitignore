@@ -22,3 +22,8 @@ SHA256SUMS.txt
 /多功能提示词模版5S.md
 /多功能提示词模版10S.md
 /MiniMax H3全能参考工作流.json
+
+# Scratch debug scripts and local tool config
+.tmp-*.mjs
+*.bak
+.claude/
