@@ -23,7 +23,9 @@ ComfyUI 是外部依赖，不包含在本仓库源代码或发布包的模型目
 
 ## 下载使用
 
-从 [Releases](https://github.com/xueLan-io/comfyui-agent/releases/latest) 下载最新便携版：
+最新版本 v0.3.7-rc.1 为预发布版，不会显示在 Releases 页面顶部，请直接通过下方链接下载：
+
+- 便携版：https://github.com/xueLan-io/comfyui-agent/releases/tag/v0.3.7-rc.1
 
 ```text
 ComfyMuse-portable-v0.3.7-rc.1.zip
