@@ -26,7 +26,7 @@ ComfyUI 是外部依赖，不包含在本仓库源代码或发布包的模型目
 从 [Releases](https://github.com/xueLan-io/comfyui-agent/releases/latest) 下载最新便携版：
 
 ```text
-ComfyMuse-portable-v0.3.6.zip
+ComfyMuse-portable-v0.3.7-rc.1.zip
 ```
 
 解压后运行 `ComfyMuseLauncher.exe`。便携版不要求另外安装 Node.js 或 Python。
@@ -34,7 +34,7 @@ ComfyMuse-portable-v0.3.6.zip
 首次安装或从旧版本升级时，请使用完整的 Portable 包。已有兼容安装可以使用应用层更新包：
 
 ```text
-ComfyMuse-update-v0.3.6.zip
+ComfyMuse-update-v0.3.7-rc.1.zip
 ```
 
 应用内更新会验证 `manifest-stable.json.sig` 的 Ed25519 签名，并在下载后校验更新包的 SHA-256。更新器只替换 `resources\app`，不会修改 ComfyUI、模型、工作流或用户数据。

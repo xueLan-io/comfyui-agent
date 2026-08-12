@@ -1,6 +1,6 @@
 {
   "name": "comfy-agent",
-  "version": "0.3.6",
+  "version": "0.3.7-rc.1",
   "type": "module",
   "description": "ComfyMuse - AI Creative Studio powered by ComfyUI",
   "main": "electron/main.mjs",
@@ -21,8 +21,14 @@
     "test:update-signature": "node --test tests/update-signature.test.mjs"
   },
   "dependencies": {
+    "katex": "^0.16.47",
+    "mermaid": "^11.16.1",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",
