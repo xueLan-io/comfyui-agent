@@ -165,6 +165,7 @@ async function invoke(method, args = []) {
   if (method === 'task.persist') return agent.taskManager.persist();
   if (method === 'config.llm') return agent.reconfigureLLM(args[0]);
   if (method === 'config.research') return agent.reconfigureResearch(args[0]);
+  if (method === 'config.prompt') return agent.reconfigurePrompt(args[0]);
   if (method === 'config.workflowDir') return agent.setWorkflowDir(args[0]);
   if (method === 'config.promptMode') return agent.setPromptMode(args[0]);
   if (method === 'config.comfy') {
@@ -187,6 +188,7 @@ async function start(config = {}) {
   agent = new Agent({
     llmConfig: config.llm || {},
     researchConfig: config.research || {},
+    promptConfig: config.prompt || {},
     workflowDir: config.workflowDir || '',
     comfyRoot: config.comfyRoot || '',
     userDataPath: config.userDataPath || '',

@@ -18,7 +18,42 @@ test('MiniMax H3 video template validates the required Chinese prompt structure'
 
 test('MiniMax H3 video template reports missing sections', () => {
   const issues = validateMinimaxH3VideoPrompt('一个雨夜的战斗', { duration: 10 });
-  assert.equal(issues.length, 5);
+  assert.equal(issues.length, 6);
+});
+
+test('MiniMax H3 video template rejects timeline gaps and missing ending state', () => {
+  const issues = validateMinimaxH3VideoPrompt([
+    '生成一段5秒、16:9、2K、原生立体声的画面。',
+    '0—2秒：女孩抬头。',
+    '3—5秒：女孩转身。',
+    '剪辑与动作：保持镜头连续。',
+    '视觉风格：冷色电影光影。',
+    '声音设计：环境声自然。',
+  ].join('\n'), { duration: 5 });
+  assert.ok(issues.some(issue => issue.includes('无缺口')));
+  assert.ok(issues.some(issue => issue.includes('结尾结果')));
+});
+
+test('MiniMax H3 action validation requires readable contact or force', () => {
+  const issues = validateMinimaxH3VideoPrompt([
+    '生成一段5秒、16:9、2K、原生立体声的武戏。',
+    '0—5秒：两人在雨夜快速移动。',
+    '剪辑与动作：节奏紧凑。',
+    '视觉风格：冷色电影光影。',
+    '声音设计：雨声和音乐推进，最后完成。',
+  ].join('\n'), { duration: 5, videoMode: 'action' });
+  assert.ok(issues.some(issue => issue.includes('攻防')));
+});
+
+test('MiniMax H3 accepts dialogue containing a negative word', () => {
+  const issues = validateMinimaxH3VideoPrompt([
+    '生成一段5秒、16:9、2K、原生立体声的文戏。',
+    '0—5秒：女人握住门把手，低声说：“不要走。”，男人停在门口，最后松开手。',
+    '剪辑与动作：从女人的手部特写切到男人停步的中景。',
+    '视觉风格：清晨冷暖交界的自然光。',
+    '声音设计：门锁轻响、压低的呼吸和安静的余波。',
+  ].join('\n'), { duration: 5, videoMode: 'dialogue' });
+  assert.ok(!issues.some(issue => issue.includes('否定式')));
 });
 
 test('raw mode returns original', async () => {
@@ -433,6 +468,29 @@ test('forces Flux negative prompt to remain empty', async () => {
     promptProfile: { family: 'flux', format: 'narrative', supportsNegative: false },
     llmProvider: mockLLM,
   });
+  assert.equal(result.negative, '');
+});
+
+test('MiniMax H3 always compiles in Chinese without a strict template trigger', async () => {
+  let instruction = '';
+  const result = await PromptEnhanceTool.execute({
+    prompt: '一位宇航员站在月面',
+    mode: 'cinematic',
+    promptProfile: { family: 'minimax_h3', format: 'narrative', supportsNegative: false },
+    llmProvider: {
+      async chat(input) {
+        instruction = input.messages[0].content;
+        return { content: JSON.stringify({
+          tags: [],
+          narrative: '宇航员站在月面。',
+          positive: '生成一段宇航员站在月面的中文视频描述。',
+          negative: 'bad anatomy',
+          self_check: { preserved: true, issues: [] },
+        }) };
+      },
+    },
+  });
+  assert.match(instruction, /使用中文自然语言/);
   assert.equal(result.negative, '');
 });
 

@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAgent } from '../contexts/AgentContext.jsx';
 import { useComfyUI } from '../contexts/ComfyUIContext.jsx';
 import { ANIME_PROMPT_PACKS } from './prompt-library-anime.mjs';
-import { getCachedCollectedItemIds, hasPendingCollectedSegments, loadCachedCollectedItems, loadCollectedPromptItems, loadCollectedSearchIndex, loadCollectedTagGroup, getCollectedSearchIndex, getCollectedTagGroups, loadCollectedSegmentBatch } from './prompt-library-collected.mjs';
+import { getCachedCollectedItemIds, hasPendingCollectedSegments, loadCachedCollectedItems, loadCollectedPromptItems, loadCollectedSearchIndex, loadCollectedTagGroup, getCollectedSearchIndex, getCollectedItemTotal, getCollectedTagGroups, loadCollectedSegmentBatch } from './prompt-library-collected.mjs';
 import { PROMPT_LIBRARY_CATEGORIES, PROMPT_LIBRARY_ITEMS } from './prompt-library-data.mjs';
 import { buildSearchIndex, buildSearchIndexWithCachedCollected, matchesSearchText, randomSearchGuideTerms, searchLibrary } from './prompt-library-search.mjs';
 import { matchesPromptTaxonomy, PROMPT_LIBRARY_TAXONOMY } from './prompt-library-taxonomy.mjs';
@@ -198,6 +198,15 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   const [cachedCollectedItems, setCachedCollectedItems] = useState([]);
   const [fullCollectionRequested, setFullCollectionRequested] = useState(false);
   const collectionLoad = useRef(null);
+  const notifyProgress = useCallback(update => {
+    setCollectionProgress(current => {
+      const next = { ...current, percent: Math.max(current.percent || 0, update.percent || 0) };
+      if (update.stage === 'error') {
+        next.error = `分片 ${update.segmentId || ''} 加载失败`;
+      }
+      return next;
+    });
+  }, []);
   const windowApi = window.electronAPI;
   const [maximized, setMaximized] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => clampSidebarWidth(loadLibraryState(SIDEBAR_WIDTH_KEY, 220)));
@@ -258,15 +267,6 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   }, [windowApi]);
 
   useEffect(() => {
-    let active = true;
-    loadCollectedSearchIndex().then(index => {
-      if (!active) return;
-      if (index) setCollectedSearchIndex(index);
-    }).catch(() => {});
-    return () => { active = false; };
-  }, []);
-
-  useEffect(() => {
     setCachedCollectedItems([]);
     if (!query) return undefined;
     let active = true;
@@ -277,7 +277,7 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   }, [query]);
 
   useEffect(() => {
-    if (!shouldLoadCollection || (activeGroup === 'collected' && !fullCollectionRequested && advancedFilters.tagGroup === 'all')) return undefined;
+    if (!shouldLoadCollection) return undefined;
     const groupOnly = activeGroup === 'collected' && advancedFilters.tagGroup !== 'all' && !query;
     const key = fullCollectionRequested ? 'full' : groupOnly ? `group:${advancedFilters.tagGroup}` : 'batch';
     let active = true;
@@ -287,10 +287,10 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
       load = {
         key,
         promise: groupOnly
-          ? loadCollectedTagGroup(advancedFilters.tagGroup, setCollectionProgress)
+          ? loadCollectedTagGroup(advancedFilters.tagGroup, notifyProgress)
           : fullCollectionRequested
-            ? loadCollectedPromptItems(setCollectionProgress)
-            : loadCollectedSegmentBatch(setCollectionProgress),
+            ? loadCollectedPromptItems(notifyProgress)
+            : loadCollectedSegmentBatch(notifyProgress),
       };
       collectionLoad.current = load;
     }
@@ -309,7 +309,7 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   }, [shouldLoadCollection, advancedFilters.tagGroup, activeGroup, query, fullCollectionRequested]);
 
   useEffect(() => {
-    if (activeGroup !== 'collected' || fullCollectionRequested || advancedFilters.tagGroup !== 'all') return undefined;
+    if (fullCollectionRequested) return undefined;
     let cancelled = false;
     let idle;
     const schedule = () => {
@@ -318,11 +318,13 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
     };
     const runBatch = () => {
       if (cancelled) return;
-      loadCollectedSegmentBatch(setCollectionProgress).then(items => {
-        if (!cancelled) {
-          setCollectedItems(items);
-          schedule();
-        }
+      loadCollectedSegmentBatch(notifyProgress).then(items => {
+        if (cancelled) return;
+        setCollectedItems(items);
+        getCollectedSearchIndex().then(index => {
+          if (!cancelled && index) setCollectedSearchIndex(index);
+        }).catch(() => {});
+        schedule();
       }).catch(() => {});
     };
     schedule();
@@ -331,7 +333,7 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
       if (window.cancelIdleCallback && typeof idle === 'number') window.cancelIdleCallback(idle);
       else window.clearTimeout(idle);
     };
-  }, [activeGroup, advancedFilters.tagGroup, fullCollectionRequested]);
+  }, [fullCollectionRequested]);
 
   const availableCollectedItems = useMemo(() => {
     const items = new Map();
@@ -380,6 +382,40 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
     ...(group.children || []).filter(child => isGlobalSearch || expandedGroups.has(group.id) || activeGroup === child.id || group.children?.some(item => item.id === activeGroup)),
   ]), [activeGroup, expandedGroups, isGlobalSearch]);
   const [taxonomyCounts, setTaxonomyCounts] = useState({ counts: {}, favoritesCount: favorites.size });
+  const allTaxonomyNodes = useMemo(() => PROMPT_LIBRARY_TAXONOMY.flatMap(group => [group, ...(group.children || [])]), []);
+  const collectedNodeMatches = useRef(new Map());
+  const [nodeMatchesTick, setNodeMatchesTick] = useState(0);
+  useEffect(() => {
+    const pending = [];
+    for (const item of indexedItems) {
+      if (item.category === 'collected' && !collectedNodeMatches.current.has(item.id)) pending.push(item);
+    }
+    if (pending.length === 0) return undefined;
+    let cancelled = false;
+    let idle;
+    const chunk = () => {
+      if (cancelled) return;
+      const batch = pending.splice(0, 400);
+      for (const item of batch) {
+        const nodeIds = new Set();
+        for (const node of allTaxonomyNodes) {
+          if (matchesPromptTaxonomy(item, node)) nodeIds.add(node.id);
+        }
+        collectedNodeMatches.current.set(item.id, nodeIds);
+      }
+      if (pending.length > 0) {
+        idle = window.requestIdleCallback ? window.requestIdleCallback(chunk, { timeout: 250 }) : window.setTimeout(chunk, 100);
+      } else {
+        setNodeMatchesTick(tick => tick + 1);
+      }
+    };
+    idle = window.requestIdleCallback ? window.requestIdleCallback(chunk, { timeout: 250 }) : window.setTimeout(chunk, 100);
+    return () => {
+      cancelled = true;
+      if (window.cancelIdleCallback && typeof idle === 'number') window.cancelIdleCallback(idle);
+      else window.clearTimeout(idle);
+    };
+  }, [indexedItems, allTaxonomyNodes]);
   useEffect(() => {
     let cancelled = false;
     const calculate = () => {
@@ -389,8 +425,16 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
       let favoritesCount = 0;
       for (const item of indexedItems) {
         if (favorites.has(item.id)) favoritesCount += 1;
-        for (const node of countableTaxonomyNodes) {
-          if (matchesPromptTaxonomy(item, node)) counts[node.id] += 1;
+        if (item.category === 'collected') {
+          const nodeIds = collectedNodeMatches.current.get(item.id);
+          if (!nodeIds) continue;
+          for (const node of countableTaxonomyNodes) {
+            if (nodeIds.has(node.id)) counts[node.id] += 1;
+          }
+        } else {
+          for (const node of countableTaxonomyNodes) {
+            if (matchesPromptTaxonomy(item, node)) counts[node.id] += 1;
+          }
         }
       }
       if (!cancelled) setTaxonomyCounts({ counts, favoritesCount });
@@ -403,7 +447,7 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
       if (window.cancelIdleCallback && window.requestIdleCallback) window.cancelIdleCallback(task);
       else window.clearTimeout(task);
     };
-  }, [countableTaxonomyNodes, favorites, indexedItems]);
+  }, [countableTaxonomyNodes, favorites, indexedItems, nodeMatchesTick]);
   const categoryCounts = useMemo(() => PROMPT_LIBRARY_TAXONOMY.reduce((counts, group) => {
     counts[group.id] = group.id === 'favorites'
       ? taxonomyCounts.favoritesCount
@@ -417,7 +461,14 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   const browsedItems = useMemo(() => {
     if (activeGroup === 'favorites') return indexedItems.filter(item => favorites.has(item.id));
     if (activeStage) return indexedItems.filter(item => selectedStage.categoryIds.includes(item.category));
-    let items = indexedItems.filter(item => matchesPromptTaxonomy(item, selectedGroup));
+    const matchesNode = item => {
+      if (item.category === 'collected') {
+        const nodeIds = collectedNodeMatches.current.get(item.id);
+        if (nodeIds) return nodeIds.has(selectedGroup.id);
+      }
+      return matchesPromptTaxonomy(item, selectedGroup);
+    };
+    let items = indexedItems.filter(matchesNode);
     if (isArtistView) items = items.filter(item => !item.tier || item.tier === artistTier);
     return items;
   }, [activeGroup, activeStage, favorites, indexedItems, selectedGroup, selectedStage, isArtistView, artistTier]);
@@ -617,7 +668,7 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
   const collectionLabel = collectionState === 'ready'
     ? t('plCollectedCount', { n: collectedItems.length.toLocaleString() })
     : collectionState === 'loading'
-      ? t('plCollecting', { n: Math.round(collectionProgress.percent || 0) })
+      ? t('plCollecting', { n: Math.round(collectionProgress.percent || 0) }) + (collectionProgress.error ? ` · ${collectionProgress.error}` : '')
       : collectionState === 'error' ? t('plCollectedUnavailable') : t('plCollectedOnDemand');
   const browseGroups = PROMPT_LIBRARY_TAXONOMY.filter(group => BROWSE_GROUP_IDS.includes(group.id));
   const visibleBrowseGroups = useMemo(() => {
@@ -758,7 +809,7 @@ export default function PromptLibraryPage({ onBack, onGenerate, hidden = false }
             ))}
           </div>}
 
-           <div className="prompt-workbench-cards-heading"><strong>{activeIntent ? t('plNextSuggestions') : t('plAvailableContent')}</strong><span>{activeGroup === 'artist' || activeGroup === 'artist-anime' ? t('plArtistNote') : t('plCartHint')}</span>{activeGroup === 'collected' && !fullCollectionRequested && <button type="button" className="prompt-library-load-more" onClick={() => setFullCollectionRequested(true)}>{t('plLoadFullLibrary', { n: getCollectedTagGroups().reduce((sum, group) => sum + group.count, 0).toLocaleString() })}</button>}</div>
+           <div className="prompt-workbench-cards-heading"><strong>{activeIntent ? t('plNextSuggestions') : t('plAvailableContent')}</strong><span>{activeGroup === 'artist' || activeGroup === 'artist-anime' ? t('plArtistNote') : t('plCartHint')}</span>{activeGroup === 'collected' && !fullCollectionRequested && <button type="button" className="prompt-library-load-more" onClick={() => setFullCollectionRequested(true)}>{t('plLoadFullLibrary', { n: getCollectedItemTotal().toLocaleString() })}</button>}</div>
           <div className="prompt-workbench-card-scroll">
             {!isGlobalSearch && advancedFilters.source === 'collected' && collectionState === 'loading' ? <div className="prompt-library-empty"><strong>{t('plLoadingCollected')}</strong><span>{t('plLoadingCollectedNote')}</span></div> : visibleItems.length === 0 ? <div className="prompt-library-empty"><strong>{t('plNoMatches')}</strong><span>{t('plNoMatchesHint')}</span></div> : <div className="prompt-workbench-results-sections">
               {visibleTagItems.length > 0 && <section className="prompt-workbench-result-section"><div className="prompt-workbench-result-section-heading"><strong>{t('plTagsSection')}</strong><span>{t('plResultCount', { n: visibleTagItems.length.toLocaleString() })}</span></div><div className="prompt-workbench-card-grid">{visibleTagItems.map(renderPromptCard)}</div></section>}

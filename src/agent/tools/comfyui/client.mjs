@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { connect as createTlsConnection } from 'node:tls';
@@ -38,6 +38,41 @@ function hasOutputMedia(entry = {}) {
       Array.isArray(items) && items.some(item => item?.filename),
     ),
   );
+}
+
+// Cap on data URLs and /view payloads returned to the caller (and from there
+// forwarded to the configured LLM provider).
+const MAX_VIEW_BYTES = 8 * 1024 * 1024;
+const MAX_WS_BUFFER_BYTES = 16 * 1024 * 1024;
+const VIEW_TYPES = new Set(['input', 'output', 'temp']);
+
+// Validates an LLM-supplied {filename, subfolder, type} reference before it is
+// forwarded to ComfyUI /view, so server-side traversal primitives cannot be
+// reached from agent-controlled input.
+function validateViewRef(image = {}) {
+  const filename = String(image.filename || '');
+  const subfolder = String(image.subfolder || '');
+  const type = String(image.type || 'output');
+  if (!filename || /[\\/]/.test(filename) || filename === '..' || filename.includes('..')) {
+    throw new Error('Invalid ComfyUI image filename');
+  }
+  if (/[\u0000-\u001f\u007f]/.test(filename) || /[\u0000-\u001f\u007f]/.test(subfolder)) {
+    throw new Error('Invalid ComfyUI image reference');
+  }
+  if (subfolder && (subfolder.startsWith('/') || subfolder.startsWith('\\') || subfolder.split(/[\\/]/).includes('..') || subfolder.includes(':'))) {
+    throw new Error('Invalid ComfyUI image subfolder');
+  }
+  if (!VIEW_TYPES.has(type)) throw new Error('Invalid ComfyUI image type');
+  return { filename, subfolder, type };
+}
+
+function viewParams(image = {}) {
+  const ref = validateViewRef(image);
+  const params = new URLSearchParams();
+  params.set('filename', ref.filename);
+  params.set('subfolder', ref.subfolder);
+  params.set('type', ref.type);
+  return params;
 }
 
 class NodeWebSocket {
@@ -94,6 +129,10 @@ class NodeWebSocket {
 
   _receive(chunk) {
     this.buffer = Buffer.concat([this.buffer, chunk]);
+    if (this.buffer.length > MAX_WS_BUFFER_BYTES) {
+      this._fail(new Error('ComfyUI websocket message exceeds the size limit'));
+      return;
+    }
     if (!this.handshakeComplete) {
       const headerEnd = this.buffer.indexOf('\r\n\r\n');
       if (headerEnd < 0) return;
@@ -319,11 +358,7 @@ export class ComfyUIClient {
   }
 
   async inspectMedia(media = {}) {
-    const params = new URLSearchParams({
-      filename: media.filename || '',
-      subfolder: media.subfolder || '',
-      type: media.type || 'output',
-    });
+    const params = viewParams(media);
     const res = await this._fetch(`${this.baseUrl}/view?${params.toString()}`);
     if (!res.ok) return { filename: media.filename, exists: false, readable: false, bytes: null };
     const bytes = new Uint8Array(await res.arrayBuffer());
@@ -331,11 +366,7 @@ export class ComfyUIClient {
   }
 
   async fetchImageBytes(image = {}) {
-    const params = new URLSearchParams({
-      filename: image.filename || '',
-      subfolder: image.subfolder || '',
-      type: image.type || 'output',
-    });
+    const params = viewParams(image);
     const res = await this._fetch(`${this.baseUrl}/view?${params.toString()}`);
     if (!res.ok) return null;
     return new Uint8Array(await res.arrayBuffer());
@@ -353,15 +384,13 @@ export class ComfyUIClient {
   async imageDataUrl(image = {}) {
     try {
       if (image.path) {
+        const stat = await stat(image.path).catch(() => null);
+        if (!stat || stat.size > MAX_VIEW_BYTES) return null;
         const data = await readFile(image.path);
         const mime = MIME_TYPES[(image.path.split('.').pop() || '').toLowerCase()] || 'application/octet-stream';
         return `data:${mime};base64,${data.toString('base64')}`;
       }
-      const params = new URLSearchParams({
-        filename: image.filename || '',
-        subfolder: image.subfolder || '',
-        type: image.type || 'output',
-      });
+      const params = viewParams(image);
       const res = await this._fetch(`${this.baseUrl}/view?${params.toString()}`);
       if (!res.ok) return null;
       const bytes = new Uint8Array(await res.arrayBuffer());

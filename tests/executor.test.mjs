@@ -120,7 +120,7 @@ test('executeStep propagates video media through the Agent context', async () =>
     async execute() { return { videos: [{ filename: 'result.mp4' }], promptId: 'p-video' }; },
   };
   const executor = new Executor({ comfyui: tool }, null);
-  const context = {};
+  const context = { workflowDir: '/test' };
   const result = await executor.executeStep({
     id: 's-video', tool: 'comfyui', input: { workflowName: 'video.json' },
     description: 'video test', expected_output: 'videos',
@@ -166,7 +166,7 @@ test('executeStep marks an output mismatch as replan', async () => {
   };
   const executor = new Executor({ filesystem: tool }, null);
   const step = { id: 's8', tool: 'filesystem', input: {}, description: 'list', expected_output: 'files' };
-  const result = await executor.executeStep(step);
+  const result = await executor.executeStep(step, { workflowDir: '/test' });
   assert.equal(result.failure.type, 'output_mismatch');
   assert.equal(result.failure.replan, true);
 });

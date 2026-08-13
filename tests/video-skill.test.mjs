@@ -22,3 +22,13 @@ test('VideoSkill preserves existing behavior for other video models', () => {
   assert.equal(enhance.input.constraints.template, undefined);
   assert.equal(enhance.input.constraints.duration, undefined);
 });
+
+test('VideoSkill recognizes the optional H3 free-director direction', () => {
+  const [enhance] = VideoSkill.steps('自由导演：宇航员在月面发现信号', {
+    modelType: 'minimax_h3',
+    promptMode: 'cinematic',
+  });
+
+  assert.equal(enhance.input.constraints.template, 'minimax_h3_video');
+  assert.equal(enhance.input.constraints.videoMode, 'director');
+});

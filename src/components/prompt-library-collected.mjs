@@ -7,9 +7,14 @@ import {
 } from './prompt-library-segments/index.mjs';
 
 const COLLECTION_CACHE_NAME = 'comfy-agent-prompt-library';
-const COLLECTION_CACHE_VERSION = 'collected-v5-separated-cache';
-const COLLECTION_SCHEMA_VERSION = 2;
+const COLLECTION_CACHE_VERSION = 'collected-v6-59405-separated-cache';
+const COLLECTION_SCHEMA_VERSION = 3;
 const SEGMENT_BATCH_SIZE = 4;
+
+function expectedCollectedItemCount() {
+  const phraseSegment = COLLECTED_SEGMENTS.find(segment => segment.id === COLLECTED_PHRASES_SEGMENT);
+  return COLLECTED_TOTAL_TAGS + (phraseSegment?.count || 0);
+}
 
 let collectedItemsPromise = null;
 let cachedRecord = null;
@@ -18,6 +23,8 @@ const loadedItems = [];
 const loadedSegments = new Set();
 const loadPromises = new Map();
 const itemCache = new Map();
+const segmentLoadPromises = new Map();
+const failedSegments = new Set();
 
 function getSegmentLoaders() {
   return import.meta.glob('./prompt-library-segments/seg-*.mjs');
@@ -93,8 +100,13 @@ export function createPhraseItems(allPromptPhrases) {
 }
 
 function createPhraseItem(line, index) {
-  const match = line.match(/^(.*?),\s*'([^']*)',\s*$/);
-  const prompt = match ? match[1].trim() : line;
+  // Records in ALL_prompt_phrases.txt are `PROMPT, '标题', 'rgba(…)', <毫秒>, 'uuid`（uuid 引号未闭合）.
+  // Tolerate the full metadata tail, a clean `PROMPT, '标题',` line, and stray text lines.
+  const metadataMatch = line.match(/^(.*?),\s*'([^']*)',\s*'[^']*',\s*\d+(?:\.\d+)?,\s*'[^']*'?\s*$/);
+  const cleanMatch = line.match(/^(.*?),\s*'([^']*)'?,?\s*$/);
+  const match = metadataMatch || cleanMatch;
+  let prompt = match ? match[1].trim() : line;
+  if (prompt.endsWith("'")) prompt = prompt.slice(0, -1).trim();
   const title = match?.[2]?.trim() || `${prompt.slice(0, 42)}${prompt.length > 42 ? '...' : ''}`;
   const description = '完整提示词短语 · 可直接加入';
   return {
@@ -147,7 +159,7 @@ async function readCachedRecord() {
     const request = database.transaction('segments', 'readonly').objectStore('segments').get('all');
     request.onsuccess = () => {
       const record = request.result;
-      resolve(record?.version === COLLECTION_CACHE_VERSION && Array.isArray(record?.items) ? record : null);
+      resolve(record?.version === COLLECTION_CACHE_VERSION && Array.isArray(record?.items) && record.items.length === expectedCollectedItemCount() ? record : null);
     };
     request.onerror = () => resolve(null);
   });
@@ -168,38 +180,100 @@ async function writeCachedRecord(record) {
   });
 }
 
+const INDEX_BUCKET_SIZE = 4000;
+
 async function readCachedSearchIndex() {
   const database = await openCollectionCache();
   if (!database) return null;
-  return new Promise(resolve => {
+  const legacy = await new Promise(resolve => {
     const request = database.transaction('indexes', 'readonly').objectStore('indexes').get(COLLECTION_CACHE_VERSION);
-    request.onsuccess = () => {
-      const records = request.result?.records;
-      if (!Array.isArray(records)) return resolve(null);
-      resolve(new Map(records.map(record => [record.token, record.itemIds || []])));
-    };
+    request.onsuccess = () => resolve(request.result || null);
     request.onerror = () => resolve(null);
   });
+  if (legacy && Array.isArray(legacy.records)) {
+    return new Map(legacy.records.map(record => [record.token, record.itemIds || []]));
+  }
+  const bucketRecords = [];
+  await new Promise(resolve => {
+    const store = database.transaction('indexes', 'readonly').objectStore('indexes');
+    const range = IDBKeyRange.bound(`${COLLECTION_CACHE_VERSION}#`, `${COLLECTION_CACHE_VERSION}#\uffff`);
+    const request = store.openCursor(range);
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve();
+        return;
+      }
+      if (Array.isArray(cursor.value?.records)) bucketRecords.push(...cursor.value.records);
+      cursor.continue();
+    };
+    request.onerror = () => resolve();
+  });
+  if (bucketRecords.length === 0) return null;
+  return new Map(bucketRecords.map(record => [record.token, record.itemIds || []]));
 }
 
 async function writeCachedSearchIndex(index) {
   const database = await openCollectionCache();
   if (!database) return;
-  const records = [...index].map(([token, itemIds]) => ({ token, itemIds }));
-  await new Promise(resolve => {
-    const request = database.transaction('indexes', 'readwrite').objectStore('indexes').put({
-      key: COLLECTION_CACHE_VERSION,
-      version: COLLECTION_CACHE_VERSION,
-      records,
+  const records = [...index].map(([token, itemIds]) => ({ token, itemIds: itemIds instanceof Set ? [...itemIds] : itemIds }));
+  const bucketCount = Math.max(1, Math.ceil(records.length / INDEX_BUCKET_SIZE));
+  const bucketKeys = [];
+  for (let bucket = 0; bucket < bucketCount; bucket += 1) {
+    const slice = records.slice(bucket * INDEX_BUCKET_SIZE, (bucket + 1) * INDEX_BUCKET_SIZE);
+    const key = `${COLLECTION_CACHE_VERSION}#${bucket}`;
+    bucketKeys.push(key);
+    await new Promise(resolve => {
+      const request = database.transaction('indexes', 'readwrite').objectStore('indexes').put({
+        key,
+        version: COLLECTION_CACHE_VERSION,
+        bucket,
+        records: slice,
+      });
+      request.onsuccess = resolve;
+      request.onerror = resolve;
     });
-    request.onsuccess = resolve;
-    request.onerror = resolve;
+  }
+  await new Promise(resolve => {
+    const transaction = database.transaction('indexes', 'readwrite');
+    const store = transaction.objectStore('indexes');
+    store.delete(COLLECTION_CACHE_VERSION);
+    const request = store.openCursor();
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      const key = String(cursor.key);
+      if (key.startsWith(`${COLLECTION_CACHE_VERSION}#`) && !bucketKeys.includes(key)) store.delete(cursor.key);
+      cursor.continue();
+    };
+    request.onerror = () => resolve();
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => resolve();
   });
+}
+
+let fullRecordWritten = false;
+let persistChain = Promise.resolve();
+
+function persistCollectedCache(items, index, idIndex) {
+  const indexForWrite = idIndex || index;
+  persistChain = persistChain.then(async () => {
+    await writeCachedSearchIndex(indexForWrite);
+    if (fullRecordWritten) return;
+    if (items.length !== expectedCollectedItemCount()) return;
+    await writeCachedRecord({ items, searchIndex: indexForWrite });
+    fullRecordWritten = true;
+  }).catch(() => {});
+  return persistChain;
 }
 
 async function writeCachedSegment(segment, items) {
   const database = await openCollectionCache();
   if (!database) return;
+  if (!Array.isArray(items)) {
+    console.error('[collected] writeCachedSegment skipped: items is not an array for', segment.id);
+    return;
+  }
   await new Promise(resolve => {
     const request = database.transaction('segments', 'readwrite').objectStore('segments').put({
       key: segment.id,
@@ -208,13 +282,17 @@ async function writeCachedSegment(segment, items) {
       items,
     });
     request.onsuccess = resolve;
-    request.onerror = resolve;
+    request.onerror = () => resolve();
   });
 }
 
 async function writeCachedItems(items) {
   const database = await openCollectionCache();
   if (!database || items.length === 0) return;
+  if (!Array.isArray(items)) {
+    console.error('[collected] writeCachedItems skipped: items is not an array');
+    return;
+  }
   await new Promise(resolve => {
     const transaction = database.transaction('items', 'readwrite');
     const store = transaction.objectStore('items');
@@ -238,27 +316,44 @@ async function loadSegmentItems(segment) {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => resolve(null);
     });
-    if (cached?.version === COLLECTION_CACHE_VERSION && Array.isArray(cached.items)) {
+    if (cached?.version === COLLECTION_CACHE_VERSION && Array.isArray(cached.items) && cached.items.length === segment.count) {
       for (const item of cached.items) itemCache.set(item.id, item);
-      await writeCachedItems(cached.items);
       return cached.items;
     }
   }
   const module = await loadSegmentModule(segment.id);
   const items = segment.kind === 'phrases'
     ? createPhraseItems(module.default)
-    : createTagItemsFromSegment(module.default);
+    : await createTagItemsFromSegment(module.default);
   await writeCachedSegment(segment, items);
   for (const item of items) itemCache.set(item.id, item);
   await writeCachedItems(items);
   return items;
 }
 
-async function collectSegmentItems(segment) {
+async function collectSegmentItems(segment, onProgress = () => {}, allowRetry = false) {
   if (loadedSegments.has(segment.id)) return;
-  const next = await loadSegmentItems(segment);
-  loadedItems.push(...next);
-  loadedSegments.add(segment.id);
+  if (!allowRetry && failedSegments.has(segment.id)) return;
+  let promise = segmentLoadPromises.get(segment.id);
+  if (!promise) {
+    promise = loadSegmentItems(segment).then(next => {
+      failedSegments.delete(segment.id);
+      if (!loadedSegments.has(segment.id)) {
+        loadedItems.push(...next);
+        loadedSegments.add(segment.id);
+      }
+      return next;
+    });
+    segmentLoadPromises.set(segment.id, promise);
+  }
+  try {
+    return await promise;
+  } catch (error) {
+    failedSegments.add(segment.id);
+    segmentLoadPromises.delete(segment.id);
+    onProgress({ stage: 'error', segmentId: segment.id, error: String(error?.message || error) });
+    return [];
+  }
 }
 
 async function buildSearchIndexWithYield(items) {
@@ -280,24 +375,20 @@ async function loadAllSegments(onProgress) {
   let loadedCount = 0;
   for (let offset = 0; offset < tagSegments.length; offset += SEGMENT_BATCH_SIZE) {
     const batch = tagSegments.slice(offset, offset + SEGMENT_BATCH_SIZE);
-    await Promise.all(batch.map(segment => loadSegmentModule(segment.id)));
-    for (const segment of batch) await collectSegmentItems(segment);
+    await Promise.all(batch.map(segment => loadSegmentModule(segment.id).catch(() => null)));
+    for (const segment of batch) await collectSegmentItems(segment, onProgress, true);
     loadedCount += batch.reduce((sum, segment) => sum + segment.count, 0);
-    onProgress({ stage: 'tags', percent: 20 + (loadedCount / COLLECTED_TOTAL_TAGS) * 50, count: loadedCount });
+    onProgress({ stage: 'tags', percent: 20 + (loadedCount / COLLECTED_TOTAL_TAGS) * 50, count: loadedItems.length });
     await yieldToBrowser();
   }
   onProgress({ stage: 'phrases', percent: 72, count: loadedItems.length });
-  await collectSegmentItems({ id: COLLECTED_PHRASES_SEGMENT, kind: 'phrases' });
+  const phrasesSegment = COLLECTED_SEGMENTS.find(segment => segment.id === COLLECTED_PHRASES_SEGMENT);
+  if (phrasesSegment) await collectSegmentItems(phrasesSegment, onProgress, true);
   const items = loadedItems;
   cachedRecord = { items, searchIndex: await buildSearchIndexWithYield(items) };
   const idIndex = new Map([...cachedRecord.searchIndex].map(([token, indexes]) => [token, indexes.map(index => items[index]?.id).filter(Boolean)]));
-  try {
-    await writeCachedRecord(cachedRecord);
-    await writeCachedSearchIndex(idIndex);
-  } catch {
-    // IndexedDB is an optional performance cache; segment imports are the source of truth.
-  }
   onProgress({ stage: 'ready', percent: 100, count: items.length });
+  persistCollectedCache(items, cachedRecord.searchIndex, idIndex);
   return items;
 }
 
@@ -306,6 +397,9 @@ export function loadCollectedPromptItems(onProgress = () => {}) {
     collectedItemsPromise = readCachedRecord().catch(() => null).then(record => {
       if (record) {
         cachedRecord = record;
+        loadedItems.length = 0;
+        loadedItems.push(...record.items);
+        for (const segment of COLLECTED_SEGMENTS) loadedSegments.add(segment.id);
         onProgress({ stage: 'ready', percent: 100, count: record.items.length });
         return record.items;
       }
@@ -323,9 +417,15 @@ export function loadCollectedSearchIndex() {
 function mergeSearchIndex(target, items) {
   for (const item of items) {
     for (const token of searchTokens(item.searchText)) {
-      const ids = target.get(token) || [];
-      if (!ids.includes(item.id)) ids.push(item.id);
-      target.set(token, ids);
+      const ids = target.get(token);
+      if (ids instanceof Set) ids.add(item.id);
+      else if (Array.isArray(ids)) {
+        const next = new Set(ids);
+        next.add(item.id);
+        target.set(token, next);
+      } else {
+        target.set(token, new Set([item.id]));
+      }
     }
   }
   return target;
@@ -373,26 +473,32 @@ export function getCachedCollectedItemIds(query, index) {
 }
 
 export function loadCollectedSegmentBatch(onProgress = () => {}) {
-  const segments = COLLECTED_SEGMENTS.filter(segment => !loadedSegments.has(segment.id));
+  const segments = COLLECTED_SEGMENTS.filter(segment => !loadedSegments.has(segment.id) && !failedSegments.has(segment.id));
   if (segments.length === 0) return Promise.resolve(loadedItems);
   const batch = segments.slice(0, SEGMENT_BATCH_SIZE);
   return Promise.all(batch.map(async segment => {
     const start = loadedItems.length;
-    await collectSegmentItems(segment);
+    await collectSegmentItems(segment, onProgress);
     return loadedItems.slice(start);
   })).then(async loadedBatch => {
     const currentIndex = (await loadCollectedSearchIndex()) || new Map();
     const index = mergeSearchIndex(new Map(currentIndex), loadedBatch.flat());
     cachedSearchIndexPromise = Promise.resolve(index);
     cachedRecord = { items: loadedItems, searchIndex: index };
-    await writeCachedSearchIndex(index);
+    if (!hasPendingCollectedSegments()) {
+      persistCollectedCache(loadedItems, index);
+    }
     onProgress({ stage: 'background', percent: (loadedSegments.size / COLLECTED_SEGMENTS.length) * 100, count: loadedItems.length });
     return loadedItems;
   });
 }
 
 export function hasPendingCollectedSegments() {
-  return COLLECTED_SEGMENTS.some(segment => !loadedSegments.has(segment.id));
+  return COLLECTED_SEGMENTS.some(segment => !loadedSegments.has(segment.id) && !failedSegments.has(segment.id));
+}
+
+export function getCollectedLoadFailures() {
+  return [...failedSegments];
 }
 
 export function loadCollectedTagGroup(tagGroup, onProgress = () => {}) {
@@ -410,8 +516,8 @@ export function loadCollectedTagGroup(tagGroup, onProgress = () => {}) {
       onProgress({ stage: 'loading', percent: 5 });
       for (let offset = 0; offset < missing.length; offset += SEGMENT_BATCH_SIZE) {
         const batch = missing.slice(offset, offset + SEGMENT_BATCH_SIZE);
-        await Promise.all(batch.map(segment => loadSegmentModule(segment.id)));
-        for (const segment of batch) await collectSegmentItems(segment);
+        await Promise.all(batch.map(segment => loadSegmentModule(segment.id).catch(() => null)));
+        for (const segment of batch) await collectSegmentItems(segment, onProgress, true);
         const progress = Math.min(offset + batch.length, missing.length);
         onProgress({ stage: 'tags', percent: 20 + (progress / missing.length) * 75, count: loadedItems.length });
         await yieldToBrowser();
@@ -431,4 +537,8 @@ export function getCollectedTagGroups() {
   return Object.entries(COLLECTED_TAG_GROUPS)
     .map(([tagGroup, info]) => ({ tagGroup, label: tagGroup.replace(/^\d+_/, ''), count: info.count }))
     .sort((a, b) => b.count - a.count);
+}
+
+export function getCollectedItemTotal() {
+  return expectedCollectedItemCount();
 }

@@ -396,7 +396,12 @@ export const ComfyUITool = {
         if (!item.path) throw new Error(`Missing path in comfyui ${kind} input`);
         const filePath = input.sandboxInput ? resolveSandboxFile(input.sandboxInput, item.path) : item.path;
         if (!existsSync(filePath)) throw new Error(`Media file not found: ${filePath}`);
-        const name = item.name || basename(filePath);
+        // Upload name is derived from the local basename only; LLM-supplied
+        // names are sanitized to a plain safe basename so traversal forms
+        // (..\..\, ADS, separators) never reach ComfyUI /upload.
+        const rawName = item.name || basename(filePath) || 'upload';
+        const safeName = String(rawName).split(/[\\/]/).pop().replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 200) || 'upload';
+        const name = safeName;
         if (input.signal?.aborted) throw Object.assign(new Error('Generation cancelled'), { code: 'GENERATION_CANCELLED' });
         const ref = await client.uploadMedia(kind, name, await readFile(filePath), {
           type: 'input',

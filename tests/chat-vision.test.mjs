@@ -6,14 +6,20 @@ import { join } from 'node:path';
 import { attachVisionImages, collectChatImages } from '../src/agent/runtime/chat-vision.mjs';
 import { sanitizeMessages } from '../src/agent/schemas/context-sanitizer.mjs';
 
-test('collectChatImages accepts selected media and a pasted local path', () => {
+test('collectChatImages accepts selected media and an authorized pasted local path', () => {
   const dir = mkdtempSync(join(tmpdir(), 'comfy-agent-vision-'));
   const imagePath = join(dir, 'reference.png');
   writeFileSync(imagePath, 'image');
   try {
-    const images = collectChatImages(`描述图片 "${imagePath}"`, { images: [] });
+    // With an authorizer (the sandbox check wired by the Agent) pasted paths
+    // inside the approved root are attached.
+    const images = collectChatImages(`描述图片 "${imagePath}"`, { images: [] }, { authorizePath: path => path === imagePath });
     assert.equal(images.length, 1);
     assert.equal(images[0].path, imagePath);
+    // Without an authorizer the text scan is skipped entirely (fail-closed):
+    // arbitrary disk files are never read implicitly.
+    const noAuthorizer = collectChatImages(`描述图片 "${imagePath}"`, { images: [] });
+    assert.equal(noAuthorizer.length, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

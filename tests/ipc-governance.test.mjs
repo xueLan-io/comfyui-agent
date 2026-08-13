@@ -8,6 +8,8 @@ test('IPC gateway checks sender and delegates context/resource to operation gate
     gateway: { run: async input => { calls.push(input); return input.execute({ signal: null }); } },
     resolveContext: async () => ({ principalId: 'p', tenantId: 't', projectId: 'pr', sessionId: 's', requestId: 'r', taskId: 'task', traceId: 'trace', source: 'ipc' }),
     resolveResource: async (_, input) => ({ projectId: input.projectId }),
+    // The default is fail-closed; production callers must opt in explicitly.
+    senderCheck: () => true,
   });
   ipc.registerAuthorizedHandler('project:rename', { action: 'project.write' }, async (_, input) => input.name);
   assert.equal(await ipc.get('project:rename')({}, { projectId: 'pr', name: 'new' }), 'new');

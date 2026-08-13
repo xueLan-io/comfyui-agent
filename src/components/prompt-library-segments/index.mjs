@@ -747,7 +747,8 @@ export const COLLECTED_SEGMENTS = [
   {
     "id": "seg-phrases",
     "groups": [],
-    "count": 7929
+    "count": 7929,
+    "kind": "phrases"
   }
 ];
 export const COLLECTED_TAG_GROUPS = {

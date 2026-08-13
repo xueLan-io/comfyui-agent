@@ -37,8 +37,8 @@ const groupOrder = [...tagGroups.entries()]
 const segments = [];
 const groupSegments = new Map();
 
-function addSegment(id, groups, lines) {
-  segments.push({ id, groups, count: lines.length });
+function addSegment(id, groups, lines, kind = 'tags') {
+  segments.push({ id, groups, count: lines.length, kind });
   writeFileSync(join(OUT_DIR, `${id}.mjs`), `export default ${JSON.stringify(lines.join('\n'))};\n`);
   for (const group of groups) {
     if (!groupSegments.has(group)) groupSegments.set(group, []);
@@ -61,7 +61,7 @@ for (const [group, lines] of groupOrder) {
 }
 
 const phrasesId = 'seg-phrases';
-addSegment(phrasesId, [], phraseLines);
+addSegment(phrasesId, [], phraseLines, 'phrases');
 const tagCount = segments.filter(segment => segment.id !== phrasesId).reduce((sum, segment) => sum + segment.count, 0);
 
 const tagGroupsExport = Object.fromEntries(

@@ -104,11 +104,10 @@ export const InspectImageTool = {
       action: { type: 'string', enum: ['inspect', 'compare'], description: 'Action to perform' },
       image: { type: 'object', description: 'Local path string, or {filename, subfolder, type}, or {path}' },
       other: { type: 'object', description: 'Second image for compare' },
-      withDataUrl: { type: 'boolean', description: 'Include a base64 data URL in the result' },
-      workflowDir: { type: 'string', description: 'Trusted workflow directory supplied by the runtime' },
-      comfyRoot: { type: 'string', description: 'Trusted ComfyUI root supplied by the runtime' },
+      withDataUrl: { type: 'boolean', description: 'Include a base64 data URL in the result (capped; the data URL is returned to the agent and may be forwarded to your configured LLM provider)' },
     },
     required: ['action', 'image'],
+    additionalProperties: false,
   },
 
   async execute(input) {

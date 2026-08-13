@@ -3,7 +3,7 @@ import { validateToolInput } from '../schemas/tool-schema.mjs';
 import { matchesExpectedOutput } from '../schemas/plan-schema.mjs';
 import { classifyFailure } from '../optimizer/retry-policy.mjs';
 import { ComfyExecutor } from '../../runtime/executor/comfy-executor.mjs';
-import { createSandboxPolicy, SANDBOX_AUTHORIZED_FILES } from '../security/sandbox.mjs';
+import { createSandboxPolicy, SandboxViolation, SANDBOX_AUTHORIZED_FILES } from '../security/sandbox.mjs';
 import { normalizeGenerationResult } from '../../runtime/generation-contract.mjs';
 
 export class Executor {
@@ -80,9 +80,15 @@ export class Executor {
       if (!tool) throw new Error(`Unknown tool: "${step.tool}"`);
 
       const stepInput = step.input || {};
+      const SANDBOXED_TOOLS = new Set(['filesystem', 'filesystem_mutate', 'comfyui', 'inspect_image']);
       const trustedWorkflowDir = Object.prototype.hasOwnProperty.call(context, 'workflowDir')
         ? context.workflowDir
-        : stepInput.workflowDir;
+        : (() => {
+            // Fail closed: for sandboxed file-access tools the workflow root
+            // must come from the trusted runtime context, never from LLM input.
+            if (SANDBOXED_TOOLS.has(step.tool)) throw new SandboxViolation('Sandbox root (workflowDir) is missing from the execution context');
+            return stepInput.workflowDir;
+          })();
       const enrichedInput = {
         ...stepInput,
         workflowDir: trustedWorkflowDir,
@@ -94,12 +100,19 @@ export class Executor {
         enrichedInput.root = stepInput.root || 'workflow';
         enrichedInput.relativePath = stepInput.relativePath || '';
       }
-      if (step.tool === 'filesystem_mutate' && context.confirmedFileMutation) {
-        enrichedInput.execute = true;
+      if (step.tool === 'filesystem_mutate') {
+        // Fail closed: the mutation-execute flag is only honored after the
+        // runtime confirmed the mutation; an LLM-written execute:true is
+        // otherwise forced to preview mode.
+        enrichedInput.execute = context.confirmedFileMutation === true;
       }
 
-      if (context.filesystemRoots) enrichedInput.allowedRoots = context.filesystemRoots;
-      if (context.comfyRoot) enrichedInput.comfyRoot = context.comfyRoot;
+      // Sandboxed tools always receive their roots from the trusted runtime
+      // context — LLM-supplied roots are discarded, never merged.
+      if (SANDBOXED_TOOLS.has(step.tool)) {
+        enrichedInput.allowedRoots = context.filesystemRoots || [];
+        enrichedInput.comfyRoot = context.comfyRoot || '';
+      }
       if (context.attachedMedia) {
         enrichedInput[SANDBOX_AUTHORIZED_FILES] = ['images', 'masks', 'videos']
           .flatMap(kind => context.attachedMedia[kind] || [])

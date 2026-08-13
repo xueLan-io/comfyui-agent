@@ -262,6 +262,7 @@ export class IntentRouter {
   constructor(llmProvider, options = {}) {
     this.llm = llmProvider;
     this.imageDataUrl = options.imageDataUrl || null;
+    this.authorizePath = options.authorizePath || null;
   }
 
   async route(message, context = {}) {
@@ -290,7 +291,7 @@ export class IntentRouter {
       const eventMeta = context.eventMeta || {};
       emit(AgentEventTypes.STATUS, { ...eventMeta, status: 'classifying', uiStatus: 'running', message: '正在理解你的请求...' });
       const modeHint = context.modeHint || '';
-      const visionImages = collectChatImages(message, context.attachedMedia || {});
+      const visionImages = collectChatImages(message, context.attachedMedia || {}, { authorizePath: this.authorizePath });
       const routerPrompt = modeHint === 'generate'
         ? `${ROUTER_PROMPT}\nThe user selected AI generation mode. Treat image-generation, image-editing, refinement, and image-prompt extraction requests as generation operations rather than chat or workflow discussion. Cancellation remains cancellation.`
         : ROUTER_PROMPT;

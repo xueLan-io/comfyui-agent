@@ -88,6 +88,17 @@ function plannerToolContracts(tools = {}) {
   return Object.values(tools).map(toolContract);
 }
 
+// Fields the executor injects into tool inputs after planning (trusted runtime
+// context). They are not part of the LLM-visible schema but must not fail
+// additionalProperties checks on the enriched input. The executor overwrites
+// their values from trusted context before dispatch.
+const RUNTIME_INJECTED_FIELDS = new Set(['workflowDir', 'allowedRoots', 'comfyRoot', 'signal', 'llmProvider', 'sandboxInput']);
+
+// Default hard bounds applied when a schema does not declare its own. Blocks
+// LLM-supplied megabyte-scale payloads from materializing in the agent.
+const DEFAULT_MAX_STRING_LENGTH = 2 * 1024 * 1024;
+const DEFAULT_MAX_ARRAY_ITEMS = 50000;
+
 function validateToolInput(tool, input) {
   if (!tool.input_schema) return { valid: true, errors: [] };
 
@@ -105,7 +116,7 @@ function validateToolInput(tool, input) {
   for (const [field, value] of Object.entries(input || {})) {
     const definition = schema.properties?.[field];
     if (!definition) {
-      if (schema.additionalProperties === false) errors.push(`Unknown input: "${field}"`);
+      if (schema.additionalProperties === false && !RUNTIME_INJECTED_FIELDS.has(field)) errors.push(`Unknown input: "${field}"`);
       continue;
     }
     if (value === undefined || value === null) continue;
@@ -123,9 +134,17 @@ function validateToolInput(tool, input) {
       if (definition.minimum !== undefined && value < definition.minimum) errors.push(`"${field}" is below minimum`);
       if (definition.maximum !== undefined && value > definition.maximum) errors.push(`"${field}" exceeds maximum`);
     }
-    if (Array.isArray(value) && definition.items?.type) {
-      const invalidItem = value.some(item => typeof item !== definition.items.type);
-      if (invalidItem) errors.push(`Invalid item type in "${field}"`);
+    if (typeof value === 'string') {
+      const maxLength = definition.maxLength ?? DEFAULT_MAX_STRING_LENGTH;
+      if (value.length > maxLength) errors.push(`"${field}" exceeds max length (${maxLength})`);
+    }
+    if (Array.isArray(value)) {
+      if (definition.items?.type) {
+        const invalidItem = value.some(item => typeof item !== definition.items.type);
+        if (invalidItem) errors.push(`Invalid item type in "${field}"`);
+      }
+      const maxItems = definition.maxItems ?? DEFAULT_MAX_ARRAY_ITEMS;
+      if (value.length > maxItems) errors.push(`"${field}" exceeds max items (${maxItems})`);
     }
     if (expectedType === 'object' && value && !Array.isArray(value) && definition.additionalProperties === false) {
       for (const key of Object.keys(value)) if (!definition.properties?.[key]) errors.push(`Unknown input: "${field}.${key}"`);

@@ -26,7 +26,7 @@ export const DEFAULTS = {
   },
   projects: {},
   research: { baiduApiKey: '' },
-  prompt: { mode: 'raw', customTemplate: '' },
+  prompt: { mode: 'raw', customTemplate: '', personality: { enabled: false, strategy: 'append', text: '' } },
   comfyui: { baseUrl: 'http://127.0.0.1:8188' },
   ui: {
     theme: 'system',
@@ -49,7 +49,9 @@ function encrypt(text) {
       return safeStorage.encryptString(text).toString('base64');
     }
   } catch {}
-  return Buffer.from(text).toString('base64');
+  // Never fall back to reversible encoding: without safeStorage the key is
+  // not persisted at all (the save path drops it and surfaces apiKeyError).
+  return null;
 }
 
 function decrypt(encoded) {
@@ -196,14 +198,27 @@ export class PreferenceMemory {
           continue;
         }
         if (provider.apiKey && !provider.apiKey.startsWith('enc:')) {
-          provider.apiKey = `enc:${encrypt(provider.apiKey)}`;
+          const encrypted = encrypt(provider.apiKey);
+          if (encrypted === null) {
+            // Secure storage unavailable: refuse to persist a recoverable key.
+            provider.apiKey = '';
+            provider.apiKeyError = '当前系统不支持安全存储，API Key 不会被保存，请每次使用时重新输入';
+          } else {
+            provider.apiKey = `enc:${encrypted}`;
+          }
         }
       }
       delete toStore.research.baiduApiKeyError;
       if (!toStore.research.baiduApiKey && this.data.research._encryptedBaiduApiKey) {
         toStore.research.baiduApiKey = this.data.research._encryptedBaiduApiKey;
       } else if (toStore.research.baiduApiKey && !toStore.research.baiduApiKey.startsWith('enc:')) {
-        toStore.research.baiduApiKey = `enc:${encrypt(toStore.research.baiduApiKey)}`;
+        const encrypted = encrypt(toStore.research.baiduApiKey);
+        if (encrypted === null) {
+          toStore.research.baiduApiKey = '';
+          toStore.research.baiduApiKeyError = '当前系统不支持安全存储，API Key 不会被保存，请每次使用时重新输入';
+        } else {
+          toStore.research.baiduApiKey = `enc:${encrypted}`;
+        }
       }
       const temporaryPath = `${this.configPath}.tmp-${process.pid}`;
       writeFileSync(temporaryPath, JSON.stringify(toStore, null, 2), { mode: 0o600 });

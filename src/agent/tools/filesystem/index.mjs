@@ -91,7 +91,6 @@ export const FilesystemTool = {
         enum: ['list', 'read', 'validate', 'list_images'],
         description: 'Read-only action to perform',
       },
-      workflowDir: { type: 'string', description: 'Trusted workflow directory supplied by the runtime' },
       filename: { type: 'string', description: 'Relative workflow filename for read/validate' },
       root: { type: 'string', enum: [...ROOT_NAMES], description: 'Trusted root name' },
       path: { type: 'string', description: 'Relative text file path for read' },
@@ -99,7 +98,8 @@ export const FilesystemTool = {
       outputDir: { type: 'string', description: 'Relative directory inside the selected trusted root' },
       limit: { type: 'number', description: 'Max images to return (list_images)' },
     },
-    required: ['action', 'workflowDir'],
+    required: ['action'],
+    additionalProperties: false,
   },
 
   async execute({ action, workflowDir, filename, root, path, relativePath, outputDir, limit, allowedRoots }) {

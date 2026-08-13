@@ -1,4 +1,4 @@
-export function createIpcGateway({ gateway, resolveContext, resolveResource = () => ({}), handlers = new Map(), senderCheck = () => true } = {}) {
+export function createIpcGateway({ gateway, resolveContext, resolveResource = () => ({}), handlers = new Map(), senderCheck = () => false } = {}) {
   return {
     registerAuthorizedHandler(channel, definition, handler) {
       handlers.set(channel, async (event, input = {}) => {

@@ -124,7 +124,7 @@ export function buildSearchIndexWithCachedCollected(items, cachedCollectedIndex)
   const itemIndexesById = new Map(items.map((item, itemIndex) => [item.id, itemIndex]));
   for (const [token, itemIndexes] of cachedCollectedIndex) {
     const matches = index.get(token);
-    const remapped = itemIndexes
+    const remapped = [...itemIndexes]
       .map(itemIndex => typeof itemIndex === 'number' ? items[itemIndex]?.id : itemIndex)
       .map(itemId => itemIndexesById.get(itemId))
       .filter(itemIndex => itemIndex !== undefined);

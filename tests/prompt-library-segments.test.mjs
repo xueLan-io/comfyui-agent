@@ -65,3 +65,29 @@ test('the phrase segment parses into the expected number of phrase items', async
   assert.ok(items.every(item => item.kind === 'phrase'));
   assert.equal(new Set(items.map(item => item.id)).size, items.length);
 });
+
+test('the phrase segment is marked with a phrases kind in the registry', () => {
+  const phraseSegment = COLLECTED_SEGMENTS.find(segment => segment.id === COLLECTED_PHRASES_SEGMENT);
+  assert.equal(phraseSegment.kind, 'phrases');
+});
+
+test('phrase items strip the trailing metadata tail from real records', async () => {
+  const sample = [
+    "zoo', '动物圆', 'rgba(159, 32, 240, .4)', 1736580446, '067eaa6f-2c3a-7b91-8013-e2868a60182e",
+    "((((colorful bubble))))', '彩色泡泡', 'rgba(31, 144, 255, .4)', 1736580446, '067eaa6f-2c3a-7b91-8007-637e45b77c69",
+  ];
+  const items = createPhraseItems(sample.join('\n'));
+
+  assert.equal(items[0].prompt, 'zoo');
+  assert.equal(items[0].title, '动物圆');
+  assert.doesNotMatch(items[0].searchText, /rgba|1736580446|067eaa6f/);
+  assert.equal(items[1].prompt, '((((colorful bubble))))');
+  assert.equal(items[1].title, '彩色泡泡');
+});
+
+test('clean phrase records without a metadata tail still parse', () => {
+  const [item] = createPhraseItems("soft portrait, '柔和肖像',");
+  assert.equal(item.kind, 'phrase');
+  assert.equal(item.prompt, 'soft portrait');
+  assert.equal(item.title, '柔和肖像');
+});

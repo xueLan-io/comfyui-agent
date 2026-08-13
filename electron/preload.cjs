@@ -111,6 +111,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   uiSavePreferences: (preferences) => ipcRenderer.invoke('ui:save-preferences', preferences),
   researchSettings: () => ipcRenderer.invoke('research:settings'),
   researchSaveSettings: (settings) => ipcRenderer.invoke('research:save-settings', settings),
+  promptSettings: () => ipcRenderer.invoke('prompt:settings'),
+  promptSaveSettings: (settings) => ipcRenderer.invoke('prompt:save-settings', settings),
   mcpSettings: () => ipcRenderer.invoke('mcp:settings'),
   mcpSaveSettings: (settings) => ipcRenderer.invoke('mcp:save-settings', settings),
   llmProviders: () => ipcRenderer.invoke('llm:providers'),

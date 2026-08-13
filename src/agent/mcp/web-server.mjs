@@ -17,6 +17,7 @@ import { InspectImageTool } from '../tools/comfyui/image-inspect.mjs';
 import { createServiceTools } from '../../runtime/service-tools.mjs';
 import { createMediaTools } from '../../runtime/media/media-tools.mjs';
 import { createConfiguredSkillRegistry } from '../skills/index.mjs';
+import { createSandboxPolicy } from '../security/sandbox.mjs';
 import { normalizePlan, validatePlan } from '../schemas/plan-schema.mjs';
 
 export const MCP_PROTOCOL_VERSION = '2025-11-25';
@@ -148,8 +149,9 @@ export function createGenerationTools({ generation } = {}) {
   ];
 }
 
-export function createWebMcpServer({ webTool = WebTool, llmProvider, tools = [], toolRegistry = null, generation, serviceRegistry = null, serviceInvoker = null, includeReadOnlyTools = true, includeServiceTools = false, includeMediaTools = false, includeRuntimeMutationTools = false, includeWorkflowMutationTools = false, includeSkillTools = true, skills = SKILLS, surface = 'mcp', modules = null, include, exclude } = {}) {
+export function createWebMcpServer({ webTool = WebTool, llmProvider, tools = [], toolRegistry = null, generation, serviceRegistry = null, serviceInvoker = null, includeReadOnlyTools = true, includeServiceTools = false, includeMediaTools = false, includeRuntimeMutationTools = false, includeWorkflowMutationTools = false, includeSkillTools = true, skills = SKILLS, surface = 'mcp', modules = null, include, exclude, sandbox = null } = {}) {
   const moduleFlags = { web: true, files: true, comfyui: true, skills: true, ...(modules && typeof modules === 'object' ? modules : {}) };
+  const sandboxPolicy = sandbox || createSandboxPolicy({ allowNetwork: moduleFlags.web !== false });
   const characterResearch = researchHandler(webTool, llmProvider);
   const baseTools = moduleFlags.web ? [
     { name: 'web_search', description: 'Search public web pages with the configured domain and source policy.', input_schema: { type: 'object', properties: { query: { type: 'string' }, maxResults: { type: 'number' }, timeoutMs: { type: 'number' }, allowedDomains: { type: 'array' }, sourcePolicy: { type: 'object' } }, required: ['query'], additionalProperties: false }, execute: input => webTool.execute({ action: 'search', ...input }) },
@@ -221,6 +223,23 @@ export function createWebMcpServer({ webTool = WebTool, llmProvider, tools = [],
       const tool = byName.get(name);
       const validation = validateToolInput(tool, input || {});
       if (!validation.valid) throw Object.assign(new Error('Invalid tool arguments'), { code: -32602, data: validation.errors });
+      // Apply the same sandbox policy the agent executor uses: network gate for
+      // web tools, media path checks for comfyui/inspect tools. Without this,
+      // MCP tools would run entirely unsandboxed.
+      const sandboxTool = name === 'web_search' || name === 'web_open' || name === 'character_research'
+        ? 'web'
+        : name === 'inspect_image'
+          ? 'inspect_image'
+          : /^(generation_|comfyui|runtime_|workflow_|service_|media_)/.test(name)
+            ? 'comfyui'
+            : '';
+      if (sandboxTool) {
+        try {
+          sandboxPolicy.assertToolCall(sandboxTool, input || {});
+        } catch (error) {
+          return mcpResult({ error: error.message }, true);
+        }
+      }
        try { return mcpResult(await tool.execute(input || {}, context)); } catch (error) { return mcpResult({ error: error.message }, true); }
     },
     enableMultiSession() { multiSession = true; },

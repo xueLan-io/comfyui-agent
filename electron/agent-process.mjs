@@ -114,6 +114,7 @@ export class AgentProcessClient {
   getTrace(...args) { return this.call('session.getTrace', args); }
   reconfigureLLM(...args) { return this.call('config.llm', args); }
   reconfigureResearch(...args) { return this.call('config.research', args); }
+  reconfigurePrompt(...args) { return this.call('config.prompt', args); }
   setWorkflowDir(...args) {
     this.cache.workflowDir = args[0] || '';
     return this.call('config.workflowDir', args);

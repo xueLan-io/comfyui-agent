@@ -617,7 +617,9 @@ async function runDoctor(options, runtime) {
 }
 
 function exitCodeFor(command, result, options) {
-  if (command === 'diagnose' || command === 'doctor') return EXIT.ok;
+  if (command === 'diagnose' || command === 'doctor') {
+    return result?.healthy === false ? EXIT.execution : EXIT.ok;
+  }
   if (result?.error || result?.patch?.error) return EXIT.preflight;
   if (['generate', 'batch'].includes(command) && result?.patch?.ignored?.length > 0) return EXIT.preflight;
   if (command === 'image' && result?.image?.exists === false) return EXIT.preflight;
@@ -680,7 +682,7 @@ async function dispatch(parsed, dependencies = {}) {
   }
   if (command === 'doctor') {
     const result = await runDoctor(options, runtime);
-    return { exitCode: EXIT.ok, result, json: booleanOption(options, 'json') };
+    return { exitCode: exitCodeFor(command, result, options), result, json: booleanOption(options, 'json') };
   }
   if (command === 'status') {
     const action = positionals[1] || 'status';

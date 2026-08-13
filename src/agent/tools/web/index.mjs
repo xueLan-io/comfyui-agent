@@ -405,6 +405,16 @@ function parseProxyUrl(value) {
   return { host: url.hostname, port, secure: url.protocol === 'https:' };
 }
 
+// Only loopback proxies may be used; a remote proxy (steerable by an attacker
+// who controls the LLM output) would observe every fetch target and, for plain
+// HTTP targets, page content.
+function isLoopbackProxy(value) {
+  const parsed = parseProxyUrl(value);
+  if (!parsed) return false;
+  const host = String(parsed.host || '').toLowerCase();
+  return host === 'localhost' || host === '::1' || host === '0.0.0.0' || /^127\./.test(host);
+}
+
 let cachedSystemProxy;
 function readSystemProxy() {
   if (cachedSystemProxy !== undefined) return cachedSystemProxy;
@@ -559,7 +569,7 @@ export function createWebTool(fetchImpl = globalThis.fetch, lookupImpl = lookup,
 
   return {
     name: 'web',
-    description: 'Search public web pages or open a public URL for user-requested reference research.',
+    description: 'Search public web pages or open a public URL for user-requested reference research. Fetched page content is returned to the agent and may be forwarded to your configured LLM provider.',
     category: 'web',
     tags: ['web', 'search', 'character', 'reference'],
     timeout_ms: DEFAULT_TIMEOUT_MS,
@@ -582,25 +592,29 @@ export function createWebTool(fetchImpl = globalThis.fetch, lookupImpl = lookup,
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['search', 'open'] },
-        query: { type: 'string' },
-        url: { type: 'string' },
+        query: { type: 'string', maxLength: 300 },
+        url: { type: 'string', maxLength: 4096 },
         maxResults: { type: 'number', minimum: 1, maximum: MAX_RESULTS },
         timeoutMs: { type: 'number', minimum: 1000, maximum: DEFAULT_TIMEOUT_MS },
         maxOpenPages: { type: 'number', minimum: 0, maximum: 10 },
         allowNetwork: { type: 'boolean' },
         cacheTtlMs: { type: 'number', minimum: 0, maximum: 86400000 },
-        allowedDomains: { type: 'array', items: { type: 'string' } },
+        allowedDomains: { type: 'array', items: { type: 'string' }, maxItems: 64 },
         sourcePolicy: { type: 'object' },
-        providers: { type: 'array', items: { type: 'string', enum: Object.keys(SEARCH_PROVIDERS) }, description: 'Fallback search providers to try in order' },
-        proxyUrl: { type: 'string', description: 'HTTP proxy for outbound requests, e.g. http://127.0.0.1:7897' },
-        baiduApiKey: { type: 'string', description: 'Optional Baidu AI Search API key' },
+        providers: { type: 'array', items: { type: 'string', enum: Object.keys(SEARCH_PROVIDERS) }, maxItems: 10, description: 'Fallback search providers to try in order' },
       },
       required: ['action'],
+      // proxyUrl / baiduApiKey are intentionally NOT exposed to the model:
+      // they are supplied by trusted configuration only.
+      additionalProperties: false,
     },
 
     async execute({ action, query = '', url = '', maxResults = MAX_RESULTS, timeoutMs = DEFAULT_TIMEOUT_MS, allowNetwork = true, cacheTtlMs = defaultCacheTtlMs, allowedDomains = [], sourcePolicy: inputPolicy = {}, providers = [], proxyUrl = '', baiduApiKey = '', signal }) {
       if (allowNetwork === false) return { action, error: '未进行在线检索', researchStatus: 'disabled' };
       if (typeof fetchImpl !== 'function') return { action, error: 'Web fetch is unavailable in this runtime' };
+      if (proxyUrl && !isLoopbackProxy(proxyUrl)) {
+        return { action, error: 'Only loopback proxies are allowed' };
+      }
       const policy = sourcePolicy({ ...inputPolicy, allowedDomains: inputPolicy.allowedDomains || allowedDomains });
       const ttlMs = Math.max(0, Math.min(Number(cacheTtlMs) || 0, 86400000));
       const proxy = options.resolveProxy ? options.resolveProxy(proxyUrl) : resolveProxy(proxyUrl);

@@ -25,6 +25,13 @@
     "negative": "可包含静态帧/模糊/伪影/文本/解剖缺陷",
     "motion": "必须含明确的运动/时间描述"
   },
+  "minimax_h3": {
+    "format": "chinese_natural_language_video",
+    "tagsArray": "empty",
+    "negative": "empty_string",
+    "positive": "完整中文视频提示词，包含时间线、剪辑与动作、视觉风格、声音设计和可见结尾结果",
+    "references": "只有提供实际参考图时才能依据其可见内容锁定人物、服装、道具或场景"
+  },
   "sdxl": {
     "format": "tags_block + natural_language",
     "tagsArray": "optional",

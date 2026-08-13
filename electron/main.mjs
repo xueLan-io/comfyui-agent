@@ -20,7 +20,7 @@ import { DirectService } from '../src/runtime/direct/direct-service.mjs';
 import { ComfyExecutor } from '../src/runtime/executor/comfy-executor.mjs';
 import { AgentProcessClient } from './agent-process.mjs';
 import { ExecutionCoordinator } from './execution-coordinator.mjs';
-import { SANDBOX_AUTHORIZED_FILES, resolveSandboxPath } from '../src/agent/security/sandbox.mjs';
+import { SANDBOX_AUTHORIZED_FILES, createSandboxPolicy, resolveSandboxPath } from '../src/agent/security/sandbox.mjs';
 import { assetRecipePath, normalizeAssetPath, projectAssetRoot, removeEmptyAssetDirectories, scanProjectAssets } from '../src/runtime/project-assets.mjs';
 import { displayPath } from '../src/runtime/path-display.mjs';
 import { importWorkflowFiles, collectWorkflowFiles, deleteWorkflowFile, renameWorkflowFile } from '../src/runtime/workflow-import.mjs';
@@ -171,6 +171,10 @@ let embeddedMcpTransport;
 const workflowInspectionRequests = new Map();
 let updateState = { status: 'idle', progress: 0, version: '', error: '' };
 let downloadedUpdate = null;
+// The only manifest the download/install chain may trust: set exclusively by
+// checkForUpdate() after verifyUpdateManifest() succeeds. The renderer can
+// never influence it, so a renderer compromise cannot steer downloads.
+let verifiedManifest = null;
 
 const comfyManager = new ComfyUIManager({
   baseUrl: envConfig.COMFYUI_BASE_URL || DEFAULT_BASE_URL,
@@ -833,11 +837,28 @@ async function startEmbeddedMcp(config = {}) {
     }
   }
   const modules = mcpModuleFlags(config.mcp?.modules || {});
-  const server = createWebMcpServer({ generation: mcpGenerationBridge(), skills: activeSkills, modules, includeReadOnlyTools: true, includeRuntimeMutationTools: modules.comfyui, includeWorkflowMutationTools: modules.comfyui, includeSkillTools: modules.skills });
+  const server = createWebMcpServer({
+    generation: mcpGenerationBridge(),
+    skills: activeSkills,
+    modules,
+    includeReadOnlyTools: true,
+    includeRuntimeMutationTools: modules.comfyui,
+    includeWorkflowMutationTools: modules.comfyui,
+    includeSkillTools: modules.skills,
+    // MCP tools run under the same sandbox policy as the agent executor:
+    // web tools honor the research network switch, media paths are checked.
+    sandbox: createSandboxPolicy({ allowNetwork: (prefStore.get('research') || {}).allowNetwork !== false }),
+  });
+  const mcpHost = config.mcp?.host || envConfig.COMFY_AGENT_MCP_HOST || '127.0.0.1';
+  const mcpPort = Number(config.mcp?.port || envConfig.COMFY_AGENT_MCP_PORT || 3333);
+  const mcpToken = config.mcp?.token || envConfig.COMFY_AGENT_MCP_TOKEN || '';
+  if (mcpHost !== '127.0.0.1' && mcpHost !== 'localhost' && !mcpToken) {
+    throw new Error('MCP 监听局域网地址时必须设置访问令牌');
+  }
   embeddedMcpTransport = createMcpHttpServer(server, {
-    host: config.mcp?.host || envConfig.COMFY_AGENT_MCP_HOST || '127.0.0.1',
-    port: Number(config.mcp?.port || envConfig.COMFY_AGENT_MCP_PORT || 3333),
-    authToken: config.mcp?.token || envConfig.COMFY_AGENT_MCP_TOKEN || '',
+    host: mcpHost,
+    port: mcpPort,
+    authToken: mcpToken,
   });
   const address = await embeddedMcpTransport.listen();
   console.error(`Embedded MCP listening on http://${address.address}:${address.port}/mcp`);
@@ -1020,11 +1041,12 @@ function attachRendererDiagnostics(window, kind) {
 
 ipcMain.on('renderer:error', (event, details = {}) => {
   const source = BrowserWindow.fromWebContents(event.sender);
+  const sanitize = value => String(value || '').replace(/[\r\n]+/g, ' ').slice(0, 2000);
   console.error(`[renderer:${rendererKind(source)}]`, {
-    message: details.message || 'unknown renderer error',
-    stack: details.stack || '',
-    componentStack: details.componentStack || '',
-    reportedKind: details.kind || '',
+    message: sanitize(details.message) || 'unknown renderer error',
+    stack: sanitize(details.stack),
+    componentStack: sanitize(details.componentStack),
+    reportedKind: sanitize(details.kind),
   });
 });
 
@@ -1083,8 +1105,9 @@ function showFloatingWindow({ focus = true } = {}) {
     title: '快速生成',
     icon: APP_ICON_PATH,
     show: focus,
-    webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false },
+    webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
+  hardenWindowNavigation(floatingWindow);
   attachRendererDiagnostics(floatingWindow, 'floating');
   windowRegistry.register('floating', floatingWindow.webContents, { kind: 'floating' });
   floatingWindow.setBackgroundColor('#00000000');
@@ -1148,6 +1171,28 @@ function showFloatingReceiver() {
   }
 }
 
+// Prevents renderer navigation to foreign origins: if the window ever navigated
+// to a remote page, the preload bridge (including update channels) would re-run
+// on the attacker's origin. Only the packaged file:// app and the dev server
+// are allowed; window.open is never honored, http(s) links go to the OS.
+function hardenWindowNavigation(win) {
+  win.webContents.on('will-navigate', (event, url) => {
+    let allowed = false;
+    try {
+      const target = new URL(url);
+      if (target.protocol === 'file:') allowed = true;
+      else if (target.protocol === 'http:' || target.protocol === 'https:') {
+        allowed = target.hostname === 'localhost' && target.port === '5173';
+      }
+    } catch {}
+    if (!allowed) event.preventDefault();
+  });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
+    return { action: 'deny' };
+  });
+}
+
 function createWindow() {
   Menu.setApplicationMenu(null);
   mainWindow = new BrowserWindow({
@@ -1165,9 +1210,11 @@ function createWindow() {
       preload: join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
 
+  hardenWindowNavigation(mainWindow);
   windowRegistry.register('main', mainWindow.webContents, { kind: 'main' });
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.on('close', () => {
@@ -1260,7 +1307,7 @@ ipcMain.handle('app:open-external', async (_, { url = '' } = {}) => {
   return true;
 });
 ipcMain.handle('app:update-check', () => checkForUpdate());
-ipcMain.handle('app:update-download', (_, manifest) => downloadUpdate(manifest));
+ipcMain.handle('app:update-download', () => downloadUpdate());
 ipcMain.handle('app:update-install', () => installUpdate());
 ipcMain.handle('app:update-state', () => updateState);
 
@@ -1386,6 +1433,7 @@ function initAgent(config) {
   const started = agent.start({
     llm: llmConfig,
     research: config.research || {},
+    prompt: promptRuntimeConfig(),
     workflowDir: getWorkflowDir(config),
     comfyRoot: comfyManager.portableRoot ? join(comfyManager.portableRoot, 'ComfyUI') : '',
     userDataPath: app.getPath('userData'),
@@ -1503,7 +1551,12 @@ function downloadToFile(url, targetPath, onProgress) {
             rejectPromise(new Error('下载重定向次数过多'));
             return;
           }
-          request(new URL(response.headers.location, currentUrl).toString(), redirects + 1);
+          const next = new URL(response.headers.location, currentUrl);
+          if (next.protocol !== 'https:') {
+            rejectPromise(new Error('下载重定向必须使用 HTTPS'));
+            return;
+          }
+          request(next.toString(), redirects + 1);
           return;
         }
         if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -1722,7 +1775,11 @@ function fetchJson(url) {
   return new Promise((resolvePromise, rejectPromise) => {
     const getter = url.startsWith('https:') ? httpsGet : httpGet;
     const request = getter(url, { headers: { 'User-Agent': 'ComfyUI-Agent-Updater' } }, response => {
-      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) return fetchJson(response.headers.location).then(resolvePromise, rejectPromise);
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        const next = new URL(response.headers.location, url);
+        if (next.protocol !== 'https:') return rejectPromise(new Error('Update manifest redirect must use HTTPS'));
+        return fetchJson(next.toString()).then(resolvePromise, rejectPromise);
+      }
       if (response.statusCode !== 200) return rejectPromise(new Error(`Update manifest request failed: HTTP ${response.statusCode}`));
       let body = '';
       response.setEncoding('utf8');
@@ -1737,7 +1794,11 @@ function fetchBytes(url) {
   return new Promise((resolvePromise, rejectPromise) => {
     const getter = url.startsWith('https:') ? httpsGet : httpGet;
     const request = getter(url, { headers: { 'User-Agent': 'ComfyMuse-Updater' } }, response => {
-      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) return fetchBytes(new URL(response.headers.location, url).toString()).then(resolvePromise, rejectPromise);
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        const next = new URL(response.headers.location, url);
+        if (next.protocol !== 'https:') return rejectPromise(new Error('Update redirect must use HTTPS'));
+        return fetchBytes(next.toString()).then(resolvePromise, rejectPromise);
+      }
       if (response.statusCode !== 200) return rejectPromise(new Error(`Update signature request failed: HTTP ${response.statusCode}`));
       const chunks = [];
       response.on('data', chunk => chunks.push(chunk));
@@ -1745,6 +1806,13 @@ function fetchBytes(url) {
     });
     request.on('error', rejectPromise);
   });
+}
+
+function assertHttpsUrl(value, label = 'URL') {
+  let url;
+  try { url = new URL(String(value || '')); } catch { throw new Error(`${label} is not a valid URL`); }
+  if (url.protocol !== 'https:') throw new Error(`${label} must use HTTPS`);
+  return url.toString();
 }
 
 async function fetchSignedManifest(url) {
@@ -1773,7 +1841,7 @@ async function checkForUpdate() {
   try {
     let manifest;
     if (envConfig.COMFY_AGENT_UPDATE_MANIFEST_URL) {
-      manifest = await fetchSignedManifest(envConfig.COMFY_AGENT_UPDATE_MANIFEST_URL);
+      manifest = await fetchSignedManifest(assertHttpsUrl(envConfig.COMFY_AGENT_UPDATE_MANIFEST_URL, '更新清单地址'));
     } else {
       const releases = await fetchJson('https://api.github.com/repos/xueLan-io/comfyui-agent/releases?per_page=20');
       const release = releases.find(item => channel === 'preview' ? item.prerelease : !item.prerelease);
@@ -1781,6 +1849,7 @@ async function checkForUpdate() {
       if (!asset?.browser_download_url) throw new Error('No release manifest is available for the selected channel.');
       manifest = await fetchSignedManifest(asset.browser_download_url);
     }
+    verifiedManifest = manifest;
     const available = compareVersions(manifest.version, app.getVersion()) > 0;
     const runtimeCompatible = manifest.runtimeVersion === 'electron-33';
     updateState = { status: available ? (runtimeCompatible ? 'available' : 'full-required') : 'latest', progress: 0, version: manifest.version || '', error: '', manifest, runtimeCompatible };
@@ -1791,12 +1860,19 @@ async function checkForUpdate() {
   }
 }
 
-async function downloadUpdate(manifest = updateState.manifest) {
+async function downloadUpdate() {
+  // Ignore any renderer-supplied manifest: only the signature-verified one
+  // recorded by checkForUpdate() may drive a download (prevents the renderer
+  // from steering the updater to attacker-chosen content).
+  const manifest = verifiedManifest;
+  if (!manifest) throw new Error('No verified update is available. Check for updates first.');
   if (manifest.runtimeVersion && manifest.runtimeVersion !== 'electron-33') throw new Error('This release changes the Electron runtime; download the full portable package instead.');
   if (!manifest?.updatePackage?.url) throw new Error('No compatible application update is available.');
-  const target = join(app.getPath('temp'), `comfy-agent-update-${manifest.version}.zip`);
+  const version = String(manifest.version || '');
+  if (!/^[A-Za-z0-9._-]+$/.test(version)) throw new Error('Update manifest version is not a safe file name.');
+  const target = join(app.getPath('temp'), `comfy-agent-update-${version}.zip`);
   updateState = { ...updateState, status: 'downloading', progress: 0, error: '' };
-  const urls = [manifest.updatePackage.url, ...(manifest.updatePackage.urls || [])].filter(Boolean);
+  const urls = [manifest.updatePackage.url, ...(manifest.updatePackage.urls || [])].filter(Boolean).map(url => assertHttpsUrl(url, '更新包地址'));
   let lastError;
   for (const url of urls) {
     try {
@@ -2885,7 +2961,9 @@ ipcMain.handle('agent:test-llm', async (_, { config }) => {
 ipcMain.handle('agent:get-config', async () => {
   const config = getStoredConfig();
   return {
-    llm: config.llm || { provider: 'openai-compatible', baseUrl: '', model: '' },
+    // Sanitize before returning to the renderer: publicLLM strips apiKey /
+    // _encryptedApiKey and exposes only hasApiKey (see publicProvider).
+    llm: publicLLM(config.llm || { provider: 'openai-compatible', baseUrl: '', model: '' }),
     workflowDir: agent?.workflowDir || getDefaultWorkflowDir(),
   };
 });
@@ -3377,7 +3455,7 @@ ipcMain.handle('agent:prompt-mode', async (_, { mode }) => {
 
 ipcMain.handle('project:update-state', async (_, patch = {}) => {
   if (!agent) return null;
-  const allowed = new Set(['workflow', 'skillId', 'budgets', 'researchSettings', 'promptMode', 'savedPreferences', 'commonParameters']);
+  const allowed = new Set(['workflow', 'skillId', 'budgets', 'researchSettings', 'promptMode', 'savedPreferences', 'commonParameters', 'customSystemPrompt']);
   const unknown = Object.keys(patch).filter(key => !allowed.has(key));
   if (unknown.length) throw new Error(`不允许修改项目字段：${unknown.join(', ')}`);
   await runGovernedIpcMutation({ action: 'project.write', input: patch, execute: () => agent.call('project.update', [patch]) });
@@ -3391,6 +3469,7 @@ ipcMain.handle('ui:preferences', async () => normalizeUIPreferences(prefStore.ge
 ipcMain.handle('ui:save-preferences', async (_, preferences = {}) => {
   const normalized = normalizeUIPreferences(preferences);
   prefStore.set('ui', normalized);
+  await agent?.reconfigurePrompt(promptRuntimeConfig());
   return normalized;
 });
 
@@ -3406,6 +3485,30 @@ ipcMain.handle('research:save-settings', async (_, settings = {}) => {
   prefStore.set('research', nextResearch);
   await agent?.reconfigureResearch(prefStore.get('research') || {});
   return { hasBaiduApiKey: Boolean(prefStore.get('research')?.baiduApiKey || prefStore.get('research')?._encryptedBaiduApiKey) };
+});
+
+function promptRuntimeConfig() {
+  const personality = prefStore.get('prompt.personality') || {};
+  const language = normalizeUIPreferences(prefStore.get('ui') || {}).language;
+  return { personality: { enabled: Boolean(personality.enabled), strategy: personality.strategy === 'replace' ? 'replace' : 'append', text: String(personality.text || '').trim() }, language };
+}
+
+ipcMain.handle('prompt:settings', async () => {
+  const config = promptRuntimeConfig();
+  return { enabled: config.personality.enabled, strategy: config.personality.strategy, text: config.personality.text, language: config.language };
+});
+
+ipcMain.handle('prompt:save-settings', async (_, settings = {}) => {
+  const personality = {
+    enabled: Boolean(settings.enabled),
+    strategy: settings.strategy === 'replace' ? 'replace' : 'append',
+    text: String(settings.text || '').slice(0, 4000).trim(),
+  };
+  if (personality.enabled && !personality.text) personality.enabled = false;
+  const prompt = prefStore.get('prompt') || {};
+  prefStore.set('prompt', { ...prompt, personality });
+  await agent?.reconfigurePrompt(promptRuntimeConfig());
+  return promptRuntimeConfig();
 });
 
 ipcMain.handle('skills:import-external', async () => {
@@ -3690,7 +3793,7 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     else showFloatingWindow();
   });
   void startAgent(prefStore.getAll()).catch(() => {});
-  void comfyManager.ensureStarted();
+  void comfyManager.ensureStarted().catch(error => console.error(`ComfyUI startup failed: ${error.message}`));
   void startEmbeddedMcp(config).catch(error => console.error(`MCP initialization failed: ${error.message}`));
 });
 
