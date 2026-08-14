@@ -23,7 +23,6 @@ import { FilesystemTool } from '../tools/filesystem/index.mjs';
 import { FilesystemMutateTool } from '../tools/filesystem/mutate.mjs';
 import { SystemTool } from '../tools/system/index.mjs';
 import { WebTool, openResultPages } from '../tools/web/index.mjs';
-import { createToolRegistry } from '../tools/registry.mjs';
 import { WorkflowAdapter } from '../tools/comfyui/workflow-adapter.mjs';
 import { promptProfileLabel } from '../tools/comfyui/prompt-profile.mjs';
 import { registerAdapters } from '../tools/comfyui/adapters/index.mjs';
@@ -43,20 +42,10 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { normalizeGenerationResult } from '../../runtime/generation-contract.mjs';
 import { assertConfirmationBinding } from '../../runtime/governance/operation-gateway.mjs';
+import { isConfirmTurn, messageAttachments, needsWorkflowChatContext, wantsWebResearch, IDENTITY_QUERY } from './chat-intents.mjs';
+import { createAgentToolRegistry } from './agent-tools.mjs';
 
 registerAdapters();
-
-const TURN_CONFIRM = /^(?:confirm|yes|run|go|确认|确定|执行|开始)(?:执行|生成)?[.。!！]?$/i;
-
-
-function messageAttachments(media = {}) {
-  // 默认参数只兜 undefined；前端聊天请求会显式传 media: null。
-  const source = media && typeof media === 'object' ? media : {};
-  return [
-    ...(source.images || []).map(item => ({ name: item?.name || item?.path?.split(/[\\/]/).pop() || '', kind: 'image' })),
-    ...(source.videos || []).map(item => ({ name: item?.name || item?.path?.split(/[\\/]/).pop() || '', kind: 'video' })),
-  ].filter(item => item.name);
-}
 
 function newRequestId() {
   return `request_${randomUUID()}`;
@@ -169,23 +158,6 @@ Confirmed prompt targets: ${JSON.stringify({ positiveTargets: profile.positiveTa
 Current sampling settings: ${settingsLines.length > 0 ? settingsLines.join(', ') : 'not specified'}.
 Model files: ${modelFiles.length > 0 ? modelFiles.join(', ') : 'not specified'}.
 Input media: ${mediaFiles.length > 0 ? mediaFiles.join(', ') : 'none'}.`;
-}
-
-const LOCAL_QUERY = /(参数|节点|工作流|队列|显存|设备|模型列表|采样器|调度器|step|seed|cfg|denoise|功能|命令|usage)/i;
-const CHAT_CONTEXT_HINTS = /(当前|实际|参数|提示词|prompt|工作流|节点|队列|显存|设备|模型|采样器|调度器|seed|cfg|steps?|denoise)/i;
-const IDENTITY_QUERY = /(你是谁|你是啥|你是哪位|你叫什么|你是什么|你是干什么的|你是干嘛的|你是什么模型|你用的?什么模型|你是什么ai|你有什么能力|你会什么|你能做什么|who are you|what are you|what model|what can you do)/i;
-
-function needsWorkflowChatContext(message, intent) {
-  return ['query', 'prompt_edit', 'refine'].includes(intent) || CHAT_CONTEXT_HINTS.test(message);
-}
-
-function wantsWebResearch(message, intent) {
-  if (['query', 'workflow_query', 'runtime_query', 'prompt_edit', 'cancel'].includes(intent)) return false;
-  const text = String(message || '').trim();
-  if (!text) return false;
-  if (/https?:\/\//i.test(text)) return true;
-  if (LOCAL_QUERY.test(text)) return false;
-  return /(搜索|搜一下|搜下|查一下|查查|查资料|查详情|上网|网上|网查|官方资料|设定资料|背景资料|百科|资料库|look\s*up|search|research|who is|what is)/i.test(text);
 }
 
 function chatResearchContext(research) {
@@ -503,7 +475,7 @@ export class Agent {
       const awaitingConfirmation = this._state === 'awaiting_confirmation'
         || sessionState.state === 'awaiting_confirmation'
         || sessionState.phase === 'awaiting_preview';
-      if (awaitingConfirmation && TURN_CONFIRM.test(text)) {
+      if (awaitingConfirmation && isConfirmTurn(text)) {
         if (input.recordConfirmation !== false) {
           this._writeTurnMessage('user', text, { turnId, modeHint, attachments: messageAttachments(input.media) }, turnId);
         }
@@ -949,18 +921,7 @@ export class Agent {
     if (this._toolRegistry?.byName) {
       return this._toolRegistry.byName;
     }
-    this.toolRegistry = createToolRegistry({ tools: [...Object.values({
-      comfyui: ComfyUITool,
-      prompt_enhance: PromptEnhanceTool,
-      prompt_library: PromptLibraryTool,
-      filesystem: FilesystemTool,
-      filesystem_mutate: FilesystemMutateTool,
-      system: SystemTool,
-      web: WebTool,
-      workflow_inspect: WorkflowInspectTool,
-      inspect_image: InspectImageTool,
-      workflow_patch: WorkflowPatchTool,
-     }), ...RuntimeTools, ...WorkflowReadTools, ComfyUIRuntimeParametersTool, ...WorkflowMutationTools] });
+    this.toolRegistry = createAgentToolRegistry();
     return this.toolRegistry.byName;
   }
 
