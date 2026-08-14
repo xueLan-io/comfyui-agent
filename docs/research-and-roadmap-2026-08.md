@@ -228,6 +228,17 @@ ComfyMuse 的**差异化资产是“能力平台”**：agent 规划/执行/治�
 核心套件基线（P2 后）：**940 tests / 933 pass / 0 fail** + 渲染层 12 个冒烟测试；lint 280 文件；build 通过。
 剩余：P2 可选增强（结果 A/B 对比灯箱、批量策略化 seed 管理、批次内分页）→ P3 插件生态 → P0-5 拆分续。
 
+### 3.9 P3 插件/技能生态落地进度（2026-08-14 更新）
+
+| 步骤 | 状态 | 提交 | 说明 |
+|---|---|---|---|
+| P3 插件宿主 + 签名 | ✅ | `799820a` | `src/runtime/plugins/plugin-loader.mjs`：从 `<userData>/plugins/<id>/` 加载 plugin.json（+ 可选 main.mjs start/stop），manifest 校验，可选 Ed25519 `plugin.json.sig` 验签（可注入公钥，测试用临时密钥对）；worker：共享工具注册表（基础工具 + 插件注册工具）传给 Agent，启动时加载并启动已启用插件（能力门控 host：tools 生效，skills/services/ipc/ui 预留），启用状态持久化 `plugins-state.json`；`plugins:*` RPC（list/enable/remove）+ main IPC + preload；`PluginSettings.jsx` 设置页 tab：能力/签名徽标/状态、启停开关、移除确认、加载错误报告、目录提示。loader 5 个测试 + UI 2 个 |
+| P3 外部技能编辑器 | ✅ | `8902d8c` | `skills:add-external` IPC 走与文件导入相同的 normalize/validate 校验链（id/name/keywords/target.tool/workflowName/promptMode/settings 白名单），查重并持久化；设置页技能 tab 新增"新建外部 Skill"字段化表单（含 settings JSON 校验）；preload `skillAddExternal`；zh/en i18n |
+| P3 后续（可滚动） | — | — | 插件安装/更新（目录放置已可用）、插件注册 skills/services 打通、Skill 链组合、插件市场 |
+
+核心套件基线（P3 后）：**945 tests / 938 pass / 0 fail** + 渲染层 14 个冒烟测试；lint 281 文件；build 通过。
+剩余：P3 可选增强 → P0-5 拆分续（execution/chat/context 子系统）→ 发布 v0.3.8（`pack-portable.bat` + 门禁）。
+
 ---
 
 ## 附录 A · 关键文件地图
