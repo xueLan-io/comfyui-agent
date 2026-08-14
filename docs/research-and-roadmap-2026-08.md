@@ -191,6 +191,23 @@ ComfyMuse 的**差异化资产是“能力平台”**：agent 规划/执行/治�
 
 ---
 
+### 3.6 P0 落地进度（2026-08-14 更新）
+
+| 步骤 | 状态 | 提交 | 说明 |
+|---|---|---|---|
+| P0-0 合入在途批量 | ✅ | `0779182` | 在途安全修复 + 人格系统 + 提示词库 v6 + 提供商模板，门禁全绿后提交（43 文件 +1975/−216） |
+| P0-1 清洗提供商模板 | ✅ | `98b00b4` | 277→80 个模板；移除无处理器 type、虚构厂商、重复/备用条目、非聊天 API；新增契约测试（类型/形状/分组/去重） |
+| P0-2 清理孤儿组件 | ✅ | `51a7fd8` | 删除未引用的 ProjectSidebar.jsx 重复件（−155 行） |
+| P0-3 GUI 确认绑定 digest | ✅ | `f471718` | prepareGeneration 计算 requestDigest 并回显 preview；runPrepared 用 assertConfirmationBinding 校验（accepted/digest/requestId/previewId）；渲染层发 digest 形态 confirmation + 独立 previewEdits；重启恢复保留 digest；5 个新测试 |
+| P0-4 治理层接入 | ✅（收敛） | `18fe91b` | 实测治理栈已由 main.mjs 协调器接入全部生成执行（policy+admission+audit）；补齐 comfyui.submit 的 generation_count 配额扣减（与 CLI 对齐）+ 协调器接线模式测试（含配额耗尽拒绝） |
+| P0-5 拆分 agent.mjs | 🔶 第一刀 | `a9defb9` | 抽出 chat-intents.mjs（确认/身份/联网启发式、附件归一化）与 agent-tools.mjs（工具清单+工厂）；`_getTools` 改工厂；6 个新测试；后续按 对话/规划执行/生成装配/会话 继续拆分 |
+| P0-6 渲染层测试骨架 | ✅ | `798f227` | vitest + jsdom + @vitejs/plugin-react；`npm run test:ui`；electronAPI/matchMedia mock；Icon / GenerationProgress / PromptPersonalitySettings 冒烟测试（8 个） |
+
+核心套件基线：**917 tests / 910 pass / 0 fail** + 渲染层 8 个冒烟测试；lint 278 文件；build 通过。
+后续：P0-5 继续拆分（execution/chat/context 子系统）、P1 长期记忆、P2 批量流水线、P3 插件生态。
+
+---
+
 ## 附录 A · 关键文件地图
 
 - 编排核心：`src/agent/runtime/agent.mjs`（162 KB）、`intent-router.mjs`、`planner.mjs`、`executor.mjs`、`chat-prompt.mjs`（新）

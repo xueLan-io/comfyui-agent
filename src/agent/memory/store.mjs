@@ -2,6 +2,30 @@ import { randomUUID } from 'node:crypto';
 import { access, copyFile, mkdir, readFile, rename, rm, writeFile } from 'fs/promises';
 import { dirname, join } from 'node:path';
 
+// Windows: an antivirus scan or a briefly held handle can make the atomic
+// rename fail transiently with EPERM/EBUSY. Retry a few times before giving up
+// so concurrent saves do not flake; the tmp file is removed on final failure.
+const RENAME_RETRIES = 5;
+const RENAME_BACKOFF_MS = 25;
+
+async function renameWithRetry(tmpPath, targetPath) {
+  let lastError;
+  for (let attempt = 0; attempt < RENAME_RETRIES; attempt++) {
+    try {
+      await rename(tmpPath, targetPath);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < RENAME_RETRIES - 1 && ['EPERM', 'EBUSY', 'EEXIST'].includes(error.code)) {
+        await new Promise(resolve => setTimeout(resolve, RENAME_BACKOFF_MS * (attempt + 1)));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError;
+}
+
 export class JSONFileStore {
   constructor(dir, filename, defaults = {}) {
     this.filePath = join(dir, filename);
@@ -48,7 +72,7 @@ export class JSONFileStore {
       const tmp = `${this.filePath}.${randomUUID()}.tmp`;
       await writeFile(tmp, content);
       try {
-        await rename(tmp, this.filePath);
+        await renameWithRetry(tmp, this.filePath);
       } catch (error) {
         await rm(tmp, { force: true }).catch(() => {});
         throw error;
