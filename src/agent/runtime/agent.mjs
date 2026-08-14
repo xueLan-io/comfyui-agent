@@ -5,7 +5,7 @@ import { LLMProvider, fitMessagesWithTelemetry, resolveLLMStrategy } from '../ll
 import { JSONFileStore } from '../memory/store.mjs';
 import { SessionManager } from './session-manager.mjs';
 import { TaskManager, canTransition } from './task-manager.mjs';
-import { RetryPolicy, classifyFailure, diffParameters } from '../optimizer/retry-policy.mjs';
+import { RetryPolicy, classifyFailure } from '../optimizer/retry-policy.mjs';
 import { checkEditedPrompt, estimateTokens } from '../optimizer/prompt-guard.mjs';
 import { ComfyUITool } from '../tools/comfyui/index.mjs';
 import { RuntimeTools } from '../tools/comfyui/runtime.mjs';
@@ -45,6 +45,7 @@ import { assertConfirmationBinding } from '../../runtime/governance/operation-ga
 import { isConfirmTurn, messageAttachments, needsWorkflowChatContext, wantsWebResearch, IDENTITY_QUERY } from './chat-intents.mjs';
 import { createAgentToolRegistry } from './agent-tools.mjs';
 import { contextArchiveOf, archivePrompt, compactConversationSegment, prepareConversationArchive, prefetchContextArchive, compactConversation, memoryContext, archiveMessage } from './context-archive.mjs';
+import { resultSummary, recordGenerationArtifact, recordArtifact, replanPlan, executeWithRetry, retryDecision, retryParameters, rotateRetryParameters, recordStepAttempt, recompilePrompt, collectPromptIssues, collectArtifacts } from './execution-ops.mjs';
 
 registerAdapters();
 
@@ -225,12 +226,6 @@ async function chatRuntimeContext() {
   } catch {
     return 'ComfyUI runtime: not reachable; generation is unavailable.';
   }
-}
-
-function backoffDelay(attempt) {
-  const base = Math.min(1000 * 2 ** (attempt - 1), 8000);
-  const jitter = Math.floor(Math.random() * Math.min(base, 1000));
-  return new Promise(resolve => setTimeout(resolve, base + jitter));
 }
 
 export class Agent {
@@ -2449,296 +2444,39 @@ export class Agent {
   }
 
   _resultSummary(result) {
-    if (!result || typeof result !== 'object') return {};
-    return {
-      promptId: result.promptId || '',
-       imageCount: Array.isArray(result.images) ? result.images.length : 0,
-       videoCount: Array.isArray(result.videos) ? result.videos.length : 0,
-       mediaCount: Array.isArray(result.media) ? result.media.length : 0,
-      status: result.executionStatus || result.status || '',
-      workflowName: result.workflowName || '',
-    };
+    return resultSummary(this, result);
   }
 
   _recordGenerationArtifact(result, compiledPrompt = {}, metadata = {}) {
-    if (!result || typeof result !== 'object') return null;
-    const memory = this.sessionManager.getSessionMemory?.() || {};
-    const artifact = {
-      artifactId: `artifact_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      taskId: metadata.taskId || this._taskId,
-      promptVersion: (Number(memory.currentPromptVersion) || 0) + 1,
-      positive: compiledPrompt?.positive || result.positive || result.enhanced || this.project.get('lastPrompt') || '',
-      negative: compiledPrompt?.negative || result.negative || '',
-      constraints: compiledPrompt?.constraints || result.constraints || {},
-      workflow: metadata.workflow || result.workflowName || this.project.get('workflow') || '',
-      parameters: metadata.parameters || {},
-       images: Array.isArray(result.images) ? result.images : [],
-       videos: Array.isArray(result.videos) ? result.videos : [],
-       media: Array.isArray(result.media) ? result.media : [],
-      createdAt: Date.now(),
-    };
-    this.sessionManager.setSessionMemory?.({
-      activeGoal: metadata.intent || memory.activeGoal || '',
-      currentArtifactId: artifact.artifactId,
-      currentPromptVersion: artifact.promptVersion,
-      generationHistory: [...(memory.generationHistory || []), artifact].slice(-50),
-      currentWorkflow: artifact.workflow,
-      lastParameters: artifact.parameters,
-      confirmedConstraints: artifact.constraints,
-    });
-    this.sessionManager.setSessionState?.({ currentArtifactId: artifact.artifactId });
-    return artifact;
+    return recordGenerationArtifact(this, result, compiledPrompt, metadata);
   }
 
   recordArtifact(result, metadata = {}) {
-    return this._recordGenerationArtifact(result, metadata.compiledPrompt || {}, metadata);
+    return recordArtifact(this, result, metadata);
   }
 
   async _replanPlan(plan, stepIndex, step, output, ctx, completedSteps) {
-    if (this._replanCount >= this._maxReplans) return null;
-    this._transitionState('replanning', {
-      currentStep: step.id,
-      lastError: output.failure?.reason || output.error,
-      message: 'Replanning remaining steps',
-    });
-    const completedIds = new Set(completedSteps.map(item => item.id));
-    const workflow = ctx.workflowManifest || {};
-    try {
-      const replanned = await this.planner.replan({
-        userGoal: ctx.userRequest,
-        completedSteps,
-        currentError: output.failure?.reason || output.error,
-        failureType: output.failure?.type || '',
-        workflow: {
-          name: workflow.workflowName || ctx.project?.currentWorkflow || '',
-          modelType: workflow.modelType || '',
-          outputNodes: (workflow.outputNodes || []).map(node => ({ id: node.id, type: node.type })),
-          promptProfile: {
-            family: workflow.promptProfile?.family || '',
-            supportsNegative: workflow.promptProfile?.supportsNegative,
-          },
-        },
-        resultSummary: this._resultSummary(output.result),
-        remainingSteps: plan.steps.slice(stepIndex).map(item => ({
-          id: item.id,
-          tool: item.tool,
-          description: item.description,
-          expected_output: item.expected_output,
-        })),
-      }, {
-        tools: this.tools,
-        workflowDir: this.workflowDir,
-        availableWorkflows: ctx.availableWorkflows,
-        workflowManifest: ctx.workflowManifest,
-        eventMeta: ctx.eventMeta,
-      });
-      attachMediaToPlan(replanned, ctx.attachedMedia);
-      const steps = replanned.steps
-        .filter(item => !completedIds.has(item.id))
-        .map(item => ({ ...item, depends_on: (item.depends_on || []).filter(id => !completedIds.has(id)) }));
-      if (steps.length === 0) return null;
-      this._replanCount++;
-      this.taskManager.update(this._taskId, { replanCount: this._replanCount });
-      this.taskManager.recordReplan(this._taskId, {
-        attempt: this._replanCount,
-        failedStep: step.id,
-        error: output.error || '',
-        plan: { ...replanned, steps },
-        createdAt: Date.now(),
-      });
-      emit(AgentEventTypes.TASK, { taskId: this._taskId, action: 'replanned', replanCount: this._replanCount, traceId: this._traceId });
-      this._transitionState('executing', { message: 'Executing replanned steps', lastError: '' });
-      return { ...replanned, steps };
-    } catch (error) {
-      this.taskManager.recordReplan(this._taskId, {
-        attempt: this._replanCount + 1,
-        failedStep: step.id,
-        error: error.message,
-        createdAt: Date.now(),
-      });
-      return null;
-    }
+    return replanPlan(this, plan, stepIndex, step, output, ctx, completedSteps);
   }
 
   async _executeWithRetry(step, ctx) {
-    this._currentAttemptId = this.taskManager.beginAttempt(this._taskId, { stepId: step.id, attempt: 1 })?.attemptId || '';
-    ctx.attemptId = this._currentAttemptId;
-    ctx.currentAttempt = 1;
-    let output = await this.executor.executeStep(step, ctx);
-    let attempt = 1;
-    this._recordStepAttempt(step, output, attempt, ctx);
-    if (this._taskId) {
-      this._transitionState('observing', {
-        currentStep: step.id,
-        currentAttempt: 1,
-        promptId: output.result?.promptId || ctx.lastPromptId || '',
-        lastError: output.error || '',
-        message: 'Observing result',
-      });
-    }
-    for (;;) {
-      // 取消竞态：取消标志已置位但本步已抢救回真实结果（生成已完成）时，
-      // 不应把成果当作 skipped 丢弃。
-      if (output.skipped || (this.executor.cancelled && !(output.result?.media?.length > 0))) {
-        return output.skipped ? output : { skipped: true, reason: 'cancelled' };
-      }
-
-      const decision = ctx.executionPolicy?.retry === false
-        ? { action: 'accept', shouldRetry: false }
-        : await this._retryDecision(step, ctx, output, attempt);
-      if (!decision.shouldRetry) {
-        if (decision.exhausted && decision.failureType === 'empty_output') {
-          return {
-            error: 'ComfyUI completed without a valid image output after retry limit',
-            failure: { type: 'empty_output', retryable: false, reason: decision.modification },
-          };
-        }
-        return output;
-      }
-      if (this.executor.cancelled) return { skipped: true, reason: 'cancelled' };
-
-      if (this._taskId) {
-        this._transitionState('retrying', {
-          currentStep: step.id,
-          currentAttempt: decision.attempt + 1,
-          lastError: decision.modification,
-          message: `Retrying ${step.id}`,
-        });
-      }
-
-      const before = this._retryParameters(step, ctx);
-      const previousPositive = output.result?.compiledPrompt?.positive || ctx.compiledPrompt?.positive || ctx.enhancedPrompt || '';
-      if (decision.action === 'rewrite_prompt') {
-        const recompiled = await this._recompilePrompt(ctx, decision);
-        if (recompiled?.positive && recompiled.positive !== previousPositive) {
-          ctx.compiledPrompt = recompiled;
-        } else {
-          this._rotateRetryParameters(ctx, decision);
-        }
-      } else {
-        this._rotateRetryParameters(ctx, decision);
-      }
-      if (this.executor.cancelled) return { skipped: true, reason: 'cancelled' };
-
-      const after = this._retryParameters(step, ctx);
-      emit(AgentEventTypes.STATUS, {
-        status: 'retrying',
-        uiStatus: 'running',
-        state: 'retrying',
-        message: `Retry ${decision.attempt}/${decision.maxTaskRetries}: ${decision.modification}`,
-        taskId: this._taskId,
-        traceId: this._traceId,
-        requestId: this._requestId,
-        stepId: step.id,
-        retry: {
-          reason: decision.modification,
-          failureType: decision.failureType || decision.ruleId || 'evaluation',
-          attempt: decision.attempt,
-          taskAttempt: decision.taskAttempt,
-          parameterChanges: diffParameters(before, after),
-        },
-      });
-      this.taskManager.recordRetry(this._taskId, {
-        stepId: step.id,
-        reason: decision.modification,
-        failureType: decision.failureType || decision.ruleId || 'evaluation',
-        attempt: decision.attempt,
-        taskAttempt: decision.taskAttempt,
-        parameterChanges: diffParameters(before, after),
-        createdAt: Date.now(),
-      });
-      if (this._taskId) this._transitionState('executing', { currentStep: step.id, currentAttempt: decision.attempt + 1, message: 'Executing retry' });
-      await backoffDelay(attempt);
-      this._currentAttemptId = this.taskManager.beginAttempt(this._taskId, { stepId: step.id, attempt: attempt + 1 })?.attemptId || '';
-      ctx.attemptId = this._currentAttemptId;
-      ctx.currentAttempt = attempt + 1;
-      output = await this.executor.executeStep(step, ctx);
-      attempt++;
-    this._recordStepAttempt(step, output, attempt, ctx);
-      if (this._taskId) this._transitionState('observing', {
-        currentStep: step.id,
-        currentAttempt: decision.attempt + 1,
-        promptId: output.result?.promptId || ctx.lastPromptId || '',
-        lastError: output.error || '',
-        message: 'Observing retry result',
-      });
-    }
+    return executeWithRetry(this, step, ctx);
   }
 
   async _retryDecision(step, ctx, output, attempt = 1) {
-    const policyContext = { stepId: step.id, tool: step.tool, action: step.input?.action, toolContract: this.tools[step.tool] };
-    if (output.error) {
-      const failure = output.failure || classifyFailure(output.error, policyContext);
-      return this.retryPolicy.evaluateFailure(failure, policyContext);
-    }
-
-    if (step.tool !== 'comfyui') return { action: 'accept', shouldRetry: false };
-    const images = output.result?.images;
-    if (!Array.isArray(images) || images.length === 0) {
-      return this.retryPolicy.evaluateFailure({
-        type: 'empty_output',
-        retryable: true,
-        reason: 'ComfyUI completed without a valid image output',
-      }, policyContext);
-    }
-
-    if (ctx.executionPolicy?.evaluate === false) return { action: 'accept', shouldRetry: false };
-    const evaluation = await this.evaluator.evaluate(
-      output.result,
-      ctx.userRequest,
-      { stepId: step.id },
-      { promptIssues: this._collectPromptIssues(output.result), skipVision: attempt >= 2 },
-    );
-    return this.retryPolicy.evaluate(evaluation, policyContext);
+    return retryDecision(this, step, ctx, output, attempt);
   }
 
   _retryParameters(step, ctx) {
-    return {
-      workflowName: step.input?.workflowName || ctx.project?.currentWorkflow || '',
-      prompt: ctx.compiledPrompt?.positive || ctx.enhancedPrompt || step.input?.prompt || ctx.userRequest || '',
-      negative: ctx.compiledPrompt?.negative || '',
-      settings: { ...(step.input?.settings || {}), ...(ctx.executionSettings || {}) },
-    };
+    return retryParameters(this, step, ctx);
   }
 
   _rotateRetryParameters(ctx, decision) {
-    if (ctx._retryParamIndex === undefined) ctx._retryParamIndex = 0;
-    const index = ctx._retryParamIndex;
-    ctx.executionSettings = { ...(ctx.executionSettings || {}), seed: Math.floor(Math.random() * 0xFFFFFFFF) };
-    if (decision.attempt >= 2 && (decision.failureType === 'empty_output' || decision.failureType !== 'comfyui_transient')) {
-      const common = ctx.workflowManifest?.commonSettings || {};
-      const settings = { ...ctx.executionSettings };
-      if (index >= 1) settings.sampler = ['euler_ancestral', 'dpmpp_2m_sde', 'uni_pc'].find(item => item !== (settings.sampler || common.sampler)) || 'euler_ancestral';
-      if (index >= 2) settings.scheduler = ['normal', 'karras', 'exponential'].find(item => item !== (settings.scheduler || common.scheduler)) || 'normal';
-      ctx.executionSettings = settings;
-    }
-    ctx._retryParamIndex = (index + 1) % 3;
+    return rotateRetryParameters(ctx, decision);
   }
 
   _recordStepAttempt(step, output, attempt, ctx) {
-    if (!this._taskId) return;
-    this.taskManager.recordStep(this._taskId, {
-      stepId: step.id,
-      tool: step.tool,
-      description: step.description,
-      input: step.input || {},
-      attempt,
-      attemptId: this._currentAttemptId,
-      promptId: output.result?.promptId || ctx.lastPromptId || '',
-      status: output.skipped ? 'skipped' : output.error ? 'failed' : 'completed',
-      result: this._resultSummary(output.result),
-      error: output.error || null,
-      duration_ms: output.duration_ms || 0,
-      completedAt: Date.now(),
-    });
-    if (this._currentAttemptId) {
-      this.taskManager.updateAttempt(this._taskId, this._currentAttemptId, {
-        promptId: output.result?.promptId || ctx.lastPromptId || '',
-        phase: output.skipped ? 'cancelled' : output.failure?.type === 'submit_unknown' ? 'submit_unknown' : output.error ? 'failed' : 'completed',
-        observedAt: Date.now(),
-      });
-    }
-    void this.taskManager.persist();
+    return recordStepAttempt(this, step, output, attempt, ctx);
   }
 
   _filesystemRoots() {
@@ -2775,41 +2513,15 @@ export class Agent {
   }
 
   async _recompilePrompt(ctx, decision) {
-    const current = ctx.compiledPrompt || {};
-    return PromptEnhanceTool.execute({
-      prompt: ctx.userRequest,
-      mode: current.mode || this.promptMode,
-      modelType: current.modelType,
-      promptProfile: ctx.workflowManifest?.promptProfile || this._lastManifest?.promptProfile || {},
-      existingNegative: current.negative || '',
-      constraints: current.constraints || {},
-      contextPrompt: current.positive || '',
-      intent: 'refine',
-      customInstruction: decision.modification
-        ? `Rewrite to fix the reported problem: ${decision.modification}`
-        : 'Rewrite the prompt to better match the user request',
-      budgets: this.project.get('budgets') || undefined,
-      llmProvider: this.llm?.isConfigured ? this.llm : undefined,
-    });
+    return recompilePrompt(this, ctx, decision);
   }
 
   _collectPromptIssues(result) {
-    return Array.isArray(result?.compiledPrompt?.issues) ? result.compiledPrompt.issues : [];
+    return collectPromptIssues(this, result);
   }
 
   _collectArtifacts(result, step) {
-    if (result.artifacts && Array.isArray(result.artifacts)) {
-      for (const art of result.artifacts) {
-        art.source.taskId = this._taskId;
-        art.source.stepId = step.id;
-        this._artifacts.push(art);
-      }
-    }
-    if (result.promptArtifact) {
-      result.promptArtifact.source.taskId = this._taskId;
-      result.promptArtifact.source.stepId = step.id;
-      this._artifacts.push(result.promptArtifact);
-    }
+    return collectArtifacts(this, result, step);
   }
 
   async runWithWorkflow(userMessage, workflowName, options = {}) {
