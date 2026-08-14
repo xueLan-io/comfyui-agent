@@ -42,6 +42,7 @@ import { existsSync, readdirSync } from 'fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { normalizeGenerationResult } from '../../runtime/generation-contract.mjs';
+import { assertConfirmationBinding } from '../../runtime/governance/operation-gateway.mjs';
 
 registerAdapters();
 
@@ -395,6 +396,7 @@ export class Agent {
       confirmation: previewData.confirmation || null,
       compileInput: null,
       requestId: previewData.requestId || '',
+      requestDigest: previewData.requestDigest || '',
       status: previewData.status || 'prepared',
       createdAt: Date.now(),
     });
@@ -514,7 +516,7 @@ export class Agent {
             decision: { intent: 'generate', action: 'clarify', target: 'new', missing: ['prepared_plan'] },
           };
         }
-        const result = await this.runPrepared(previewId, { ...(input.confirmation || {}), turnId });
+        const result = await this.runPrepared(previewId, { ...(input.confirmation || {}), ...(input.previewEdits || {}), turnId });
         return { turnId, action: 'execute', decision: { intent: 'generate', action: 'execute', requiresConfirmation: false, sourceTurnId: turnId }, result };
       }
 
@@ -1628,6 +1630,14 @@ export class Agent {
         settings: options.settings,
         nodeOverrides: options.nodeOverrides,
       });
+      // Bind the confirmation to this exact prepared operation: the digest is
+      // computed over the plan's frozen runtime inputs (prompt, settings,
+      // media, outputs) and the request id, and must be echoed back verbatim
+      // when the preview is executed (see runPrepared).
+      const requestDigest = runtimeRequestDigest({
+        requestId: this._requestId,
+        steps: plan.steps.map(step => ({ tool: step.tool, input: step.input.frozenRuntimeRequest || step.input })),
+      });
       this._preparedRuns.clear();
       this._preparedRuns.set(previewId, {
         userMessage,
@@ -1641,6 +1651,7 @@ export class Agent {
         confirmation,
         compileInput,
         requestId: this._requestId,
+        requestDigest,
         status: 'prepared',
       });
       this._transitionState('awaiting_confirmation', {
@@ -1661,6 +1672,7 @@ export class Agent {
         previewId,
         status: 'prepared',
         requestId: this._requestId,
+        requestDigest,
         workflowName: currentWorkflow,
         source: 'ai',
         origin: 'agent',
@@ -1823,6 +1835,18 @@ export class Agent {
       const error = new Error('Generation preview is already being consumed');
       error.code = 'GENERATION_PREVIEW_BUSY';
       throw error;
+    }
+    // When a confirmation object is supplied and this prepared run carries a
+    // digest, the confirmation must bind to this exact preview: same digest,
+    // same request id, same preview id, accepted === true. This aligns the GUI
+    // path with the MCP generation bridge and the direct generation path.
+    if (edits.confirmation && prepared.requestDigest) {
+      assertConfirmationBinding({
+        confirmation: edits.confirmation,
+        expectedDigest: prepared.requestDigest,
+        requestId: prepared.requestId,
+        previewId,
+      });
     }
     prepared.status = 'consuming';
     this.sessionManager.setSessionState?.({

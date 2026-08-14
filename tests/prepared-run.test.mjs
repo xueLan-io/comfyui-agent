@@ -380,3 +380,108 @@ test('removing a research fact recompiles the prepared prompt', async () => {
   assert.doesNotMatch(executed.compiledPrompt.positive, /long blue hair/);
   assert.match(executed.compiledPrompt.positive, /hero portrait/);
 });
+
+function digestBindingAgent({ llmCalls = { count: 0 } } = {}) {
+  const profile = {
+    family: 'anima',
+    format: 'tag_narrative',
+    supportsNegative: true,
+    currentNegative: 'low quality',
+    promptLists: [{ nodeId: '447', inputs: ['prompt_1', 'prompt_2'] }],
+    positiveTargets: [{ nodeId: '261', input: 'text' }],
+    negativeTargets: [{ nodeId: '240', input: 'text' }],
+  };
+  const agent = Object.create(Agent.prototype);
+  Object.assign(agent, {
+    _running: false,
+    _lastManifest: null,
+    _artifacts: [],
+    _preparedRuns: new Map(),
+    workflowDir: '',
+    sessionManager: {
+      project: { get: name => ({ workflow: 'anima.json', promptMode: 'anime' }[name]) },
+      conversation: { getLLMMessages: () => [], add: () => {} },
+    },
+    planner: {
+      async createPlan() {
+        return {
+          goal: 'portrait',
+          steps: [
+            { id: 'step1', tool: 'prompt_enhance', input: { mode: 'anime', constraints: { preserveCharacterCount: true } } },
+            { id: 'step2', tool: 'comfyui', input: { workflowName: 'anima.json' } },
+          ],
+        };
+      },
+    },
+    llm: {
+      isConfigured: true,
+      async chat() {
+        llmCalls.count++;
+        return { content: JSON.stringify({ tags: ['masterpiece'], narrative: 'A girl.', positive: '', negative: 'bad hands', self_check: { preserved: true, issues: [] } }) };
+      },
+    },
+  });
+  return agent;
+}
+
+test('prepared generation preview carries a confirmation digest', async () => {
+  const agent = digestBindingAgent();
+  const preview = await agent.prepareGeneration('one girl', {
+    workflowManifest: { workflowName: 'anima.json', modelType: 'anima', promptProfile: { family: 'anima', format: 'tag_narrative', supportsNegative: true, currentNegative: 'low quality', promptLists: [{ nodeId: '447', inputs: ['prompt_1', 'prompt_2'] }] } },
+  });
+  assert.match(preview.requestDigest, /^sha256:[0-9a-f]{64}$/);
+});
+
+test('runPrepared rejects a confirmation whose digest does not bind to the preview', async () => {
+  const agent = digestBindingAgent();
+  const preview = await agent.prepareGeneration('one girl', {
+    workflowManifest: { workflowName: 'anima.json', modelType: 'anima', promptProfile: { family: 'anima', format: 'tag_narrative', supportsNegative: true, currentNegative: 'low quality', promptLists: [{ nodeId: '447', inputs: ['prompt_1', 'prompt_2'] }] } },
+  });
+  agent.run = async () => { throw new Error('should not execute'); };
+  await assert.rejects(
+    () => agent.runPrepared(preview.previewId, {
+      confirmation: { accepted: true, digest: 'sha256:deadbeef', requestId: preview.requestId, previewId: preview.previewId },
+    }),
+    error => error.code === 'CONFIRMATION_INVALID',
+  );
+  // rejected preview stays prepared and usable
+  assert.equal(agent._preparedRuns.get(preview.previewId).status, 'prepared');
+});
+
+test('runPrepared rejects a confirmation that is not accepted', async () => {
+  const agent = digestBindingAgent();
+  const preview = await agent.prepareGeneration('one girl', {
+    workflowManifest: { workflowName: 'anima.json', modelType: 'anima', promptProfile: { family: 'anima', format: 'tag_narrative', supportsNegative: true, currentNegative: 'low quality', promptLists: [{ nodeId: '447', inputs: ['prompt_1', 'prompt_2'] }] } },
+  });
+  agent.run = async () => { throw new Error('should not execute'); };
+  await assert.rejects(
+    () => agent.runPrepared(preview.previewId, {
+      confirmation: { accepted: false, digest: preview.requestDigest, requestId: preview.requestId, previewId: preview.previewId },
+    }),
+    error => error.code === 'CONFIRMATION_INVALID',
+  );
+});
+
+test('runPrepared executes with a matching confirmation digest', async () => {
+  const agent = digestBindingAgent();
+  const preview = await agent.prepareGeneration('one girl', {
+    workflowManifest: { workflowName: 'anima.json', modelType: 'anima', promptProfile: { family: 'anima', format: 'tag_narrative', supportsNegative: true, currentNegative: 'low quality', promptLists: [{ nodeId: '447', inputs: ['prompt_1', 'prompt_2'] }] } },
+  });
+  let executed = false;
+  agent.run = async () => { executed = true; return { images: [] }; };
+  await agent.runPrepared(preview.previewId, {
+    confirmation: { accepted: true, digest: preview.requestDigest, requestId: preview.requestId, previewId: preview.previewId },
+  });
+  assert.equal(executed, true);
+});
+
+test('runPrepared still works without a confirmation object (backward compatibility)', async () => {
+  const agent = digestBindingAgent();
+  const preview = await agent.prepareGeneration('one girl', {
+    workflowManifest: { workflowName: 'anima.json', modelType: 'anima', promptProfile: { family: 'anima', format: 'tag_narrative', supportsNegative: true, currentNegative: 'low quality', promptLists: [{ nodeId: '447', inputs: ['prompt_1', 'prompt_2'] }] } },
+  });
+  let executed = false;
+  agent.run = async () => { executed = true; return { images: [] }; };
+  await agent.runPrepared(preview.previewId, { positive: ' edited ' });
+  assert.equal(executed, true);
+});

@@ -1487,7 +1487,13 @@ export function AgentProvider({ children }) {
         : await window.electronAPI.agentHandleTurn({
           text: '确认执行',
           modeHint: 'generate',
-          confirmation: edits,
+          confirmation: {
+            accepted: true,
+            digest: preview.requestDigest,
+            requestId: preview.requestId,
+            previewId,
+          },
+          previewEdits: edits,
           workflowName: selectedFile,
           workflowManifest,
            projectId: session.activeProjectId,

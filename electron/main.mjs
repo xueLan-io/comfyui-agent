@@ -2664,6 +2664,7 @@ ipcMain.handle('agent:turn', async (_, turn = {}) => {
           turnId: turn.turnId || '',
           recordConfirmation: turn.recordConfirmation !== false,
            confirmation: turn.confirmation || {},
+           previewEdits: turn.previewEdits || undefined,
            allowPolicyOverride: turn.allowPolicyOverride === true,
            skipUserMessage: turn.skipUserMessage === true,
            executionPolicy: turn.executionPolicy || undefined,
