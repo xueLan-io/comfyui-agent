@@ -2,7 +2,26 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const css = await readFile(new URL('../src/App.css', import.meta.url), 'utf8');
+// App.css was split into per-domain files under src/styles (cascade order is
+// preserved by fixed import order in main.jsx). Concatenate in that same
+// order so this layout contract still sees the full cascade.
+const STYLE_ORDER = [
+  'base.css',
+  'header-floating.css',
+  'layout-conversation.css',
+  'execution-workspace.css',
+  'settings-navigation.css',
+  'prompt-library.css',
+  'project-settings.css',
+  'workbench-ia.css',
+  'presets-themes.css',
+];
+const stylesDir = new URL('../src/styles/', import.meta.url);
+const parts = [];
+for (const name of STYLE_ORDER) {
+  parts.push(await readFile(new URL(name, stylesDir), 'utf8'));
+}
+const css = parts.join('\n');
 
 test('main workbench uses a flexible row instead of fixed grid columns', () => {
   assert.match(css, /Layout correction:[\s\S]*?\.body\s*\{[\s\S]*?display:\s*flex;/);

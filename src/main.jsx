@@ -1,7 +1,17 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
-import './App.css';
+// Styles are split by feature domain from the former single App.css (8543
+// lines). Import order must stay fixed: CSS cascade depends on it.
+import './styles/base.css';
+import './styles/header-floating.css';
+import './styles/layout-conversation.css';
+import './styles/execution-workspace.css';
+import './styles/settings-navigation.css';
+import './styles/prompt-library.css';
+import './styles/project-settings.css';
+import './styles/workbench-ia.css';
+import './styles/presets-themes.css';
 import { applyUIPreferences } from './ui-preferences.mjs';
 import RenderErrorBoundary from './components/RenderErrorBoundary.jsx';
 
