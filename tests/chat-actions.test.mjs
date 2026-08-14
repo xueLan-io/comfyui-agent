@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict';
+﻿import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
@@ -146,6 +146,6 @@ test('streamed reasoning is surfaced as thinking plan events and cleared on firs
   assert.match(files.chatFlow, /onReasoningText: text => \{ thinking \+= text; emit\(AgentEventTypes\.PLAN, \{ stage: 'thinking', partial: thinking\.slice\(-1500\), taskId, traceId, turnId \}\);/);
   assert.match(files.chatFlow, /if \(!started\) \{ started = true; emit\(AgentEventTypes\.PLAN, \{ stage: 'complete', taskId, traceId, turnId \}\);/);
   assert.match(files.chatFlow, /emit\(AgentEventTypes\.PLAN, \{ stage: 'error', taskId, traceId \}\);/);
-  assert.match(files.panel, /thinking\.slice\(-600\)/);
+  assert.match(files.panel, /thinking-live-text">\{thinking\}<\/pre>/);
   assert.match(files.context, /onAgentPlan\(data => \{[\s\S]*isCurrentAgentEvent\(data, \{ canClaimTask: true \}\)/);
 });
