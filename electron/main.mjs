@@ -3543,6 +3543,14 @@ ipcMain.handle('skills:delete-external', async (_, { id }) => {
   return skills;
 });
 
+ipcMain.handle('memory:get-state', async (_, { projectId = '' } = {}) => agent.call('memory.getState', [projectId]));
+ipcMain.handle('memory:set-profile', async (_, { projectId = '', patch = {} } = {}) => agent.call('memory.setProfile', [projectId, patch]));
+ipcMain.handle('memory:upsert-character-card', async (_, { projectId = '', card = {} } = {}) => agent.call('memory.upsertCharacterCard', [projectId, card]));
+ipcMain.handle('memory:delete-character-card', async (_, { projectId = '', name = '' } = {}) => agent.call('memory.deleteCharacterCard', [projectId, name]));
+ipcMain.handle('memory:clear', async (_, { projectId = '' } = {}) => agent.call('memory.clear', [projectId]));
+ipcMain.handle('memory:export', async () => agent.call('memory.export'));
+ipcMain.handle('memory:recall', async (_, { projectId = '', query = '', limit } = {}) => agent.call('memory.recall', [projectId, { query, limit }]));
+
 ipcMain.handle('mcp:settings', async () => {
   const mcp = prefStore.get('mcp') || {};
   return { enabled: mcp.enabled === true, host: mcp.host || '127.0.0.1', port: mcp.port || 3333, hasToken: Boolean(mcp.token), modules: mcpModuleFlags(mcp.modules || {}) };

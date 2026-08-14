@@ -1,7 +1,9 @@
 import { Agent, AgentEventTypes, ComfyUITool, configureSkills, on } from '../src/agent/index.mjs';
 import { ComfyUIClient } from '../src/agent/tools/comfyui/client.mjs';
+import { LongTermMemory } from '../src/agent/memory/long-term.mjs';
 import { createGovernanceContext } from '../src/runtime/governance/context.mjs';
 import { createAuditEvent } from '../src/runtime/governance/audit-events.mjs';
+import { join } from 'node:path';
 
 const EVENT_TYPES = Object.values(AgentEventTypes);
 const parentPort = process.parentPort || null;
@@ -51,6 +53,7 @@ const agentMethods = new Set([
 ]);
 
 let agent;
+let memory;
 let callQueue = Promise.resolve();
 let workerContext;
 
@@ -175,7 +178,22 @@ async function invoke(method, args = []) {
     if (config.workflowDir) agent.setWorkflowDir(config.workflowDir);
     return { baseUrl: ComfyUITool.client.baseUrl, comfyRoot: agent.comfyRoot, workflowDir: agent.workflowDir };
   }
+  if (method.startsWith('memory.')) return invokeMemory(method, args);
   throw new Error(`RPC method is not allowed: ${method}`);
+}
+
+async function invokeMemory(method, args = []) {
+  const [projectId, patch, card, name] = args;
+  switch (method) {
+    case 'memory.getState': return memory.projectState(projectId || '');
+    case 'memory.setProfile': return memory.setProfile(projectId || '', patch || {});
+    case 'memory.upsertCharacterCard': return memory.upsertCharacterCard(projectId || '', card || {});
+    case 'memory.deleteCharacterCard': return memory.deleteCharacterCard(projectId || '', name || '');
+    case 'memory.clear': return memory.clear(projectId || '');
+    case 'memory.export': return memory.exportJson();
+    case 'memory.recall': return memory.recall(projectId || '', patch || {});
+    default: throw new Error(`RPC method is not allowed: ${method}`);
+  }
 }
 
 async function start(config = {}) {
@@ -185,6 +203,12 @@ async function start(config = {}) {
     custom: config.skills?.custom,
     external: config.skills?.external,
   });
+  // Cross-session memory persists under agent-data when a user data path is
+  // configured; otherwise it stays in-memory for the worker lifetime.
+  memory = new LongTermMemory({
+    filePath: config.userDataPath ? join(config.userDataPath, 'agent-data', 'memory.json') : '',
+  });
+  await memory.init();
   agent = new Agent({
     llmConfig: config.llm || {},
     researchConfig: config.research || {},
@@ -194,6 +218,7 @@ async function start(config = {}) {
     userDataPath: config.userDataPath || '',
     projectId: config.projectId || 'project_worker',
     sessionId: config.sessionId || 'session_worker',
+    memory: memory || undefined,
   });
   workerContext = createGovernanceContext({
     principalId: config.principalId || 'principal_worker',
