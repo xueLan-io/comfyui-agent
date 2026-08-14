@@ -267,3 +267,15 @@ agent.mjs：162.5KB → **90.5KB**（-72KB，八刀累计，跌破 100KB）；�
 - Electron：`electron/main.mjs`（184 KB）、`agent-process.mjs`、`agent-worker.mjs`、`comfyui-manager.mjs`、`preload.cjs`
 - 前端：`src/App.jsx`、`src/contexts/AgentContext.jsx`（2,234 行）、`src/components/`（161 文件）、`src/i18n/I18nContext.jsx`
 - 评审：`docs/reviews/commit-95762c3-review.md`（88 条，41 高/47 中）、`docs/reviews/security-review-2026-08.md`（N-/T- 系列 + 复验表）；发布门禁：`docs/stability-test-plan-v0.3.7.md`（A–H 手工矩阵，H3/AMD 灰帧明确不阻塞主线）；核心链路复验：`docs/comfy-agent-core-flow-review-verification-round4.md`（根因：无单一任务所有权）
+
+### 3.11 单体文件拆分进度（2026-08-14 晚更新）
+
+| 文件 | 拆分前 | 拆分后 | 提交 | 说明 |
+|---|---|---|---|---|
+| src/i18n/I18nContext.jsx | 493 行 / 117 KB | 14 行 / 1.3 KB | afcfbdb | 三个翻译表（translations/uiTranslations/additionalTranslations）原样外提到 src/i18n/translations-data.mjs（480 行）；provider 合并顺序不变；同步修复 f6e2b54 遗留的 2 个测试失同步（thinking 渲染契约 + BatchWorkspacePage 孤儿测试改为 QueueTab 冒烟） |
+| src/App.css | 8,543 行 / 361 KB | 9 个文件（131-1,291 行） | 3758a41 | 字节级精确切块（369,990 字节逐字节一致），按功能域拆到 src/styles/；main.jsx 按固定顺序 import 保持级联；ui-workbench-layout 契约测试改为按序拼接 styles 目录 |
+| electron/main.mjs | 4,058 行 / 191 KB | 3,142 行 / 155 KB | 79fde74 | 拆出 7 个 IPC 域模块到 electron/ipc/：agent-extras（memory+plugins 26 行）、skills（100）、mcp（25）、comfyui（170）、workflows（143）、update（168，含独立状态机）、presets（256，含 getPresetsRoot）；各模块以 register(ctx) 模式注入共享状态 getter；agent/direct/queue/batch/llm/projects/sessions 保留（契约测试锁定源码位置 + 与 coordinator/ledger 强耦合） |
+| src/contexts/AgentContext.jsx | 2,130 行 / 112 KB | 1,999 行 / 107 KB | 98e4a33 | 20 个纯函数（buildGraphSteps/mergeAssets/mergeConversation/resultMedia/requestMedia/toolLabel 等）外提到 src/contexts/agent-utils.mjs（138 行）；provider 只留状态与效应；media 契约断言改读新文件 |
+
+拆后基线：**978 core tests / 971 pass / 0 fail**，17 UI tests，lint 295 文件，build 通过。
+剩余可拆项（收益递减）：src/agent/tools/web/index.mjs（974 行，自包含纯逻辑，导出链复杂暂缓）、src/components/PromptLibraryPage.jsx（769 行）、SettingsPanel.jsx（529 行）、main.mjs 的 llm/queue/batch 域（与 agent/direct 共享 coordinator/ledger 状态，契约锁定位置，风险高）。
