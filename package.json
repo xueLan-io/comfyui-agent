@@ -13,6 +13,7 @@
     "pack": "vite build",
     "icons": "node scripts/generate-icons.mjs",
     "test": "node scripts/run-tests.mjs",
+    "test:ui": "vitest run",
     "lint": "node scripts/lint.mjs",
     "agent": "node src/cli.mjs",
     "mcp": "node src/mcp-server.mjs",
@@ -36,7 +37,9 @@
     "concurrently": "^9.1.0",
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
+    "jsdom": "^30.0.1",
     "vite": "^5.4.11",
+    "vitest": "^4.1.10",
     "wait-on": "^8.0.1"
   }
 }
