@@ -37,6 +37,8 @@ import { AuditSink } from '../src/runtime/governance/audit-sink.mjs';
 import { OperationGateway, confirmationDigest, assertConfirmationBinding } from '../src/runtime/governance/operation-gateway.mjs';
 import { createGovernanceContext } from '../src/runtime/governance/context.mjs';
 import { createWindowRegistry } from '../src/runtime/window-registry.mjs';
+import { BatchScheduler } from '../src/runtime/batch/batch-scheduler.mjs';
+import { JSONFileStore } from '../src/agent/memory/store.mjs';
 import { createMetrics } from '../src/runtime/metrics.mjs';
 
 for (const stream of [process.stdout, process.stderr]) {
@@ -2154,8 +2156,69 @@ function governedCoordinatorExecute(options = {}) {
 // Agent/Direct coordinator operation pass through the governance lifecycle.
 executionCoordinator.execute = governedCoordinatorExecute;
 
-function policyBlockResult(error, turnId = '') {
-  if (!(error instanceof CloudPolicyBlockedError) && error?.code !== 'CLOUD_POLICY_BLOCKED') return null;
+// ---- Batch pipeline (P2) ----
+// The scheduler lives in the main process where the governed DirectService and
+// governance gateway are available; job execution reuses the same
+// executionCoordinator (and therefore policy, admission, quota, audit) as the
+// interactive direct-generation path.
+
+let batchScheduler;
+
+function getBatchScheduler() {
+  if (!batchScheduler) {
+    const store = new JSONFileStore(join(app.getPath('userData'), 'agent-data'), 'batch.json');
+    batchScheduler = new BatchScheduler({
+      store,
+      runJob: batchRunJob,
+      limits: { maxConcurrency: 2, jobDelayMs: 350 },
+      emit: (type, data) => sendToRenderer('batch:event', { type, ...data }),
+    });
+    void batchScheduler.init();
+  }
+  return batchScheduler;
+}
+
+async function batchRunJob(job, { signal, batchId, jobIndex, projectId, sessionId } = {}) {
+  await startAgent(getStoredConfig());
+  const comfyState = await comfyManager.ensureStarted();
+  if (comfyState.status !== 'ready') throw new Error(comfyState.message || 'ComfyUI is not ready');
+  const service = ensureDirectService();
+  const owner = executionOwner({ projectId, sessionId });
+  const workflowDir = job.workflowDir || getWorkflowDir({ workflowDir: agent?.workflowDir });
+  const requestId = `batch_${batchId}_job_${jobIndex}`;
+  const input = {
+    workflowName: job.workflowName,
+    workflowDir,
+    positive: job.positive,
+    negative: job.negative,
+    settings: job.settings,
+    nodeOverrides: job.nodeOverrides,
+    outputNodeIds: job.outputNodeIds || [],
+    media: job.media || {},
+    origin: 'batch',
+    requestId,
+  };
+  const preview = await service.prepare(input, { signal });
+  const abortController = new AbortController();
+  return executionCoordinator.execute({
+    source: 'direct',
+    requestId,
+    turnId: `batch_${batchId}`,
+    taskId: requestId,
+    owner,
+    previewId: preview.previewId,
+    cancel: async () => {
+      abortController.abort();
+      return service.cancel(preview.previewId);
+    },
+    work: async () => service.run(preview.previewId, {}, {
+      signal: abortController.signal,
+      onProgress: progress => onProgress({ percent: progress?.percent, message: progress?.message }),
+    }),
+  });
+}
+
+function policyBlockResult(error, turnId = '') {  if (!(error instanceof CloudPolicyBlockedError) && error?.code !== 'CLOUD_POLICY_BLOCKED') return null;
   return {
     action: 'policy_block',
     turnId,
@@ -3550,6 +3613,43 @@ ipcMain.handle('memory:delete-character-card', async (_, { projectId = '', name 
 ipcMain.handle('memory:clear', async (_, { projectId = '' } = {}) => agent.call('memory.clear', [projectId]));
 ipcMain.handle('memory:export', async () => agent.call('memory.export'));
 ipcMain.handle('memory:recall', async (_, { projectId = '', query = '', limit } = {}) => agent.call('memory.recall', [projectId, { query, limit }]));
+
+ipcMain.handle('batch:create', async (_, input = {}) => {
+  const owner = executionOwner();
+  return getBatchScheduler().createBatch({ ...input, projectId: owner.projectId, sessionId: owner.sessionId });
+});
+ipcMain.handle('batch:start', async (_, { batchId = '' } = {}) => getBatchScheduler().start(batchId));
+ipcMain.handle('batch:pause', async (_, { batchId = '' } = {}) => getBatchScheduler().pause(batchId));
+ipcMain.handle('batch:resume', async (_, { batchId = '' } = {}) => getBatchScheduler().resume(batchId));
+ipcMain.handle('batch:cancel', async (_, { batchId = '' } = {}) => getBatchScheduler().cancel(batchId));
+ipcMain.handle('batch:retry-job', async (_, { batchId = '', jobId = '' } = {}) => getBatchScheduler().retryJob(batchId, jobId));
+ipcMain.handle('batch:get', async (_, { batchId = '' } = {}) => getBatchScheduler().publicBatch(batchId));
+ipcMain.handle('batch:list', async (_, { projectId = '', limit = 20 } = {}) => getBatchScheduler().listBatches({ projectId, limit }));
+
+// Batch curation: score completed jobs' first output image via the agent
+// evaluator (technical + vision), record scores, return the Top-K.
+ipcMain.handle('batch:curate', async (_, { batchId = '', limit = 12 } = {}) => {
+  await startAgent(getStoredConfig());
+  const scheduler = getBatchScheduler();
+  const batch = scheduler.publicBatch(batchId);
+  const candidates = batch.jobs
+    .filter(job => job.status === 'completed' && job.result?.images?.length > 0)
+    .slice(0, Math.max(1, Number(limit) || 12));
+  const scored = [];
+  for (const job of candidates) {
+    const image = job.result.images[0].path;
+    if (!image) continue;
+    const outcome = await agent.call('evaluator.score', [{ path: image }, job.positive]);
+    if (outcome?.score != null && await scheduler.scoreJob(batchId, job.index, outcome.score)) {
+      scored.push({ index: job.index, seed: job.seed, score: outcome.score, passed: outcome.passed === true });
+    }
+  }
+  return {
+    scored: scored.length,
+    top: scored.sort((a, b) => b.score - a.score).slice(0, 5),
+    ranked: [...scored].sort((a, b) => b.score - a.score),
+  };
+});
 
 ipcMain.handle('mcp:settings', async () => {
   const mcp = prefStore.get('mcp') || {};

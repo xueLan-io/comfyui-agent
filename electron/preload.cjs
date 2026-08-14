@@ -138,6 +138,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   memoryClear: (projectId) => ipcRenderer.invoke('memory:clear', { projectId }),
   memoryExport: () => ipcRenderer.invoke('memory:export'),
   memoryRecall: (projectId, query, limit) => ipcRenderer.invoke('memory:recall', { projectId, query, limit }),
+  batchCreate: (input) => ipcRenderer.invoke('batch:create', input),
+  batchStart: (batchId) => ipcRenderer.invoke('batch:start', { batchId }),
+  batchPause: (batchId) => ipcRenderer.invoke('batch:pause', { batchId }),
+  batchResume: (batchId) => ipcRenderer.invoke('batch:resume', { batchId }),
+  batchCancel: (batchId) => ipcRenderer.invoke('batch:cancel', { batchId }),
+  batchRetryJob: (batchId, jobId) => ipcRenderer.invoke('batch:retry-job', { batchId, jobId }),
+  batchGet: (batchId) => ipcRenderer.invoke('batch:get', { batchId }),
+  batchList: (projectId, limit) => ipcRenderer.invoke('batch:list', { projectId, limit }),
+  batchCurate: (batchId, limit) => ipcRenderer.invoke('batch:curate', { batchId, limit }),
+  onBatchEvent: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on('batch:event', listener);
+    return () => ipcRenderer.removeListener('batch:event', listener);
+  },
   comfyUIStatus: () => ipcRenderer.invoke('comfyui:status'),
   h3Readiness: () => ipcRenderer.invoke('h3:readiness'),
   comfyUIStart: () => ipcRenderer.invoke('comfyui:start'),

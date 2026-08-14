@@ -48,6 +48,8 @@ export function expandBatchJobs(input = {}) {
         status: 'pending',
         positive,
         negative,
+        workflowName: String(input.workflowName || ''),
+        workflowDir: String(input.workflowDir || ''),
         settings: { ...baseSettings, ...(combo.settings || {}), ...(seed !== undefined ? { seed } : {}) },
         nodeOverrides: { ...(input.nodeOverrides || {}), ...(combo.nodeOverrides || {}) },
         outputNodeIds: input.outputNodeIds || null,
@@ -65,6 +67,8 @@ function jobPayload(job) {
   return {
     positive: job.positive,
     negative: job.negative,
+    workflowName: job.workflowName,
+    workflowDir: job.workflowDir,
     settings: job.settings,
     nodeOverrides: job.nodeOverrides,
     outputNodeIds: job.outputNodeIds,
@@ -218,10 +222,18 @@ export class BatchScheduler {
     await this._persist();
     this.emit('batch:job-status', { batchId: batch.id, index: job.index, status: 'running' });
     try {
-      const result = await this.runJob(jobPayload(job), { signal, onProgress: (percent, detail) => {
-        job.progress = { percent, detail };
-        this.emit('batch:job-progress', { batchId: batch.id, index: job.index, percent, detail });
-      } });
+      const result = await this.runJob(jobPayload(job), {
+        signal,
+        batchId: batch.id,
+        jobIndex: job.index,
+        projectId: batch.projectId,
+        sessionId: batch.sessionId,
+        workflowName: batch.workflowName,
+        onProgress: (percent, detail) => {
+          job.progress = { percent, detail };
+          this.emit('batch:job-progress', { batchId: batch.id, index: job.index, percent, detail });
+        },
+      });
       if (signal.aborted) throw Object.assign(new Error('Batch job cancelled'), { code: 'BATCH_CANCELLED' });
       job.status = 'completed';
       job.completedAt = this.clock();
@@ -292,6 +304,21 @@ export class BatchScheduler {
       void this.start(batchId);
     }
     return this.publicBatch(batchId);
+  }
+
+  // Record an external curation score (0-100) for a completed job; used by the
+  // batch panel for Top-K recommendations. Returns false when the job is not
+  // completed or the score is not numeric.
+  async scoreJob(batchId, index, score) {
+    const batch = this._batch(batchId);
+    const job = batch.jobs.find(item => item.index === Number(index));
+    const numeric = Number(score);
+    if (!job || job.status !== 'completed' || !Number.isFinite(numeric)) return false;
+    job.score = Math.max(0, Math.min(100, Math.round(numeric)));
+    batch.updatedAt = this.clock();
+    await this._persist();
+    this.emit('batch:job-status', { batchId, index: job.index, status: 'completed', score: job.score });
+    return true;
   }
 
   publicBatch(batchId) {

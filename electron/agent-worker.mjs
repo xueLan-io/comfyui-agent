@@ -179,7 +179,23 @@ async function invoke(method, args = []) {
     return { baseUrl: ComfyUITool.client.baseUrl, comfyRoot: agent.comfyRoot, workflowDir: agent.workflowDir };
   }
   if (method.startsWith('memory.')) return invokeMemory(method, args);
+  if (method === 'evaluator.score') return scoreImage(args[0], args[1]);
   throw new Error(`RPC method is not allowed: ${method}`);
+}
+
+// Batch curation: score one generated image against its prompt using the
+// agent's evaluator (technical + vision when the configured model supports it).
+async function scoreImage(image, userGoal) {
+  if (!agent?.evaluator) return { score: null, reason: 'no_evaluator' };
+  try {
+    const evaluation = await agent.evaluator.evaluate({ images: [image] }, String(userGoal || ''), {}, {});
+    const score = (evaluation?.technical?.passed ? 40 : 20)
+      + (evaluation?.constraint?.passed ? 30 : 0)
+      + (evaluation?.creative?.passed ? 30 : 0);
+    return { score, passed: evaluation?.passed === true, summary: evaluation?.summary || '' };
+  } catch (error) {
+    return { score: null, reason: error?.message || 'evaluation_failed' };
+  }
 }
 
 async function invokeMemory(method, args = []) {

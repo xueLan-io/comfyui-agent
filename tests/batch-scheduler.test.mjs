@@ -61,6 +61,27 @@ test('expandBatchJobs supports seedCount and rejects empty prompts', () => {
   assert.equal(typeof randomSeed(), 'number');
 });
 
+test('jobs carry the workflow context for the executor', () => {
+  const jobs = expandBatchJobs({ positive: 'x', workflowName: 'anima.json', workflowDir: '/w', seedCount: 1 });
+  assert.equal(jobs[0].workflowName, 'anima.json');
+  assert.equal(jobs[0].workflowDir, '/w');
+});
+
+test('scoreJob records curation scores on completed jobs only', async () => {
+  const scheduler = new BatchScheduler({ runJob: async () => ({ images: [] }), limits: { jobDelayMs: 0 } });
+  await scheduler.init();
+  const batch = await scheduler.createBatch({ positive: 'x', seedCount: 2 });
+  await scheduler.start(batch.id);
+  assert.equal(await scheduler.scoreJob(batch.id, 0, 95), true);
+  assert.equal(await scheduler.scoreJob(batch.id, 1, 40), true);
+  // non-completed job (failed) and invalid scores are rejected
+  scheduler.data.batches[batch.id].jobs[0].status = 'failed';
+  assert.equal(await scheduler.scoreJob(batch.id, 0, 90), false);
+  assert.equal(await scheduler.scoreJob(batch.id, 1, 'nope'), false);
+  const state = scheduler.publicBatch(batch.id);
+  assert.equal(state.jobs[1].score, 40);
+});
+
 test('scheduler runs all jobs to completion with bounded concurrency', async () => {
   const runner = fakeRunJob({ delay: 5 });
   const scheduler = new BatchScheduler({ runJob: runner.fn, limits: { maxConcurrency: 2, jobDelayMs: 0 } });
