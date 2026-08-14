@@ -3,6 +3,11 @@ import { ComfyUIClient } from '../src/agent/tools/comfyui/client.mjs';
 import { LongTermMemory } from '../src/agent/memory/long-term.mjs';
 import { createGovernanceContext } from '../src/runtime/governance/context.mjs';
 import { createAuditEvent } from '../src/runtime/governance/audit-events.mjs';
+import { createPluginRegistry } from '../src/runtime/plugins/plugin-registry.mjs';
+import { loadPluginsFromDirectory } from '../src/runtime/plugins/plugin-loader.mjs';
+import { createToolRegistry } from '../src/agent/tools/registry.mjs';
+import { AGENT_TOOL_MODULES } from '../src/agent/runtime/agent-tools.mjs';
+import { JSONFileStore } from '../src/agent/memory/store.mjs';
 import { join } from 'node:path';
 
 const EVENT_TYPES = Object.values(AgentEventTypes);
@@ -56,6 +61,10 @@ let agent;
 let memory;
 let callQueue = Promise.resolve();
 let workerContext;
+let pluginRegistry;
+let pluginPrefs;
+let pluginErrors = [];
+let toolRegistry;
 
 function send(message) {
   if (parentPort) {
@@ -180,6 +189,7 @@ async function invoke(method, args = []) {
   }
   if (method.startsWith('memory.')) return invokeMemory(method, args);
   if (method === 'evaluator.score') return scoreImage(args[0], args[1]);
+  if (method.startsWith('plugins.')) return invokePlugins(method, args);
   throw new Error(`RPC method is not allowed: ${method}`);
 }
 
@@ -195,6 +205,78 @@ async function scoreImage(image, userGoal) {
     return { score, passed: evaluation?.passed === true, summary: evaluation?.summary || '' };
   } catch (error) {
     return { score: null, reason: error?.message || 'evaluation_failed' };
+  }
+}
+
+// ---- Plugin host (P3) ----
+
+// Plugins start() may register tools/skills into the shared registry used by
+// the Agent; the plugin-registry gates these handles by declared capabilities.
+async function initPlugins(userDataPath) {
+  pluginErrors = [];
+  if (!userDataPath) { pluginRegistry = createPluginRegistry({ host: pluginHost(), plugins: [] }); return { count: 0, errors: [] }; }
+  pluginPrefs = new JSONFileStore(join(userDataPath, 'agent-data'), 'plugins-state.json');
+  await pluginPrefs.load();
+  const enabled = pluginPrefs.get('enabled') || {};
+  const { plugins, errors } = await loadPluginsFromDirectory(join(userDataPath, 'plugins'));
+  pluginErrors = errors;
+  pluginRegistry = createPluginRegistry({ host: pluginHost(), plugins });
+  for (const plugin of plugins) {
+    if (enabled[plugin.manifest.pluginId] !== false) {
+      await pluginRegistry.start(plugin.manifest.pluginId).catch(error => {
+        pluginErrors.push({ pluginId: plugin.manifest.pluginId, error: error?.message || String(error) });
+      });
+    }
+  }
+  return { count: plugins.length, errors: pluginErrors };
+}
+
+function pluginHost() {
+  return {
+    registerTool: tool => toolRegistry.register(tool),
+    // v1: plugin-registered skills are validated but not yet wired into the
+    // skill router; only the tools capability is live in the Electron host.
+    registerSkill: () => {},
+    registerService: () => {},
+    registerIpc: () => {},
+    registerUi: () => {},
+  };
+}
+
+function pluginEnabled(id) {
+  return pluginPrefs ? pluginPrefs.get('enabled')?.[id] !== false : true;
+}
+
+async function invokePlugins(method, args = []) {
+  const [id, enabled] = args;
+  switch (method) {
+    case 'plugins.list': {
+      const registry = pluginRegistry?.list() || [];
+      return { plugins: registry.map(plugin => ({ ...plugin, enabled: pluginEnabled(plugin.pluginId), signed: plugin.signed === true })), errors: pluginErrors || [] };
+    }
+    case 'plugins.enable': {
+      if (!pluginRegistry?.get(id)) throw Object.assign(new Error(`Plugin not found: ${id}`), { code: 'PLUGIN_NOT_FOUND' });
+      if (enabled) await pluginRegistry.start(id);
+      else await pluginRegistry.stop(id);
+      if (pluginPrefs) {
+        const state = pluginPrefs.get('enabled') || {};
+        state[id] = Boolean(enabled);
+        pluginPrefs.set('enabled', state);
+        await pluginPrefs.save();
+      }
+      return { pluginId: id, enabled: Boolean(enabled) };
+    }
+    case 'plugins.remove': {
+      const removed = pluginRegistry?.remove(id);
+      if (pluginPrefs) {
+        const state = pluginPrefs.get('enabled') || {};
+        delete state[id];
+        pluginPrefs.set('enabled', state);
+        await pluginPrefs.save();
+      }
+      return { removed: Boolean(removed) };
+    }
+    default: throw new Error(`RPC method is not allowed: ${method}`);
   }
 }
 
@@ -225,6 +307,10 @@ async function start(config = {}) {
     filePath: config.userDataPath ? join(config.userDataPath, 'agent-data', 'memory.json') : '',
   });
   await memory.init();
+  // Shared tool registry: the Agent tool surface plus any tools registered by
+  // enabled plugins at start() time.
+  toolRegistry = createToolRegistry({ tools: AGENT_TOOL_MODULES });
+  await initPlugins(config.userDataPath || '');
   agent = new Agent({
     llmConfig: config.llm || {},
     researchConfig: config.research || {},
@@ -235,6 +321,7 @@ async function start(config = {}) {
     projectId: config.projectId || 'project_worker',
     sessionId: config.sessionId || 'session_worker',
     memory: memory || undefined,
+    toolRegistry,
   });
   workerContext = createGovernanceContext({
     principalId: config.principalId || 'principal_worker',

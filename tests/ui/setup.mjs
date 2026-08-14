@@ -60,6 +60,14 @@ const electronAPI = {
   batchRetryJob: async () => ({}),
   batchCurate: async () => ({ scored: 2, top: [{ index: 0, score: 95 }] }),
   onBatchEvent: () => () => {},
+  pluginsList: async () => ({
+    plugins: [
+      { pluginId: 'hello', name: 'Hello', version: '1.0.0', capabilities: ['tools'], state: 'started', enabled: true, signed: true },
+    ],
+    errors: [{ pluginId: 'bad', error: 'Missing manifest field: version' }],
+  }),
+  pluginsEnable: async () => ({}),
+  pluginsRemove: async () => ({}),
 };
 
 window.electronAPI = new Proxy(electronAPI, {

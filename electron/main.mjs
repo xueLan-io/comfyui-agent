@@ -3614,6 +3614,19 @@ ipcMain.handle('memory:clear', async (_, { projectId = '' } = {}) => agent.call(
 ipcMain.handle('memory:export', async () => agent.call('memory.export'));
 ipcMain.handle('memory:recall', async (_, { projectId = '', query = '', limit } = {}) => agent.call('memory.recall', [projectId, { query, limit }]));
 
+ipcMain.handle('plugins:list', async () => {
+  await startAgent(getStoredConfig());
+  return agent.call('plugins.list');
+});
+ipcMain.handle('plugins:enable', async (_, { pluginId = '', enabled = true } = {}) => {
+  await startAgent(getStoredConfig());
+  return agent.call('plugins.enable', [pluginId, Boolean(enabled)]);
+});
+ipcMain.handle('plugins:remove', async (_, { pluginId = '' } = {}) => {
+  await startAgent(getStoredConfig());
+  return agent.call('plugins.remove', [pluginId]);
+});
+
 ipcMain.handle('batch:create', async (_, input = {}) => {
   const owner = executionOwner();
   return getBatchScheduler().createBatch({ ...input, projectId: owner.projectId, sessionId: owner.sessionId });

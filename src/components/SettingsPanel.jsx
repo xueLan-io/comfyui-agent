@@ -6,6 +6,7 @@ import ResearchSettings from './ResearchSettings.jsx';
 import NotificationSettings from './NotificationSettings.jsx';
 import PromptPersonalitySettings from './PromptPersonalitySettings.jsx';
 import MemorySettings from './MemorySettings.jsx';
+import PluginSettings from './PluginSettings.jsx';
 import Icon from './Icon.jsx';
 import { useI18n } from '../i18n/I18nContext.jsx';
 import { TEMPLATES, EMPTY_PROVIDER } from '../provider-templates.js';
@@ -377,6 +378,7 @@ export default function SettingsPanel({ onClose }) {
                ['generation', t('generation'), t('generationNote'), 'sliders'],
                ['personality', t('promptPersonality'), t('promptPersonalityNote'), 'message'],
                ['memory', t('memorySettings'), t('memorySettingsNote'), 'star'],
+               ['plugins', t('plugins'), t('pluginsNote'), 'grid'],
                ['notifications', t('notificationSettings'), t('notificationsNote'), 'circleAlert'],
              ] },
              { key: 'system', label: t('tabGroupSystem'), tabs: [
@@ -406,7 +408,7 @@ export default function SettingsPanel({ onClose }) {
               <button className="sidebar-command" onClick={() => setPickerOpen(true)}><Icon name="plus" size={14} /> {t('newProvider')}</button>
           </aside>
           <ProviderForm value={editing} onChange={next => { setEditing(next); setSaveState({ status: '', message: '' }); }} onSave={saveProvider} onTest={testProvider} testState={testState} saveState={saveState} />
-          </div> : tab === 'generation' || tab === 'notifications' || tab === 'personality' || tab === 'memory' || tab === 'comfyui' || tab === 'mcp' || tab === 'updates' ? null : <div className="skills-settings">
+          </div> : tab === 'generation' || tab === 'notifications' || tab === 'personality' || tab === 'memory' || tab === 'plugins' || tab === 'comfyui' || tab === 'mcp' || tab === 'updates' ? null : <div className="skills-settings">
             <section><h3>{t('systemSkills')}</h3>{(skills.registry || []).filter(skill => !skill.custom && !skill.external).map(skill => <label className="skill-item" key={skill.id}><span><strong>{skill.name || skill.id} <small>/{skill.id}</small></strong><small>{skill.description || t('builtinSkill')}</small></span><input type="checkbox" checked={skill.enabled !== false} onChange={event => toggleSkill(skill.id, event.target.checked, false)} /></label>)}</section>
             <section><h3>{t('customSkills')}</h3>{skills.custom.map(skill => <div className="skill-item" key={skill.id}><span><strong>{skill.name}</strong><small>{skill.description || skill.keywords?.join(', ')}</small></span><input type="checkbox" checked={skill.enabled !== false} onChange={event => toggleSkill(skill.id, event.target.checked, true)} /><button className="btn btn-icon" onClick={async () => setSkills(await window.electronAPI.skillDeleteCustom(skill.id))} title={t('delete')}><Icon name="trash" size={14} /></button></div>)}</section>
             <section><div className="settings-section-heading"><div><h3>{t('externalSkill')}</h3><p>{t('externalSkillDescription')}</p></div><button className="btn" onClick={async () => setSkills(await window.electronAPI.skillImportExternal())}>{t('importJson')}</button></div>{(skills.external || []).map(skill => <div className="skill-item" key={skill.id}><span><strong>{skill.name} <small>v{skill.version || '1.0'}</small></strong><small>{skill.description} · {skill.source}</small></span><input type="checkbox" checked={skill.enabled !== false} onChange={event => toggleSkill(skill.id, event.target.checked, true, true)} /><button className="btn btn-icon" onClick={async () => setSkills(await window.electronAPI.skillDeleteExternal(skill.id))} title={t('delete')}><Icon name="trash" size={14} /></button></div>)}</section>
@@ -439,6 +441,7 @@ export default function SettingsPanel({ onClose }) {
         {tab === 'notifications' && <div className="generation-settings"><NotificationSettings /></div>}
         {tab === 'personality' && <div className="generation-settings"><PromptPersonalitySettings /></div>}
         {tab === 'memory' && <div className="generation-settings"><MemorySettings /></div>}
+        {tab === 'plugins' && <div className="generation-settings"><PluginSettings /></div>}
         {tab === 'comfyui' && <div className="comfyui-settings">
           <section>
              <div className="settings-section-heading"><div><h3>{t('comfyConnectionTitle')}</h3><p>{t('comfyConnectionDescription')}</p></div><Icon name="workflow" size={16} /></div>
