@@ -1,4 +1,4 @@
-import pkg from 'electron';
+﻿import pkg from 'electron';
 import { spawn, spawnSync } from 'child_process';
 import { get as httpGet } from 'http';
 import { get as httpsGet } from 'https';
@@ -41,6 +41,13 @@ import { BatchScheduler } from '../src/runtime/batch/batch-scheduler.mjs';
 import { expandQueueItems } from '../src/runtime/batch/seed-strategy.mjs';
 import { JSONFileStore } from '../src/agent/memory/store.mjs';
 import { createMetrics } from '../src/runtime/metrics.mjs';
+import { registerAgentExtrasIpc } from './ipc/agent-extras.mjs';
+import { registerSkillsIpc } from './ipc/skills.mjs';
+import { registerMcpIpc } from './ipc/mcp.mjs';
+import { registerComfyuiIpc } from './ipc/comfyui.mjs';
+import { registerWorkflowsIpc } from './ipc/workflows.mjs';
+import { createUpdateService, registerUpdateIpc } from './ipc/update.mjs';
+import { registerPresetsIpc, getPresetsRoot } from './ipc/presets.mjs';
 
 for (const stream of [process.stdout, process.stderr]) {
   stream?.on('error', error => {
@@ -169,15 +176,11 @@ let governanceGateway;
 let projectWriteQueue = Promise.resolve();
 let recoveryPromise;
 const activeImageRequests = new Map();
-let globalPresetsRoot = '';
+
 let embeddedMcpTransport;
 const workflowInspectionRequests = new Map();
-let updateState = { status: 'idle', progress: 0, version: '', error: '' };
-let downloadedUpdate = null;
-// The only manifest the download/install chain may trust: set exclusively by
-// checkForUpdate() after verifyUpdateManifest() succeeds. The renderer can
-// never influence it, so a renderer compromise cannot steer downloads.
-let verifiedManifest = null;
+
+
 
 const comfyManager = new ComfyUIManager({
   baseUrl: envConfig.COMFYUI_BASE_URL || DEFAULT_BASE_URL,
@@ -270,7 +273,7 @@ function listWorkflowFiles(dir) {
 function directSandboxInput() {
   const project = agent?.sessionManager.getActiveProject?.();
   const allowedRoots = project?.dir ? [{ name: 'project', path: project.dir }] : [];
-  allowedRoots.push({ name: 'preset', path: presetRoot() });
+  allowedRoots.push({ name: 'preset', path: getPresetsRoot(app) });
   return {
     workflowDir: agent?.workflowDir || getDefaultWorkflowDir(),
     allowedRoots,
@@ -1315,11 +1318,6 @@ ipcMain.handle('app:open-external', async (_, { url = '' } = {}) => {
   await shell.openExternal(target);
   return true;
 });
-ipcMain.handle('app:update-check', () => checkForUpdate());
-ipcMain.handle('app:update-download', () => downloadUpdate());
-ipcMain.handle('app:update-install', () => installUpdate());
-ipcMain.handle('app:update-state', () => updateState);
-
 ipcMain.handle('floating:move-start', (event, { clientX, clientY, token: requestedToken } = {}) => {
   const point = screenPointFromEvent(event, clientX, clientY);
   if (!point || !floatingWindow || floatingWindow.isDestroyed()) return false;
@@ -1618,462 +1616,7 @@ function findPortableRootUnder(dir) {
 
 // ===== Legacy ComfyUI IPC (keep for backward compat) =====
 
-ipcMain.handle('list-workflows', async () => {
-  const dir = getWorkflowDir({ workflowDir: agent?.workflowDir });
-  if (agent && dir !== agent.workflowDir) await agent.setWorkflowDir(dir);
-  directService?.setWorkflowDir(dir);
-  return { dir, displayDir: getDisplayPath(dir), files: listWorkflowFiles(dir) };
-});
-
-ipcMain.handle('workflow:delete', async (_, { name } = {}) => {
-  const dir = getWorkflowDir({ workflowDir: agent?.workflowDir });
-  if (!dir) throw new Error('工作流目录不存在');
-  const result = await deleteWorkflowFile(name, dir);
-  return { dir, displayDir: getDisplayPath(dir), ...result };
-});
-
-ipcMain.handle('workflow:rename', async (_, { name, nextName } = {}) => {
-  const dir = getWorkflowDir({ workflowDir: agent?.workflowDir });
-  if (!dir) throw new Error('工作流目录不存在');
-  const result = await renameWorkflowFile(name, nextName, dir);
-  return { dir, displayDir: getDisplayPath(dir), ...result };
-});
-
-ipcMain.handle('select-workflow-dir', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openDirectory'],
-    defaultPath: getWorkflowDir({ workflowDir: agent?.workflowDir }),
-    title: '选择工作流目录',
-  });
-  if (!result.canceled && result.filePaths.length > 0) {
-    const dir = result.filePaths[0];
-    prefStore.set('workflowDir', dir);
-    if (agent) await agent.setWorkflowDir(dir);
-    directService?.setWorkflowDir(dir);
-    return { dir, displayDir: getDisplayPath(dir), files: listWorkflowFiles(dir) };
-  }
-  return null;
-});
-
-ipcMain.handle('show-workflow-dir', async (_, { workflowName = '' } = {}) => {
-  const dir = getWorkflowDir({ workflowDir: agent?.workflowDir });
-  if (!dir) throw new Error('工作流目录不存在');
-  if (workflowName) {
-    const filePath = resolveSandboxPath({ workflowDir: dir }, workflowName);
-    await stat(filePath);
-    shell.showItemInFolder(filePath);
-  } else {
-    await shell.openPath(dir);
-  }
-  return { dir };
-});
-
-ipcMain.handle('select-workflow-files', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openFile', 'multiSelections'],
-    title: '导入工作流',
-    filters: [
-      { name: 'ComfyUI 工作流', extensions: ['json'] },
-      { name: '所有文件', extensions: ['*'] },
-    ],
-  });
-  if (result.canceled || result.filePaths.length === 0) return null;
-  const dir = getWorkflowDir({ workflowDir: agent?.workflowDir });
-  if (!dir) throw new Error('工作流目录不存在');
-  const imported = await importWorkflowFiles(result.filePaths, dir);
-  if (agent && dir !== agent.workflowDir) await agent.setWorkflowDir(dir);
-  directService?.setWorkflowDir(dir);
-  return { dir, displayDir: getDisplayPath(dir), ...imported };
-});
-
-ipcMain.handle('import-workflows', async (_, { paths = [] } = {}) => {
-  const dir = getWorkflowDir({ workflowDir: agent?.workflowDir });
-  if (!dir) throw new Error('工作流目录不存在');
-  const result = await importWorkflowFiles(paths, dir);
-  if (agent && dir !== agent.workflowDir) await agent.setWorkflowDir(dir);
-  directService?.setWorkflowDir(dir);
-  return { dir, displayDir: getDisplayPath(dir), ...result };
-});
-
-ipcMain.handle('select-media-files', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openFile', 'multiSelections'],
-    title: '选择参考素材',
-    filters: [
-      { name: '图片、音频和视频', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'mp4', 'webm', 'mov', 'mkv', 'avi'] },
-      { name: '所有文件', extensions: ['*'] },
-    ],
-  });
-  if (result.canceled) return [];
-  const videoExtensions = new Set(['.mp4', '.webm', '.mov', '.mkv', '.avi']);
-  const audioExtensions = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac']);
-  for (const filePath of result.filePaths) authorizedMediaPaths.add(filePath);
-  return result.filePaths.map(filePath => ({
-    path: filePath,
-    name: basename(filePath),
-    kind: videoExtensions.has(extname(filePath).toLowerCase()) ? 'video' : audioExtensions.has(extname(filePath).toLowerCase()) ? 'audio' : 'image',
-  }));
-});
-
-ipcMain.handle('clipboard:save-paste', async (_, { buffer, name } = {}) => {
-  if (!buffer || !buffer.length) throw new Error('剪贴板没有图片数据');
-  const dir = app.getPath('temp');
-  const fileName = `comfy-agent-paste-${Date.now()}-${Math.round(Math.random() * 0xffffff).toString(16)}.png`;
-  const target = join(dir, fileName);
-  await writeFile(target, Buffer.from(buffer));
-  authorizedMediaPaths.add(target);
-  return { path: target, name: name || fileName, kind: 'image' };
-});
-
-ipcMain.handle('clipboard:write-image', async (_, dataUrl) => {
-  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) throw new Error('无效的图片数据');
-  const image = nativeImage.createFromDataURL(dataUrl);
-  if (image.isEmpty()) throw new Error('剪贴板图片数据无效');
-  clipboard.writeImage(image);
-  return { ok: true };
-});
-
-function presetRoot() {
-  if (!globalPresetsRoot) globalPresetsRoot = join(app.getPath('userData'), 'global-presets');
-  return globalPresetsRoot;
-}
-
-async function selectPresetFile(title, filters, properties = ['openFile']) {
-  const dialogMethod = properties.includes('showSaveDialog') ? 'showSaveDialog' : 'showOpenDialog';
-  const normalizedProperties = properties.filter(value => value !== 'showSaveDialog');
-  const result = await dialog[dialogMethod](mainWindow, { properties: normalizedProperties, title, filters });
-  return result.canceled ? '' : result.filePaths[0] || '';
-}
-
-ipcMain.handle('global-presets:list', async () => listGlobalPresets(presetRoot()));
-ipcMain.handle('global-presets:delete', async (_, { id } = {}) => deleteGlobalPreset(presetRoot(), id));
-ipcMain.handle('global-presets:copy', async (_, { id } = {}) => copyGlobalPreset(presetRoot(), id));
-ipcMain.handle('global-presets:mark-used', async (_, { id, generated = false } = {}) => markPresetUsed(presetRoot(), id, generated));
-ipcMain.handle('global-presets:rate', async (_, { id, rating } = {}) => rateGlobalPreset(presetRoot(), id, rating));
-ipcMain.handle('global-presets:replace-model', async (_, { id, from, to } = {}) => replacePresetModel(presetRoot(), id, from, to));
-ipcMain.handle('global-presets:compose', async (_, { ids = [], title = '' } = {}) => composeGlobalPresets(presetRoot(), ids, { title }));
-ipcMain.handle('global-presets:match-workflow', async (_, { workflowName = '' } = {}) => {
-  const dir = getWorkflowDir({ workflowDir: agent?.workflowDir });
-  const files = await Promise.resolve(listWorkflowFiles(dir)).catch(() => []);
-  const names = (files || []).map(item => typeof item === 'string' ? item : item.name).filter(Boolean);
-  if (!workflowName) return { workflowName: '', candidates: names.slice(0, 20) };
-  const exact = names.find(name => name === workflowName);
-  if (exact) return { workflowName: exact, matched: true, candidates: [exact] };
-  const stem = workflowName.replace(/\.json$/i, '').toLowerCase();
-  const candidates = names.filter(name => name.toLowerCase().includes(stem)).slice(0, 10);
-  return { workflowName: candidates[0] || '', matched: Boolean(candidates[0]), candidates };
-});
-function resolvePresetInput(input = {}) {
-  const sourceRefs = Array.isArray(input.sourceRefs) ? input.sourceRefs : [];
-  const resultRefs = Array.isArray(input.resultRefs) ? input.resultRefs : [];
-  const resolveRefs = refs => refs.map(ref => {
-    try { return resolveImagePath(ref); }
-    catch (error) { throw new Error(`无法访问预设资源：${ref?.filename || ref?.name || '未知文件'}（${error.message}）`); }
-  });
-  const resolved = {
-    ...input,
-  };
-  if (input.workflowSourcePath || input.workflow) resolved.workflowSourcePath = input.workflowSourcePath || (agent?.workflowDir ? resolve(agent.workflowDir, input.workflow) : '');
-  if (Array.isArray(input.sourcePaths) || sourceRefs.length) resolved.sourcePaths = [...(Array.isArray(input.sourcePaths) ? input.sourcePaths : []), ...resolveRefs(sourceRefs)];
-  if (Array.isArray(input.resultPaths) || resultRefs.length) resolved.resultPaths = [...(Array.isArray(input.resultPaths) ? input.resultPaths : []), ...resolveRefs(resultRefs)];
-  if (input.coverSourcePath || input.coverRef) resolved.coverSourcePath = input.coverSourcePath || resolveRefs([input.coverRef])[0];
-  return resolved;
-}
-
-function fetchJson(url) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const getter = url.startsWith('https:') ? httpsGet : httpGet;
-    const request = getter(url, { headers: { 'User-Agent': 'ComfyUI-Agent-Updater' } }, response => {
-      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-        const next = new URL(response.headers.location, url);
-        if (next.protocol !== 'https:') return rejectPromise(new Error('Update manifest redirect must use HTTPS'));
-        return fetchJson(next.toString()).then(resolvePromise, rejectPromise);
-      }
-      if (response.statusCode !== 200) return rejectPromise(new Error(`Update manifest request failed: HTTP ${response.statusCode}`));
-      let body = '';
-      response.setEncoding('utf8');
-      response.on('data', chunk => { body += chunk; });
-      response.on('end', () => { try { resolvePromise(JSON.parse(body)); } catch { rejectPromise(new Error('Update manifest is not valid JSON')); } });
-    });
-    request.on('error', rejectPromise);
-  });
-}
-
-function fetchBytes(url) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const getter = url.startsWith('https:') ? httpsGet : httpGet;
-    const request = getter(url, { headers: { 'User-Agent': 'ComfyMuse-Updater' } }, response => {
-      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-        const next = new URL(response.headers.location, url);
-        if (next.protocol !== 'https:') return rejectPromise(new Error('Update redirect must use HTTPS'));
-        return fetchBytes(next.toString()).then(resolvePromise, rejectPromise);
-      }
-      if (response.statusCode !== 200) return rejectPromise(new Error(`Update signature request failed: HTTP ${response.statusCode}`));
-      const chunks = [];
-      response.on('data', chunk => chunks.push(chunk));
-      response.on('end', () => resolvePromise(Buffer.concat(chunks)));
-    });
-    request.on('error', rejectPromise);
-  });
-}
-
-function assertHttpsUrl(value, label = 'URL') {
-  let url;
-  try { url = new URL(String(value || '')); } catch { throw new Error(`${label} is not a valid URL`); }
-  if (url.protocol !== 'https:') throw new Error(`${label} must use HTTPS`);
-  return url.toString();
-}
-
-async function fetchSignedManifest(url) {
-  const [manifestBytes, signatureBytes] = await Promise.all([fetchBytes(url), fetchBytes(`${url}.sig`)]);
-  const signature = signatureBytes.toString('utf8').trim();
-  if (!verifyUpdateManifest(manifestBytes, signature)) throw new Error('Update manifest signature verification failed.');
-  try { return JSON.parse(manifestBytes.toString('utf8')); } catch { throw new Error('Update manifest is not valid JSON'); }
-}
-
-function semverParts(version) {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(String(version || ''));
-  return match ? [Number(match[1]), Number(match[2]), Number(match[3]), match[4] || ''] : null;
-}
-function compareVersions(left, right) {
-  const a = semverParts(left); const b = semverParts(right);
-  if (!a || !b) return 0;
-  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] - b[i];
-  if (!a[3] && b[3]) return 1;
-  if (a[3] && !b[3]) return -1;
-  return String(a[3]).localeCompare(String(b[3]));
-}
-
-async function checkForUpdate() {
-  const channel = envConfig.COMFY_AGENT_UPDATE_CHANNEL === 'preview' ? 'preview' : 'stable';
-  updateState = { status: 'checking', progress: 0, version: '', error: '' };
-  try {
-    let manifest;
-    if (envConfig.COMFY_AGENT_UPDATE_MANIFEST_URL) {
-      manifest = await fetchSignedManifest(assertHttpsUrl(envConfig.COMFY_AGENT_UPDATE_MANIFEST_URL, '更新清单地址'));
-    } else {
-      const releases = await fetchJson('https://api.github.com/repos/xueLan-io/comfyui-agent/releases?per_page=20');
-      const release = releases.find(item => channel === 'preview' ? item.prerelease : !item.prerelease);
-      const asset = release?.assets?.find(item => item.name === `manifest-${channel}.json`);
-      if (!asset?.browser_download_url) throw new Error('No release manifest is available for the selected channel.');
-      manifest = await fetchSignedManifest(asset.browser_download_url);
-    }
-    verifiedManifest = manifest;
-    const available = compareVersions(manifest.version, app.getVersion()) > 0;
-    const runtimeCompatible = manifest.runtimeVersion === 'electron-33';
-    updateState = { status: available ? (runtimeCompatible ? 'available' : 'full-required') : 'latest', progress: 0, version: manifest.version || '', error: '', manifest, runtimeCompatible };
-    return updateState;
-  } catch (error) {
-    updateState = { status: 'error', progress: 0, version: '', error: error.message };
-    throw error;
-  }
-}
-
-async function downloadUpdate() {
-  // Ignore any renderer-supplied manifest: only the signature-verified one
-  // recorded by checkForUpdate() may drive a download (prevents the renderer
-  // from steering the updater to attacker-chosen content).
-  const manifest = verifiedManifest;
-  if (!manifest) throw new Error('No verified update is available. Check for updates first.');
-  if (manifest.runtimeVersion && manifest.runtimeVersion !== 'electron-33') throw new Error('This release changes the Electron runtime; download the full portable package instead.');
-  if (!manifest?.updatePackage?.url) throw new Error('No compatible application update is available.');
-  const version = String(manifest.version || '');
-  if (!/^[A-Za-z0-9._-]+$/.test(version)) throw new Error('Update manifest version is not a safe file name.');
-  const target = join(app.getPath('temp'), `comfy-agent-update-${version}.zip`);
-  updateState = { ...updateState, status: 'downloading', progress: 0, error: '' };
-  const urls = [manifest.updatePackage.url, ...(manifest.updatePackage.urls || [])].filter(Boolean).map(url => assertHttpsUrl(url, '更新包地址'));
-  let lastError;
-  for (const url of urls) {
-    try {
-      await downloadToFile(url, target, progress => {
-        updateState = { ...updateState, status: 'downloading', progress: Math.round((progress.percent || 0) * 100) };
-        sendToRenderer('app:update-progress', updateState);
-      });
-      lastError = null;
-      break;
-    } catch (error) { lastError = error; }
-  }
-  if (lastError) throw lastError;
-  const digest = createHash('sha256').update(readFileSync(target)).digest('hex');
-  if (digest.toLowerCase() !== String(manifest.updatePackage.sha256).toLowerCase()) {
-    await unlink(target).catch(() => {});
-    throw new Error('Update package integrity check failed.');
-  }
-  downloadedUpdate = { path: target, manifest };
-  updateState = { ...updateState, status: 'ready', progress: 100 };
-  return updateState;
-}
-
-function installUpdate() {
-  if (!downloadedUpdate) throw new Error('Download an update before installing it.');
-  const updater = join(dirname(process.execPath), 'ComfyUI-Agent-Updater.exe');
-  const launcher = join(dirname(process.execPath), 'ComfyMuseLauncher.exe');
-  if (!existsSync(updater) || !existsSync(launcher)) throw new Error('The portable updater is not installed.');
-  spawn(updater, ['--package', downloadedUpdate.path, '--app-dir', appRoot, '--launcher', launcher, '--pid', String(process.pid)], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-  updateState = { ...updateState, status: 'installing' };
-  quitRequested = true;
-  app.quit();
-  return updateState;
-}
-ipcMain.handle('global-presets:create', async (_, input = {}) => createGlobalPreset(presetRoot(), resolvePresetInput(input)));
-ipcMain.handle('global-presets:update', async (_, { id, patch = {} } = {}) => updateGlobalPreset(presetRoot(), id, resolvePresetInput(patch)));
-ipcMain.handle('global-presets:select-cover', async () => selectPresetFile('选择预设封面', [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }]));
-ipcMain.handle('global-presets:select-import', async () => selectPresetFile('导入预设', [{ name: '预设文件', extensions: ['json', 'zip'] }]));
-ipcMain.handle('global-presets:copy-cover', async (_, { id, sourcePath } = {}) => copyPresetCover(presetRoot(), id, sourcePath));
-ipcMain.handle('global-presets:image-data', async (_, cover = {}) => {
-  if (!cover.path) return '';
-  const root = resolve(presetRoot());
-  let file;
-  try { file = assertInside(root, resolve(root, cover.path)); } catch { return ''; }
-  try { const data = await readFile(file); const mime = extname(file).toLowerCase() === '.jpg' || extname(file).toLowerCase() === '.jpeg' ? 'image/jpeg' : `image/${extname(file).slice(1)}`; return `data:${mime};base64,${data.toString('base64')}`; } catch { return ''; }
-});
-ipcMain.handle('global-presets:resolve-resources', async (_, { preset = {} } = {}) => {
-  const root = resolve(presetRoot());
-  const resolveStored = ref => {
-    const path = typeof ref === 'string' ? ref : ref?.path;
-    if (!path) return null;
-    try {
-      const file = assertInside(root, resolve(root, path));
-      return { path: file, name: basename(file), kind: 'image' };
-    } catch { return null; }
-  };
-  return {
-    sourceImages: (preset.sourceImages || []).map(resolveStored).filter(Boolean),
-    workflow: preset.workflow || '',
-  };
-});
-ipcMain.handle('global-presets:check-dependencies', async (_, { id } = {}) => {
-  const root = resolve(presetRoot());
-  const presets = await listGlobalPresets(root);
-  const preset = presets.find(item => item.id === id);
-  if (!preset) return { presetId: id || '', valid: false, issues: [{ code: 'preset_not_found', severity: 'error', message: '预设不存在' }] };
-  const issues = [];
-  const checkFile = (ref, code, label, required = true) => {
-    const path = typeof ref === 'string' ? ref : ref?.path;
-    if (!path) {
-      if (required) issues.push({ code, severity: 'error', message: `${label}未配置` });
-      return { path: '', exists: false, required };
-    }
-    try {
-      const file = assertInside(root, resolve(root, path));
-      const exists = existsSync(file) && statSync(file).isFile();
-      if (!exists) issues.push({ code, severity: required ? 'error' : 'warning', message: `${label}不存在：${basename(file)}` });
-      return { path, exists, required };
-    } catch {
-      issues.push({ code: `${code}_invalid`, severity: 'error', message: `${label}路径无效` });
-      return { path, exists: false, required };
-    }
-  };
-  // A preset may intentionally inherit the currently selected workflow.
-  const workflow = checkFile(preset.workflow, 'workflow_missing', '工作流', false);
-  const sourceImages = (preset.sourceImages || []).map(item => checkFile(item, 'source_missing', '参考素材'));
-  const resultImages = (preset.resultImages || []).map(item => checkFile(item, 'result_missing', '结果素材', false));
-  const cover = preset.cover ? checkFile(preset.cover, 'cover_missing', '封面', false) : { path: '', exists: true, required: false };
-  if (workflow.exists) {
-    try { JSON.parse(await readFile(assertInside(root, resolve(root, workflow.path)), 'utf8')); }
-    catch { issues.push({ code: 'workflow_invalid', severity: 'error', message: '工作流不是有效 JSON' }); }
-  }
-  const modelRequirements = Array.isArray(preset.modelRequirements) ? preset.modelRequirements : [];
-  const modelRoot = comfyManager.portableRoot ? join(comfyManager.portableRoot, 'ComfyUI', 'models') : '';
-  const modelFiles = [];
-  async function collectModels(dir, prefix = '') {
-    if (!dir || !existsSync(dir)) return;
-    for (const entry of await readdir(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) await collectModels(full, `${prefix}${entry.name}/`);
-      else modelFiles.push(`${prefix}${entry.name}`);
-    }
-  }
-  await collectModels(modelRoot).catch(() => {});
-  const missingModels = modelRequirements.filter(item => item?.available === false || !item?.value).map(item => {
-    const value = item.value || '未命名模型';
-    const needle = basename(value).toLowerCase();
-    const candidates = modelFiles.filter(file => file.toLowerCase().includes(needle) || needle.includes(basename(file).toLowerCase())).slice(0, 5);
-    return { kind: item.kind || 'model', value, candidates };
-  });
-  missingModels.forEach(item => issues.push({ code: 'model_missing', severity: 'error', message: `缺失模型：${item.value}` }));
-  return {
-    presetId: preset.id,
-    valid: !issues.some(issue => issue.severity === 'error'),
-    dependencies: { workflow, sourceImages, resultImages, cover, sourceCount: sourceImages.length, missingSourceCount: sourceImages.filter(item => !item.exists).length, modelRequirements, missingModels },
-    issues,
-  };
-});
-ipcMain.handle('global-presets:import', async (_, { sourcePath } = {}) => {
-  const extractZip = async zipPath => {
-    const temp = await mkdtemp(join(app.getPath('temp'), 'comfy-agent-preset-'));
-    try {
-      const command = `Expand-Archive -LiteralPath '${zipPath.replaceAll("'", "''")}' -DestinationPath '${temp.replaceAll("'", "''")}' -Force`;
-      const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' });
-      if (result.status !== 0) throw new Error('无法解压预设压缩包');
-      const found = [];
-      async function walk(dir) {
-        for (const entry of await readdir(dir, { withFileTypes: true })) {
-          const path = join(dir, entry.name);
-          if (entry.isDirectory()) await walk(path); else found.push(path);
-        }
-      }
-      await walk(temp);
-      return { files: found, cleanup: () => rm(temp, { recursive: true, force: true }) };
-    } finally {
-      // importGlobalPreset owns cleanup after it has copied the resources.
-    }
-  };
-  return importGlobalPreset(presetRoot(), sourcePath, extractZip);
-});
-ipcMain.handle('global-presets:export', async (_, { id } = {}) => {
-  const preset = (await listGlobalPresets(presetRoot())).find(item => item.id === id);
-  if (!preset) throw new Error('预设不存在');
-  const target = await selectPresetFile('导出预设文件到', [{ name: 'ZIP', extensions: ['zip'] }], ['showSaveDialog']);
-  if (!target) return null;
-  const output = target.replace(/\.zip$/i, '') + '.zip';
-  const temp = await mkdtemp(join(app.getPath('temp'), 'comfy-agent-preset-export-'));
-  try {
-    const packageRoot = join(temp, 'preset');
-    await mkdir(packageRoot, { recursive: true });
-    const sourceImages = [];
-    for (const [index, image] of (preset.sourceImages || []).entries()) {
-      const source = typeof image === 'string' ? image : image.path;
-      const sourceFile = resolve(presetRoot(), source);
-      assertInside(presetRoot(), sourceFile);
-      const name = `reference-${String(index + 1).padStart(3, '0')}${extname(sourceFile).toLowerCase()}`;
-      await mkdir(join(packageRoot, 'sources'), { recursive: true });
-      await copyFile(sourceFile, join(packageRoot, 'sources', name));
-      sourceImages.push(`sources/${name}`);
-    }
-    const resultImages = [];
-    for (const [index, image] of (preset.resultImages || []).entries()) {
-      const source = typeof image === 'string' ? image : image.path;
-      const sourceFile = resolve(presetRoot(), source);
-      assertInside(presetRoot(), sourceFile);
-      const name = `image-${String(index + 1).padStart(3, '0')}${extname(sourceFile).toLowerCase()}`;
-      await mkdir(join(packageRoot, 'results'), { recursive: true });
-      await copyFile(sourceFile, join(packageRoot, 'results', name));
-      resultImages.push(`results/${name}`);
-    }
-    let cover = '';
-    if (preset.cover?.path) {
-      const sourceFile = assertInside(presetRoot(), resolve(presetRoot(), preset.cover.path));
-      const name = `cover${extname(sourceFile).toLowerCase()}`;
-      await copyFile(sourceFile, join(packageRoot, name));
-      cover = name;
-    }
-    let workflow = '';
-    if (preset.workflow) {
-      const sourceFile = assertInside(presetRoot(), resolve(presetRoot(), preset.workflow));
-      workflow = 'workflow.json';
-      await copyFile(sourceFile, join(packageRoot, workflow));
-    }
-    const portable = { format: FORMAT, version: VERSION, ...preset, cover, workflow, sourceImages, resultImages };
-    await writeFile(join(packageRoot, 'preset.json'), JSON.stringify(portable, null, 2), 'utf8');
-    const command = `Compress-Archive -Path '${packageRoot.replaceAll("'", "''")}${'\\*'}' -DestinationPath '${output.replaceAll("'", "''")}' -Force`;
-    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' });
-    if (result.status !== 0) throw new Error('无法导出预设压缩包');
-    return output;
-  } finally {
-    await rm(temp, { recursive: true, force: true }).catch(() => {});
-  }
-});
+registerPresetsIpc({ ipcMain, app, join, resolve, basename, extname, readFile, readdir, writeFile, copyFile, mkdir, mkdtemp, rm, existsSync, statSync, spawnSync, dialog, getMainWindow: () => mainWindow, getAgent: () => agent, getWorkflowDir, listWorkflowFiles, resolveImagePath, getComfyManager: () => comfyManager, listGlobalPresets, createGlobalPreset, updateGlobalPreset, deleteGlobalPreset, copyGlobalPreset, markPresetUsed, rateGlobalPreset, composeGlobalPresets, replacePresetModel, copyPresetCover, importGlobalPreset, FORMAT, VERSION, assertInside });
 
 // ===== Agent IPC =====
 
@@ -3473,52 +3016,6 @@ ipcMain.handle('llm:test', async (_, { provider, modelId }) => {
   return { ok: true, message: result.content || 'OK' };
 });
 
-ipcMain.handle('skills:list', async () => {
-  const skills = prefStore.get('skills') || {};
-  const external = Object.fromEntries((skills.external || []).filter(item => item?.id && item.enabled !== false).map(item => {
-    try { return [item.id, normalizeExternalSkill(item, item.source || 'config')]; } catch { return null; }
-  }).filter(Boolean));
-  const custom = Object.fromEntries((skills.custom || []).filter(item => item?.id && item.enabled !== false).map(item => [item.id, createCustomSkill(item)]));
-  return { ...skills, registry: [...skillManifest(BUILTIN_SKILLS, skills.system), ...skillManifest(custom), ...skillManifest(external)] };
-});
-
-ipcMain.handle('skills:set-enabled', async (_, { id, enabled, custom = false, external = false }) => {
-  const skills = prefStore.get('skills');
-  if (external) {
-    const skill = skills.external.find(item => item.id === id);
-    if (!skill) throw new Error('外部 Skill 不存在');
-    skill.enabled = Boolean(enabled);
-  } else if (custom) {
-    const skill = skills.custom.find(item => item.id === id);
-    if (!skill) throw new Error('技能不存在');
-    skill.enabled = Boolean(enabled);
-  } else {
-    if (!(id in BUILTIN_SKILLS)) throw new Error('系统技能不存在');
-    skills.system[id] = Boolean(enabled);
-  }
-  prefStore.set('skills', skills);
-  configureSkills({ systemEnabled: skills.system, custom: skills.custom, external: skills.external });
-  return skills;
-});
-
-ipcMain.handle('skills:add-custom', async (_, { skill }) => {
-  if (!/^[a-z0-9_-]+$/.test(skill?.id || '')) throw new Error('技能 ID 格式无效');
-  const skills = prefStore.get('skills');
-  if (skills.custom.some(item => item.id === skill.id) || skill.id in skills.system) throw new Error('技能 ID 已存在');
-  skills.custom.push({ ...skill, keywords: Array.isArray(skill.keywords) ? skill.keywords : [], enabled: skill.enabled !== false });
-  prefStore.set('skills', skills);
-  configureSkills({ systemEnabled: skills.system, custom: skills.custom, external: skills.external });
-  return skills;
-});
-
-ipcMain.handle('skills:delete-custom', async (_, { id }) => {
-  const skills = prefStore.get('skills');
-  skills.custom = skills.custom.filter(item => item.id !== id);
-  prefStore.set('skills', skills);
-  configureSkills({ systemEnabled: skills.system, custom: skills.custom, external: skills.external });
-  return skills;
-});
-
 ipcMain.handle('agent:prompt-mode', async (_, { mode }) => {
   if (agent) await agent.setPromptMode(mode);
   return { mode };
@@ -3600,68 +3097,12 @@ ipcMain.handle('prompt:save-settings', async (_, settings = {}) => {
   return promptRuntimeConfig();
 });
 
-ipcMain.handle('skills:import-external', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openFile', 'multiSelections'],
-    filters: [{ name: 'External Skill manifest', extensions: ['json'] }],
-    title: '导入外部 Skill（声明式 JSON）',
-  });
-  if (result.canceled || result.filePaths.length === 0) return prefStore.get('skills');
-  const skills = prefStore.get('skills');
-  const imported = [];
-  for (const filePath of result.filePaths) {
-    const skill = await loadExternalSkillFile(filePath);
-    if (skills.system[skill.id] || skills.custom.some(item => item.id === skill.id) || skills.external.some(item => item.id === skill.id)) throw new Error(`Skill ID 已存在：${skill.id}`);
-    imported.push(skill);
-  }
-  skills.external.push(...imported.map(externalSkillConfig));
-  prefStore.set('skills', skills);
-  configureSkills({ systemEnabled: skills.system, custom: skills.custom, external: skills.external });
-  return skills;
-});
-
-ipcMain.handle('skills:delete-external', async (_, { id }) => {
-  const skills = prefStore.get('skills');
-  skills.external = skills.external.filter(item => item.id !== id);
-  prefStore.set('skills', skills);
-  configureSkills({ systemEnabled: skills.system, custom: skills.custom, external: skills.external });
-  return skills;
-});
-
-// Create an external (declarative) skill from form fields instead of a JSON
-// file: validates through the same normalize/validate path as file import.
-ipcMain.handle('skills:add-external', async (_, input = {}) => {
-  const skill = normalizeExternalSkill(input, 'form');
-  const skills = prefStore.get('skills');
-  if (skills.system[skill.id] || skills.custom.some(item => item.id === skill.id) || skills.external.some(item => item.id === skill.id)) {
-    throw new Error(`Skill ID 已存在：${skill.id}`);
-  }
-  skills.external.push(externalSkillConfig(skill));
-  prefStore.set('skills', skills);
-  configureSkills({ systemEnabled: skills.system, custom: skills.custom, external: skills.external });
-  return skills;
-});
-
-ipcMain.handle('memory:get-state', async (_, { projectId = '' } = {}) => agent.call('memory.getState', [projectId]));
-ipcMain.handle('memory:set-profile', async (_, { projectId = '', patch = {} } = {}) => agent.call('memory.setProfile', [projectId, patch]));
-ipcMain.handle('memory:upsert-character-card', async (_, { projectId = '', card = {} } = {}) => agent.call('memory.upsertCharacterCard', [projectId, card]));
-ipcMain.handle('memory:delete-character-card', async (_, { projectId = '', name = '' } = {}) => agent.call('memory.deleteCharacterCard', [projectId, name]));
-ipcMain.handle('memory:clear', async (_, { projectId = '' } = {}) => agent.call('memory.clear', [projectId]));
-ipcMain.handle('memory:export', async () => agent.call('memory.export'));
-ipcMain.handle('memory:recall', async (_, { projectId = '', query = '', limit } = {}) => agent.call('memory.recall', [projectId, { query, limit }]));
-
-ipcMain.handle('plugins:list', async () => {
-  await startAgent(getStoredConfig());
-  return agent.call('plugins.list');
-});
-ipcMain.handle('plugins:enable', async (_, { pluginId = '', enabled = true } = {}) => {
-  await startAgent(getStoredConfig());
-  return agent.call('plugins.enable', [pluginId, Boolean(enabled)]);
-});
-ipcMain.handle('plugins:remove', async (_, { pluginId = '' } = {}) => {
-  await startAgent(getStoredConfig());
-  return agent.call('plugins.remove', [pluginId]);
-});
+// Agent-adjacent IPC (memory + plugins) extracted to ./ipc/agent-extras.mjs
+registerAgentExtrasIpc({ ipcMain, getAgent: () => agent, startAgent, getStoredConfig });
+registerSkillsIpc({ ipcMain, prefStore, configureSkills, skillManifest, BUILTIN_SKILLS, createCustomSkill, normalizeExternalSkill, externalSkillConfig, loadExternalSkillFile, dialog, getMainWindow: () => mainWindow });
+registerMcpIpc({ ipcMain, prefStore, mcpModuleFlags, restartEmbeddedMcp });
+registerComfyuiIpc({ ipcMain, dialog, shell, app, join, resolve, basename, existsSync, rename, copyFile, stat, writeFile, mkdir, rm, spawnSync, comfyManager, getAgent: () => agent, getPrefStore: () => prefStore, getMainWindow: () => mainWindow, getImageDataUrl, getAuthorizedMediaDataUrl, getRecentImages, resolveImagePath, normalizeHttpUrl, getWorkflowDir, getStoredConfig, sendToRenderer, downloadToFile, formatBytes, findPortableRootUnder, hasPortableLayout, ComfyUITool, ComfyUIClient, COMFYUI_PORTABLE_URLS, DEFAULT_BASE_URL, COMFY_START_DIRS, envConfig });
+registerWorkflowsIpc({ ipcMain, dialog, shell, app, join, basename, extname, stat, writeFile, nativeImage, clipboard, getWorkflowDir, getDisplayPath, listWorkflowFiles, deleteWorkflowFile, renameWorkflowFile, importWorkflowFiles, resolveSandboxPath, getAgent: () => agent, getDirectService: () => directService, getPrefStore: () => prefStore, getMainWindow: () => mainWindow, getAuthorizedMediaPaths: () => authorizedMediaPaths });
 
 ipcMain.handle('batch:create', async (_, input = {}) => {
   const owner = executionOwner();
@@ -3770,27 +3211,6 @@ ipcMain.handle('batch:curate', async (_, { batchId = '', limit = 12 } = {}) => {
   };
 });
 
-ipcMain.handle('mcp:settings', async () => {
-  const mcp = prefStore.get('mcp') || {};
-  return { enabled: mcp.enabled === true, host: mcp.host || '127.0.0.1', port: mcp.port || 3333, hasToken: Boolean(mcp.token), modules: mcpModuleFlags(mcp.modules || {}) };
-});
-
-ipcMain.handle('mcp:save-settings', async (_, settings = {}) => {
-  const current = prefStore.get('mcp') || {};
-  const port = Number(settings.port);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('MCP 端口必须是 1-65535 的整数');
-  const host = String(settings.host || '127.0.0.1').trim();
-  if (!host || /[\s/]/.test(host)) throw new Error('MCP 主机地址无效');
-  const token = settings.token === undefined ? current.token || '' : String(settings.token || '').trim();
-  if (settings.enabled === true && host !== '127.0.0.1' && host !== 'localhost' && !token) throw new Error('MCP 监听局域网地址时必须设置访问令牌');
-  const modules = settings.modules && typeof settings.modules === 'object'
-    ? mcpModuleFlags({ web: settings.modules.web, files: settings.modules.files, comfyui: settings.modules.comfyui, skills: settings.modules.skills })
-    : mcpModuleFlags(current.modules || {});
-  prefStore.set('mcp', { enabled: settings.enabled === true, host, port, token, modules });
-  await restartEmbeddedMcp();
-  return { enabled: settings.enabled === true, host, port, hasToken: Boolean(token), modules };
-});
-
 ipcMain.handle('agent:artifacts', async (_, { type, limit } = {}) => {
   if (!agent) return [];
   return agent.getArtifacts({ type, limit });
@@ -3836,136 +3256,6 @@ ipcMain.handle('agent:workflow-dir', async (_, { dir }) => {
   return { dir };
 });
 
-ipcMain.handle('comfyui:status', async () => comfyManager.refreshState());
-ipcMain.handle('h3:readiness', async () => {
-  const state = await comfyManager.refreshState();
-  if (state.status !== 'ready') return { ready: false, message: state.message || 'ComfyUI is not ready' };
-  try {
-    const info = await ComfyUITool.client.objectInfo();
-    const required = ['MiniMaxH3ReferenceToVideo', 'MiniMaxH3SigmaShift', 'EmptyMiniMaxH3LatentAV'];
-    const missing = required.filter(name => !info?.[name]);
-    return missing.length === 0
-      ? { ready: true, message: 'MiniMax H3 官方节点已加载' }
-      : { ready: false, message: `H3 节点未加载：${missing.join('、')}。请完成更新后重启 ComfyUI。`, missing };
-  } catch (error) {
-    return { ready: false, message: error.message || '无法读取 ComfyUI 节点信息' };
-  }
-});
-
-ipcMain.handle('comfyui:start', async () => comfyManager.ensureStarted());
-
-ipcMain.handle('comfyui:select-root', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openDirectory'],
-    defaultPath: comfyManager.portableRoot || undefined,
-    title: '选择 ComfyUI 根目录（含 python_embeded 和 ComfyUI 文件夹）',
-  });
-  if (result.canceled || result.filePaths.length === 0) return comfyManager.getState();
-  const root = result.filePaths[0];
-  if (!hasPortableLayout(root)) {
-    throw new Error('所选目录不是 ComfyUI portable 根目录（缺少 python_embeded\\python.exe 和 ComfyUI\\main.py）');
-  }
-  comfyManager.setPortableRoot(root);
-  prefStore.set('comfyui', { ...prefStore.get('comfyui'), portableRoot: root });
-  if (agent?.isAlive) await agent.reconfigureComfy({ comfyRoot: join(root, 'ComfyUI'), workflowDir: getWorkflowDir(getStoredConfig()) });
-  return comfyManager.getState();
-});
-
-ipcMain.handle('comfyui:set-base-url', async (_, { baseUrl = '' } = {}) => {
-  const normalized = comfyManager.setBaseUrl(normalizeHttpUrl(baseUrl || DEFAULT_BASE_URL, 'ComfyUI 地址'));
-  ComfyUITool.setClient(new ComfyUIClient({ baseUrl: normalized }));
-  prefStore.set('comfyui', { ...prefStore.get('comfyui'), baseUrl: normalized });
-  if (agent?.isAlive) await agent.reconfigureComfy({ baseUrl: normalized });
-  return comfyManager.refreshState();
-});
-
-ipcMain.handle('comfyui:reset', async () => {
-  comfyManager.setBaseUrl(envConfig.COMFYUI_BASE_URL || DEFAULT_BASE_URL);
-  comfyManager.redetectRoot(COMFY_START_DIRS);
-  prefStore.set('comfyui', { baseUrl: comfyManager.baseUrl });
-  ComfyUITool.setClient(new ComfyUIClient({ baseUrl: comfyManager.baseUrl }));
-  if (agent?.isAlive) await agent.reconfigureComfy({ baseUrl: comfyManager.baseUrl });
-  return comfyManager.refreshState();
-});
-
-ipcMain.handle('comfyui:download-portable', async (_, { kind = 'nvidia' } = {}) => {
-  const url = COMFYUI_PORTABLE_URLS[kind] || COMFYUI_PORTABLE_URLS.nvidia;
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openDirectory'],
-    defaultPath: comfyManager.portableRoot || undefined,
-    title: '选择安装位置（将在此创建 ComfyUI_windows_portable 文件夹）',
-  });
-  if (result.canceled || result.filePaths.length === 0) return { cancelled: true };
-  const targetDir = result.filePaths[0];
-  const archivePath = join(targetDir, 'comfyui-portable.7z');
-  const extractDir = join(targetDir, '.comfyui-portable-extract');
-  try {
-    sendToRenderer('comfyui:download-progress', { phase: 'download', percent: 0, message: '正在下载 ComfyUI portable...' });
-    await downloadToFile(url, archivePath, progress => {
-      const percent = progress.total ? Math.round(progress.percent * 100) : -1;
-      sendToRenderer('comfyui:download-progress', {
-        phase: 'download',
-        percent,
-        message: `已下载 ${formatBytes(progress.bytes)}${progress.total ? ` / ${formatBytes(progress.total)}` : ''}`,
-      });
-    });
-    await rm(extractDir, { recursive: true, force: true });
-    await mkdir(extractDir, { recursive: true });
-    sendToRenderer('comfyui:download-progress', { phase: 'extract', percent: -1, message: '正在解压，请稍候...' });
-    const extraction = spawnSync('tar', ['-xf', archivePath, '-C', extractDir], { windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
-    if (extraction.status !== 0) {
-      throw new Error('解压失败：系统 tar 无法读取 7z 文件（需要 Windows 10 1803 及以上版本）');
-    }
-    const root = findPortableRootUnder(extractDir);
-    if (!root) throw new Error('解压结果中未找到 ComfyUI 目录');
-    const finalRoot = join(targetDir, basename(root));
-    if (existsSync(finalRoot)) await rm(finalRoot, { recursive: true, force: true });
-    await rename(root, finalRoot);
-    comfyManager.setPortableRoot(finalRoot);
-    prefStore.set('comfyui', { ...prefStore.get('comfyui'), portableRoot: finalRoot });
-    sendToRenderer('comfyui:download-progress', { phase: 'done', message: '安装完成' });
-    const state = await comfyManager.ensureStarted();
-    return state;
-  } finally {
-    await rm(archivePath, { force: true });
-    await rm(extractDir, { recursive: true, force: true });
-  }
-});
-
-ipcMain.handle('comfyui:image-data', async (_, image) => getImageDataUrl(image));
-ipcMain.handle('media:image-data', async (_, media) => getAuthorizedMediaDataUrl(media));
-
-ipcMain.handle('comfyui:save-image', async (_, image) => {
-  const source = resolveImagePath(image);
-  const result = await dialog.showSaveDialog(mainWindow, {
-    title: '另存图片',
-    defaultPath: image.filename,
-  });
-  if (result.canceled || !result.filePath) return { saved: false };
-  if (resolve(result.filePath) !== source) await copyFile(source, result.filePath);
-  return { saved: true, path: result.filePath };
-});
-
-ipcMain.handle('comfyui:show-image', async (_, image) => {
-  const filePath = resolveImagePath(image);
-  await stat(filePath);
-  shell.showItemInFolder(filePath);
-  return { shown: true };
-});
-
-ipcMain.handle('app:save-text-file', async (_, { defaultName = 'export.txt', content = '', filterName = '文本文件' } = {}) => {
-  const result = await dialog.showSaveDialog(mainWindow, {
-    title: '导出文件',
-    defaultPath: defaultName,
-    filters: [{ name: filterName, extensions: [defaultName.split('.').pop() || 'txt'] }],
-  });
-  if (result.canceled || !result.filePath) return { saved: false };
-  await writeFile(result.filePath, content, 'utf8');
-  return { saved: true, path: result.filePath };
-});
-
-ipcMain.handle('comfyui:recent-images', async () => getRecentImages());
-
 ipcMain.handle('project:assets', async (_, projectId) => {
   const requestedProjectId = typeof projectId === 'string' ? projectId : projectId?.projectId;
   assertOwnerMatch(executionOwner({ projectId: requestedProjectId || executionOwner().projectId }), currentGovernanceOwner());
@@ -3973,6 +3263,9 @@ ipcMain.handle('project:assets', async (_, projectId) => {
 });
 
 ipcMain.handle('project:delete-asset', async (_, image) => runGovernedIpcMutation({ action: 'media.export', input: image, projectId: image?.projectId, execute: () => deleteProjectAsset(image) }));
+
+const updateService = createUpdateService({ app, appRoot, envConfig, verifyUpdateManifest, downloadToFile, sendToRenderer, onQuitRequested: () => { quitRequested = true; } });
+registerUpdateIpc({ ipcMain, service: updateService });
 
 // ===== App Lifecycle =====
 
