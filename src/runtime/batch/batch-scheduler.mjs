@@ -131,7 +131,16 @@ export class BatchScheduler {
   }
 
   async createBatch(input = {}) {
-    const jobs = expandBatchJobs(input);
+    // The queue path submits a fully expanded job list (one plan snapshot × a
+    // seed strategy per queue item). The legacy path still expands a single
+    // seed × parameter matrix in place.
+    const prebuilt = Array.isArray(input.jobs) && input.jobs.length > 0;
+    const jobs = prebuilt
+      ? input.jobs.map((job, index) => ({ ...job, index, status: 'pending', seed: job.seed, comboIndex: 0, createdAt: 0 }))
+      : expandBatchJobs(input);
+    if (jobs.length === 0) {
+      throw Object.assign(new Error('Batch requires a positive prompt'), { code: 'BATCH_REQUIRES_PROMPT' });
+    }
     if (jobs.length > this.limits.maxJobs) {
       throw Object.assign(new Error(`Batch exceeds job limit: ${jobs.length} > ${this.limits.maxJobs}`), { code: 'BATCH_LIMIT_EXCEEDED' });
     }
@@ -140,9 +149,12 @@ export class BatchScheduler {
       job.createdAt = now;
       job.id = `job_${now}_${job.index}`;
     }
+    const batchUuid = randomUUID().slice(0, 8);
+    const batchCode = `B-${batchUuid.slice(0, 6).toUpperCase()}`;
     const batch = {
-      id: `batch_${now}_${randomUUID().slice(0, 8)}`,
-      title: String(input.title || '').trim() || `${input.workflowName || 'batch'} · ${jobs.length} 张`,
+      id: `batch_${now}_${batchUuid}`,
+      code: batchCode,
+      title: String(input.title || '').trim() || batchCode,
       projectId: String(input.projectId || ''),
       sessionId: String(input.sessionId || ''),
       workflowName: String(input.workflowName || ''),
@@ -325,6 +337,7 @@ export class BatchScheduler {
     const batch = this._batch(batchId);
     return {
       id: batch.id,
+      code: batch.code,
       title: batch.title,
       projectId: batch.projectId,
       sessionId: batch.sessionId,
@@ -338,8 +351,13 @@ export class BatchScheduler {
         id: job.id,
         status: job.status,
         seed: job.seed,
+        positive: job.positive,
+        negative: job.negative,
         settings: job.settings,
         nodeOverrides: job.nodeOverrides,
+        media: job.media || {},
+        sourceKind: job.sourceKind || 'plan',
+        sourceLabel: job.sourceLabel || '',
         error: job.error,
         errorCode: job.errorCode,
         score: job.score,
@@ -360,11 +378,19 @@ export class BatchScheduler {
 
 function summarizeResult(result) {
   if (!result || typeof result !== 'object') return undefined;
-  const images = Array.isArray(result.images) ? result.images.map(item => ({
-    path: item.path || item.filename || '',
-    name: item.name || item.filename || '',
-    url: item.url || '',
-  })) : [];
+  const images = Array.isArray(result.images) ? result.images.map(item => {
+    const source = item && typeof item === 'object' ? item : {};
+    const filename = source.filename || source.name || (source.path ? String(source.path).split(/[\\/]/).pop() : '');
+    return {
+      ...source,
+      path: source.path || source.filename || '',
+      name: source.name || source.filename || '',
+      url: source.url || '',
+      filename,
+      subfolder: source.subfolder || '',
+      type: source.type || 'output',
+    };
+  }) : [];
   const videos = Array.isArray(result.videos) ? result.videos.map(item => ({ path: item.path || item.filename || '', name: item.name || item.filename || '', url: item.url || '' })) : [];
   const summary = { images, videos };
   if (typeof result.promptId === 'string') summary.promptId = result.promptId;

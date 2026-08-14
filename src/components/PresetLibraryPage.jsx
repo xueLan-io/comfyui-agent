@@ -3,8 +3,10 @@ import Icon from './Icon.jsx';
 import PresetEditorModal from './PresetEditorModal.jsx';
 import PresetDetailModal from './PresetDetailModal.jsx';
 import { sortRecommended } from '../runtime/preset-recommendation.mjs';
+import { buildPresetGenerationRequest } from '../runtime/preset-generation.mjs';
 import { DragGhost, useFloatingCardDrag } from './useFloatingCardDrag.jsx';
 import { useI18n } from '../i18n/I18nContext.jsx';
+import { useBatchQueue } from '../contexts/BatchQueueContext.jsx';
 import { presetTagNodes, usePresetTagTranslations } from './PresetTags.jsx';
 
 export default function PresetLibraryPage({ hidden = false, onBack, onReuse }) {
@@ -133,6 +135,7 @@ export default function PresetLibraryPage({ hidden = false, onBack, onReuse }) {
 }
 
 function DraggablePresetCard({ preset, highlighted, selected, onSelect, onOpen, onReuse, onToggleFavorite, onExport, onEdit, onCopy, onDelete, t, language, tagTranslations }) {
+  const { addToQueue } = useBatchQueue();
   const drag = useFloatingCardDrag({
     kind: 'preset-card',
     presetId: preset.id,
@@ -145,15 +148,19 @@ function DraggablePresetCard({ preset, highlighted, selected, onSelect, onOpen, 
     parameters: preset.parameters || {},
     nodeOverrides: preset.nodeOverrides || {},
     outputNodeIds: preset.outputNodeIds || null,
+    sourceImages: preset.sourceImages || [],
     tags: preset.tags || [],
   });
+  const enqueuePreset = () => {
+    addToQueue(buildPresetGenerationRequest(preset), { sourceKind: 'preset', sourceLabel: preset.title });
+  };
   return <article className={`preset-card${highlighted ? ' preset-card-highlighted' : ''}${drag.dragging ? ' is-dragging' : ''}`} onDoubleClick={onOpen} aria-hidden={drag.dragging || undefined}>
     <label className="preset-card-select"><input type="checkbox" checked={selected} onChange={onSelect} />{t('compose')}</label>
     <button className={`preset-card-favorite${preset.favorite ? ' active' : ''}`} onClick={() => void onToggleFavorite(preset)}><Icon name="star" size={14} /></button>
     <button className="preset-card-cover" onClick={onOpen}><PresetCover cover={preset.cover} /></button>
       <div className="preset-card-drag-handle" {...drag.dragHandlers}><span>{t('dragPrompt')}</span><strong>{preset.title}</strong></div>
         <div className="preset-card-body"><p>{preset.description || preset.positive}</p><div className="preset-card-tags">{presetTagNodes(preset.tags?.slice(0, 3), tagTranslations, language)}</div><small>{preset.source === 'cloud' ? t('cloud') : t('local')} · {new Date(preset.updatedAt).toLocaleDateString()} · {preset.usageCount || 0} · {t('rating')} {preset.rating ? preset.rating.toFixed(1) : t('notRated')}</small></div>
-      <div className="preset-card-actions"><button className="btn btn-primary" onClick={() => onReuse(preset, false)}>{t('adjustParameters')}</button><button className="btn" onClick={() => onReuse(preset, true)}>{t('directGenerate')}</button><button className="btn btn-icon" onClick={() => void onExport(preset)} title={t('export')}><Icon name="download" size={13} /></button><button className="btn btn-icon" onClick={() => onEdit(preset)} title={t('edit')}><Icon name="edit" size={13} /></button><button className="btn btn-icon" onClick={() => void onCopy(preset)} title={t('copy')}><Icon name="copy" size={13} /></button><button className="btn btn-icon btn-danger" onClick={() => void onDelete(preset)} title={t('delete')}><Icon name="trash" size={13} /></button></div>
+      <div className="preset-card-actions"><button className="btn btn-primary" onClick={() => onReuse(preset, false)}>{t('adjustParameters')}</button><button className="btn" onClick={() => onReuse(preset, true)}>{t('directGenerate')}</button><button className="btn" onClick={enqueuePreset} title={t('queueAddHint')}><Icon name="queueAdd" size={13} />{t('queueAdd')}</button><button className="btn btn-icon" onClick={() => void onExport(preset)} title={t('export')}><Icon name="download" size={13} /></button><button className="btn btn-icon" onClick={() => onEdit(preset)} title={t('edit')}><Icon name="edit" size={13} /></button><button className="btn btn-icon" onClick={() => void onCopy(preset)} title={t('copy')}><Icon name="copy" size={13} /></button><button className="btn btn-icon btn-danger" onClick={() => void onDelete(preset)} title={t('delete')}><Icon name="trash" size={13} /></button></div>
      <DragGhost dragging={drag.dragging} dragPoint={drag.dragPoint} label="PRESET" />
   </article>;
 }

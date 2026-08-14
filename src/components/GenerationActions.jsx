@@ -2,11 +2,25 @@ import { useState } from 'react';
 import Icon from './Icon.jsx';
 import PresetSaveModal from './PresetSaveModal.jsx';
 import { useI18n } from '../i18n/I18nContext.jsx';
+import { useBatchQueue } from '../contexts/BatchQueueContext.jsx';
 
 export default function GenerationActions({ record, onRegenerate, onEdit, onAdjust }) {
   const { t } = useI18n();
+  const { addToQueue } = useBatchQueue();
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
+
+  const enqueueVariants = () => {
+    addToQueue({
+      positive: record.prompt || '',
+      negative: record.negative || '',
+      workflowName: record.workflowName || '',
+      parameters: record.parameters || record.settings || {},
+      nodeOverrides: record.nodeOverrides || {},
+      outputNodeIds: record.outputNodeIds || null,
+      media: { images: [], videos: [] },
+    }, { sourceKind: 'result', sourceLabel: t('queueSourceResult') });
+  };
   const savePreset = async form => {
     const resultRefs = form.saveResults ? record.media || [] : [];
     const saved = await window.electronAPI.globalPresetCreate({
@@ -32,6 +46,7 @@ export default function GenerationActions({ record, onRegenerate, onEdit, onAdju
       <div className="output-primary-actions">
         <button className="btn btn-primary" onClick={() => onRegenerate(record)}><Icon name="refresh" size={14} /> {t('regenerate')}</button>
         <button className="btn output-secondary-action" onClick={() => onEdit(record)}><Icon name="edit" size={13} /> {t('editPrompt')}</button>
+        <button className="btn output-secondary-action" onClick={enqueueVariants} title={t('queueAddHint')}><Icon name="queueAdd" size={13} /> {t('queueAdd')}</button>
         <button className="btn output-secondary-action" onClick={() => setSaveOpen(true)}><Icon name="bookmark" size={13} /> {t('saveAsPreset')}</button>
         <button className="btn btn-icon output-settings-action" onClick={() => onAdjust(record)} title={t('adjustParameters')} aria-label={t('adjustParameters')}><Icon name="sliders" size={14} /></button>
       </div>

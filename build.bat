@@ -18,5 +18,7 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo Installer done! Check releases\ folder.
+echo Packaging done!
+echo   Portable app:    %~dp0dist-portable\
+echo   Distribution zip: %~dp0ComfyMuse-portable-v*.zip
 pause

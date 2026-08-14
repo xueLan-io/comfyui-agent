@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { PromptEnhanceTool } from '../src/agent/tools/prompt/enhance.mjs';
 import { minimaxH3VideoInstruction, validateMinimaxH3VideoPrompt } from '../src/agent/tools/prompt/video-template.mjs';
+import { ANIME_QUALITY_BASELINE, ANIME_NEGATIVE_BASELINE } from '../src/agent/tools/prompt/anime-presets.mjs';
 
 test('MiniMax H3 video template validates the required Chinese prompt structure', () => {
   const prompt = [
@@ -244,7 +245,7 @@ test('contextual refinement compiles once from the locally merged baseline', asy
             tags: ['best quality', 'masterpiece', '1person', 'solo'],
             narrative: 'A single person stands in a softly lit environment, framed in a balanced medium composition, facing the viewer.',
             positive: 'ignored compiler draft',
-            negative: 'extra fingers',
+            negative: 'extra arms',
             self_check: { preserved: true, issues: [] },
           }),
         };
@@ -260,9 +261,9 @@ test('contextual refinement compiles once from the locally merged baseline', asy
   assert.match(compilerInput.interpretedPrompt, /\u4f18\u5316\u5149\u7ebf \u6784\u56fe/);
   assert.equal(
     result.positive,
-    'best quality, masterpiece, 1person, solo\n\nA single person stands in a softly lit environment, framed in a balanced medium composition, facing the viewer.',
+    `${ANIME_QUALITY_BASELINE}, 1person, solo\n\nA single person stands in a softly lit environment, framed in a balanced medium composition, facing the viewer.`,
   );
-  assert.equal(result.negative, 'low quality, bad anatomy, extra fingers');
+  assert.equal(result.negative, `${ANIME_NEGATIVE_BASELINE}, extra arms`);
 });
 
 test('contextual refinement does not retry a failed compiler self-check', async () => {
@@ -435,11 +436,11 @@ test('passes public character references to the prompt compiler', async () => {
   });
 });
 
-test('compiles Anima tags, narrative, and baseline negative prompt', async () => {
+test('compiles Anima mixed tags and natural language, plus baseline negative prompt', async () => {
   const mockLLM = {
     async chat() {
       return { content: JSON.stringify({
-        tags: ['masterpiece', '1girl', 'alice', 'red dress'],
+        tags: ['best quality', '1girl', 'alice', 'red dress'],
         narrative: 'Alice stands beneath soft window light in a medium shot.',
         positive: 'ignored compiler draft',
         negative: 'extra arms',
@@ -452,8 +453,32 @@ test('compiles Anima tags, narrative, and baseline negative prompt', async () =>
     promptProfile: { family: 'anima', format: 'tag_narrative', supportsNegative: true, currentNegative: 'low quality' },
     llmProvider: mockLLM,
   });
-  assert.equal(result.positive, 'masterpiece, 1girl, alice, red dress\n\nAlice stands beneath soft window light in a medium shot.');
-  assert.equal(result.negative, 'low quality, extra arms');
+  assert.equal(result.positive, `${ANIME_QUALITY_BASELINE}, 1girl, alice, red dress\n\nAlice stands beneath soft window light in a medium shot.`);
+  assert.equal(result.negative, `${ANIME_NEGATIVE_BASELINE}, extra arms`);
+});
+
+test('Anima compile injects shared quality and negative baselines with dedup', async () => {
+  const mockLLM = {
+    async chat() {
+      return { content: JSON.stringify({
+        tags: ['best quality', 'solo', '1girl', '@4x0style', 'silver hair', 'blue eyes'],
+        narrative: 'A silver-haired woman with blue eyes in a relaxed portrait.',
+        positive: '',
+        negative: 'bad hands, extra arms',
+        self_check: { preserved: true, issues: [] },
+      }) };
+    },
+  };
+  const result = await PromptEnhanceTool.execute({
+    prompt: 'silver haired woman portrait',
+    mode: 'anime',
+    promptProfile: { family: 'anima', format: 'tag_narrative', supportsNegative: true },
+    llmProvider: mockLLM,
+  });
+  assert.ok(result.positive.startsWith(`${ANIME_QUALITY_BASELINE}, solo, 1girl, @4x0style, silver hair, blue eyes`));
+  assert.match(result.positive, /\n\nA silver-haired woman with blue eyes in a relaxed portrait\.$/);
+  // bad hands 已在负向基线里被去重，只追加 extra arms
+  assert.equal(result.negative, `${ANIME_NEGATIVE_BASELINE}, extra arms`);
 });
 
 test('forces Flux negative prompt to remain empty', async () => {
@@ -492,6 +517,32 @@ test('MiniMax H3 always compiles in Chinese without a strict template trigger', 
   });
   assert.match(instruction, /使用中文自然语言/);
   assert.equal(result.negative, '');
+});
+
+test('generic image families compile with bilingual layered structure guidance', async () => {
+  let instruction = '';
+  const result = await PromptEnhanceTool.execute({
+    prompt: '一个女孩站在雨后的街道上',
+    mode: 'cinematic',
+    llmProvider: {
+      async chat(input) {
+        instruction = input.messages[0].content;
+        return { content: JSON.stringify({
+          tags: [],
+          narrative: '女孩站在雨后的街道上。',
+          positive: '雨后街道，一位穿浅色外套的女孩站在路灯下。\nstreet after rain, girl in a light coat, wet asphalt reflections, cinematic lighting',
+          negative: '',
+          self_check: { preserved: true, issues: [] },
+        }) };
+      },
+    },
+  });
+  assert.match(instruction, /中英协同分层写法/);
+  assert.match(instruction, /写作结构与完整性/);
+  assert.match(instruction, /不要输出只有几个孤立单词或短标签的碎片化内容/);
+  assert.match(instruction, /不要只复述用户的短句/);
+  assert.ok(result.positive.includes('street after rain'));
+  assert.ok(result.positive.includes('路灯'));
 });
 
 test('execute error returns original + error', async () => {

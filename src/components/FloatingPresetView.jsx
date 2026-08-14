@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import Icon from './Icon.jsx';
 import { presetTagNodes, usePresetTagTranslations } from './PresetTags.jsx';
 import { useI18n } from '../i18n/I18nContext.jsx';
+import { useBatchQueue } from '../contexts/BatchQueueContext.jsx';
+import { buildPresetGenerationRequest } from '../runtime/preset-generation.mjs';
 
 function Cover({ cover }) {
   const [src, setSrc] = useState('');
@@ -14,7 +16,7 @@ function Cover({ cover }) {
   return src ? <img src={src} alt="" draggable="false" onDragStart={event => event.preventDefault()} /> : <span className="floating-preset-placeholder">PRESET</span>;
 }
 
-function PresetDetailPages({ preset, tagTranslations, language, copied, copy, onAdjust, onGenerate, onReset, onHorizontalSwipe, onHorizontalRelease }) {
+function PresetDetailPages({ preset, tagTranslations, language, copied, copy, onAdjust, onGenerate, onReset, onEnqueue, onHorizontalSwipe, onHorizontalRelease }) {
   const { t } = useI18n();
   const pagesRef = useRef(null);
   const gestureRef = useRef(null);
@@ -64,7 +66,7 @@ function PresetDetailPages({ preset, tagTranslations, language, copied, copy, on
       <p className="floating-preset-description">{preset.description || t('floatPresetNoDescription')}</p>
        <div className="floating-preset-tags floating-preset-tags-large">{presetTagNodes(preset.tags, tagTranslations, language) || <span>{t('floatPresetNoTags')}</span>}</div>
       <span className="floating-preset-swipe-hint">{t('floatPresetSwipeHint')}</span>
-      <div className="floating-preset-actions"><button type="button" className="btn btn-primary" onClick={() => onAdjust(preset)}>{t('floatPresetAdjustGenerate')}</button><button type="button" className="btn" onClick={() => onGenerate(preset)}>{t('floatPresetGenerateNow')}</button></div>
+      <div className="floating-preset-actions"><button type="button" className="btn btn-primary" onClick={() => onAdjust(preset)}>{t('floatPresetAdjustGenerate')}</button><button type="button" className="btn" onClick={() => onGenerate(preset)}>{t('floatPresetGenerateNow')}</button><button type="button" className="btn" onClick={() => onEnqueue(preset)} title={t('queueAddHint')}><Icon name="queueAdd" size={13} />{t('queueAdd')}</button></div>
     </article>
     <article className="floating-preset-detail-page floating-preset-prompt-page">
       <div className="floating-preset-info-heading"><span>DETAILS</span><button type="button" className="btn" onClick={() => goPage(0)}><Icon name="chevronDown" size={12} />{t('floatPresetBackToCover')}</button></div>
@@ -80,6 +82,7 @@ function PresetDetailPages({ preset, tagTranslations, language, copied, copy, on
 
 export default function FloatingPresetView({ onBack, onAdjust, onGenerate, onReset }) {
   const { language, t } = useI18n();
+  const { addToQueue } = useBatchQueue();
   const [presets, setPresets] = useState([]);
   const [search, setSearch] = useState('');
   const [index, setIndex] = useState(0);
@@ -113,6 +116,9 @@ export default function FloatingPresetView({ onBack, onAdjust, onGenerate, onRes
     pagesRef.current?.scrollTo({ left: safeIndex * pagesRef.current.clientWidth, behavior: 'smooth' });
   }
   async function copy(value, type) { if (!value) return; try { await navigator.clipboard.writeText(value); setCopied(type); window.setTimeout(() => setCopied(''), 1200); } catch {} }
+  function enqueuePreset(preset) {
+    addToQueue(buildPresetGenerationRequest(preset), { sourceKind: 'preset', sourceLabel: preset.title });
+  }
   function handlePointerDown(event) {
     if (event.button !== 0 || event.target.closest?.('button, input, textarea, select, pre, a, .floating-preset-detail-pages')) return;
     gestureRef.current = { pointerId: event.pointerId, x: event.clientX, startX: event.clientX, y: event.clientY, startY: event.clientY, axis: '', moved: false };
@@ -154,7 +160,7 @@ export default function FloatingPresetView({ onBack, onAdjust, onGenerate, onRes
     {loading ? <div className="floating-preset-empty">{t('floatPresetLoading')}</div> : !visible.length ? <div className="floating-preset-empty">{t('floatPresetNoMatch')}</div> : <>
       <div className="floating-preset-browser-heading"><span>{t('floatPresetBrowserHint', { index: index + 1, total: visible.length })}</span><div><button type="button" className="btn btn-icon" onClick={() => scrollToPreset(index - 1)} disabled={index === 0} aria-label={t('floatPresetPrevious')}><Icon name="chevronLeft" size={13} /></button><button type="button" className="btn btn-icon" onClick={() => scrollToPreset(index + 1)} disabled={index === visible.length - 1} aria-label={t('floatPresetNext')}><Icon name="chevronRight" size={13} /></button></div></div>
        <div className="floating-preset-pages" ref={pagesRef} onScroll={handleScroll} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp}>
-           {visible.map(preset => <article className="floating-preset-page floating-preset-card-page" key={preset.id}><PresetDetailPages preset={preset} tagTranslations={tagTranslations} language={language} copied={copied} copy={copy} onAdjust={onAdjust} onGenerate={onGenerate} onReset={onReset} onHorizontalSwipe={delta => pagesRef.current?.scrollBy({ left: delta, behavior: 'auto' })} onHorizontalRelease={() => { if (pagesRef.current) scrollToPreset(Math.round(pagesRef.current.scrollLeft / pagesRef.current.clientWidth)); }} /></article>)}
+           {visible.map(preset => <article className="floating-preset-page floating-preset-card-page" key={preset.id}><PresetDetailPages preset={preset} tagTranslations={tagTranslations} language={language} copied={copied} copy={copy} onAdjust={onAdjust} onGenerate={onGenerate} onReset={onReset} onEnqueue={enqueuePreset} onHorizontalSwipe={delta => pagesRef.current?.scrollBy({ left: delta, behavior: 'auto' })} onHorizontalRelease={() => { if (pagesRef.current) scrollToPreset(Math.round(pagesRef.current.scrollLeft / pagesRef.current.clientWidth)); }} /></article>)}
       </div>
     </>}
   </section>;

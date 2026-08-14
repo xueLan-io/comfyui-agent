@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ComfyUIProvider, useComfyUI } from './contexts/ComfyUIContext.jsx';
 import { AgentProvider, useAgent } from './contexts/AgentContext.jsx';
 import { SessionProvider } from './contexts/SessionContext.jsx';
+import { BatchQueueProvider } from './contexts/BatchQueueContext.jsx';
 import Header from './components/Header.jsx';
 import ChatPanel from './components/ChatPanel.jsx';
 import WorkspacePanel from './components/WorkspacePanel.jsx';
@@ -15,7 +16,6 @@ import PolicyConfirmModal from './components/PolicyConfirmModal.jsx';
 import AssetLibraryPage from './components/AssetLibraryPage.jsx';
 import PromptLibraryPage from './components/PromptLibraryPage.jsx';
 import PresetLibraryPage from './components/PresetLibraryPage.jsx';
-import BatchWorkspacePage from './components/BatchWorkspacePage.jsx';
 import ComfyUISetup from './components/ComfyUISetup.jsx';
 import Icon from './components/Icon.jsx';
 import QuickGenerateFloat from './components/QuickGenerateFloat.jsx';
@@ -56,6 +56,15 @@ function AppLayout({ floating = false }) {
     };
     window.addEventListener('comfy-agent:preset-saved', handlePresetSaved);
     return () => window.removeEventListener('comfy-agent:preset-saved', handlePresetSaved);
+  }, []);
+
+  useEffect(() => {
+    if (!window.electronAPI?.onQueueOpenTab) return undefined;
+    return window.electronAPI.onQueueOpenTab(() => {
+      setActiveView('chat');
+      // Hand off the tab switch after WorkspacePanel has mounted (next commit).
+      window.setTimeout(() => window.dispatchEvent(new CustomEvent('comfy-agent:open-queue-tab')), 0);
+    });
   }, []);
 
   const consumeLibraryGeneration = useCallback(request => {
@@ -137,7 +146,7 @@ function AppLayout({ floating = false }) {
         <Header onOpenSetup={openSetup} />
         <main className="body">
           <ProjectSidebar activeView={activeView} onViewChange={handleViewChange} onOpenQuickGenerate={() => window.electronAPI.floatingShow?.()} />
-          {activeView === 'batch' ? <BatchWorkspacePage onBack={() => setActiveView('chat')} /> : activeView === 'assets' ? <AssetLibraryPage onBack={() => setActiveView('chat')} /> : <ChatPanel active={activeView === 'chat'} onReady={handleChatReady} />}
+          {activeView === 'assets' ? <AssetLibraryPage onBack={() => setActiveView('chat')} /> : <ChatPanel active={activeView === 'chat'} onReady={handleChatReady} />}
           {activeView === 'chat' && <WorkspacePanel onOpenPromptLibrary={openPromptLibrary} />}
         </main>
       </div>
@@ -197,6 +206,6 @@ function AppLayout({ floating = false }) {
 
 export default function App({ floating = false }) {
   return (
-    <I18nProvider><SessionProvider><ComfyUIProvider floating={floating}><AgentProvider><AppLayout floating={floating} /></AgentProvider></ComfyUIProvider></SessionProvider></I18nProvider>
+    <I18nProvider><SessionProvider><BatchQueueProvider><ComfyUIProvider floating={floating}><AgentProvider><AppLayout floating={floating} /></AgentProvider></ComfyUIProvider></BatchQueueProvider></SessionProvider></I18nProvider>
   );
 }

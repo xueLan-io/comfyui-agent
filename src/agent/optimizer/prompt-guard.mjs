@@ -1,4 +1,4 @@
-export const DEFAULT_BUDGETS = { positiveTokens: 250, negativeTokens: 100 };
+export const DEFAULT_BUDGETS = { positiveTokens: 400, negativeTokens: 120 };
 
 const CJK_RANGE = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/;
 const CJK_RANGE_G = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g;

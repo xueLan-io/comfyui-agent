@@ -10,6 +10,7 @@ const SEARCH_ENDPOINT = 'https://html.duckduckgo.com/html/';
 const BING_ENDPOINT = 'https://cn.bing.com/search';
 const BAIDU_ENDPOINT = 'https://www.baidu.com/s';
 const BAIDU_AI_SEARCH_ENDPOINT = 'https://qianfan.baidubce.com/v2/ai_search/web_summary';
+const TAVILY_ENDPOINT = 'https://api.tavily.com/search';
 const DEFAULT_TIMEOUT_MS = 12000;
 const DEFAULT_CACHE_TTL_MS = 300000;
 const PROXY_TIMEOUT_MS = 15000;
@@ -18,6 +19,31 @@ const MAX_PAGE_CHARS = 12000;
 const MAX_RESULTS = 10;
 const MAX_CACHE_ENTRIES = 64;
 const TRUST_LEVELS = ['official', 'verified', 'community', 'unknown'];
+// 某来源失败后短期内不再重试（秒级冷却），避免每次搜索都撞墙拖慢整体
+const DEFAULT_FAILURE_COOLDOWN_MS = 30000;
+// 系统代理缓存有效期：改代理后最多延迟这么久生效
+const SYSTEM_PROXY_CACHE_TTL_MS = 60000;
+// 常见两段式公共后缀（CC 二级域等），用于精确计算"可注册域"（eTLD+1）
+const PUBLIC_SUFFIX_2 = new Set([
+  'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn', 'mil.cn', 'ac.cn',
+  'com.hk', 'com.tw', 'com.mo', 'co.uk', 'org.uk', 'ac.uk', 'gov.uk',
+  'com.au', 'net.au', 'org.au', 'co.jp', 'ne.jp', 'or.jp', 'ac.jp', 'go.jp',
+  'com.sg', 'com.my', 'com.ph', 'co.in', 'net.in', 'org.in',
+  'com.br', 'com.mx', 'com.ar', 'co.kr', 'or.kr', 'ne.kr', 're.kr',
+  'com.tr', 'co.id', 'or.id', 'web.id', 'com.vn', 'com.th', 'co.th',
+  'com.sa', 'co.za', 'com.eg', 'com.ng', 'com.pk', 'com.bd', 'com.np',
+  'com.lk', 'co.nz', 'net.nz', 'org.nz', 'com.pe', 'com.co', 'com.ec',
+  'com.uy', 'com.py', 'com.bo', 'com.ve', 'com.ua', 'com.ru', 'co.il',
+  'org.il', 'com.gr', 'com.pt', 'com.es', 'com.it', 'com.fr', 'com.de',
+  'com.pl', 'com.se', 'com.no', 'com.fi', 'com.dk', 'com.hr', 'com.si',
+  'com.sk', 'com.cz', 'com.hu', 'com.ro', 'com.bg', 'com.rs',
+  'co.ke', 'co.tz', 'co.ug', 'co.zw', 'com.gh', 'com.cm', 'com.ci',
+  'com.sn', 'com.ml', 'com.bf', 'com.ne', 'com.td', 'com.cg', 'com.ga',
+  'com.gn', 'com.gw', 'com.sl', 'com.lr', 'com.mr', 'com.mg', 'com.km',
+  'com.sc', 'com.mu', 'com.et', 'com.dj', 'com.so', 'com.er', 'com.ly',
+  'com.tn', 'com.dz', 'com.ma', 'com.ye', 'com.iq', 'com.sy', 'com.lb',
+  'com.jo', 'com.kw', 'com.qa', 'com.bh', 'com.om', 'com.ae', 'com.sa',
+]);
 
 function decodeEntities(value = '') {
   return String(value)
@@ -39,13 +65,96 @@ function cleanText(value = '') {
     .replace(/\s+/g, ' ')).trim();
 }
 
+// 整块剔除页面噪音元素（导航/页脚/侧栏/广告/评论区等），只保留正文文本。
+// 用栈式扫描正确处理嵌套：进入噪音元素后其内部文本全部丢弃，直到匹配的闭合标签。
+const NOISE_ELEMENTS = new Set(['nav', 'header', 'footer', 'aside', 'form', 'iframe', 'noscript', 'template', 'svg', 'style', 'script']);
+const NOISE_CLASS_PATTERN = /\b(?:nav|menu|sidebar|footer|header|banner|advert|ads?|comment|cookie|popup|modal|social|share|breadcrumb|pagination|related|recommend|widget|toolbar|bottom)\b/i;
+const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+
+function stripNoiseBlocks(html) {
+  const kept = [];
+  const stack = [];
+  let inNoise = 0;
+  let textStart = 0;
+  let i = 0;
+  const n = String(html).length;
+  while (i < n) {
+    if (html.startsWith('<!--', i)) {
+      const end = html.indexOf('-->', i + 4);
+      if (end === -1) break;
+      if (inNoise === 0 && textStart < i) kept.push(html.slice(textStart, i));
+      i = end + 3;
+      textStart = i;
+      continue;
+    }
+    if (html[i] !== '<') { i += 1; continue; }
+    let j = i + 1;
+    const closing = html[j] === '/';
+    if (closing) j += 1;
+    const nameStart = j;
+    while (j < n && /[a-zA-Z0-9-]/.test(html[j])) j += 1;
+    const name = html.slice(nameStart, j).toLowerCase();
+    if (!name || !/[a-zA-Z]/.test(name)) { i += 1; continue; }
+    let quote;
+    let tagEnd = -1;
+    for (let k = j; k < n; k += 1) {
+      const c = html[k];
+      if (quote !== undefined) { if (c === quote) quote = undefined; }
+      else if (c === '"' || c === "'") quote = c;
+      else if (c === '>') { tagEnd = k; break; }
+    }
+    if (tagEnd === -1) break;
+    // 进入标签前保留前面的正文（噪音内不保留）
+    if (inNoise === 0 && textStart < i) kept.push(html.slice(textStart, i));
+    const tagText = html.slice(i, tagEnd + 1);
+    const isVoid = VOID_TAGS.has(name) || /\/\s*>$/.test(tagText);
+    if (closing) {
+      for (let k = stack.length - 1; k >= 0; k -= 1) {
+        if (stack[k].name === name) {
+          if (stack[k].noise) inNoise -= 1;
+          stack.length = k;
+          break;
+        }
+      }
+    } else if (!isVoid) {
+      const noise = NOISE_ELEMENTS.has(name) || NOISE_CLASS_PATTERN.test(tagText);
+      if (noise) inNoise += 1;
+      stack.push({ name, noise });
+    }
+    i = tagEnd + 1;
+    textStart = i;
+  }
+  if (inNoise === 0) kept.push(html.slice(textStart));
+  // 块间用空格分隔，避免相邻正文（如标题与段落）粘连；cleanText 会归一空白
+  return kept.join(' ');
+}
+
 function normalizedDomains(value) {
   return (Array.isArray(value) ? value : []).map(item => String(item).trim().toLowerCase()
     .replace(/^https?:\/\//, '').replace(/^\*\./, '').replace(/\/.*$/, '')).filter(Boolean);
 }
 
+/**
+* 判断一个配置域名本身是否"可注册域"级别（eTLD+1）。
+* 可注册域允许匹配其任意子域；比可注册域更深的配置（如 cn.bing.com）
+* 只精确匹配自身，防止 evil.cn.bing.com 之类子域被白名单误放行。
+*/
+function isRegistrableDomain(domain) {
+  const labels = domain.split('.');
+  if (labels.length <= 1) return true;
+  const lastTwo = labels.slice(-2).join('.');
+  if (PUBLIC_SUFFIX_2.has(lastTwo)) {
+    // 两段式公共后缀：可注册域 = 后缀前再加一段（如 example.com.cn）
+    return labels.length === 3;
+  }
+  // 普通 TLD：可注册域就是最后两段
+  return labels.length === 2;
+}
+
 function domainMatches(hostname, domain) {
-  return hostname === domain || hostname.endsWith(`.${domain}`);
+  if (hostname === domain) return true;
+  if (!hostname.endsWith(`.${domain}`)) return false;
+  return isRegistrableDomain(domain);
 }
 
 function allowedDomain(url, domains) {
@@ -380,7 +489,8 @@ function resolveSearchProviders(input, query = '') {
 function parsePage(url, contentType, html) {
   const title = cleanText(html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '');
   const description = cleanText(html.match(/<meta\b[^>]*(?:name|property)=["'](?:description|og:description)["'][^>]*content=["']([^"']*)["']/i)?.[1] || '');
-  const content = cleanText(html).slice(0, MAX_PAGE_CHARS);
+  // 先去噪（导航/页脚/广告等整块剔除）再转文本，正文占比更高、token 更省
+  const content = cleanText(stripNoiseBlocks(html)).slice(0, MAX_PAGE_CHARS);
   return {
     url,
     title: title.slice(0, 300),
@@ -416,9 +526,11 @@ function isLoopbackProxy(value) {
 }
 
 let cachedSystemProxy;
+let cachedSystemProxyAt = 0;
 function readSystemProxy() {
-  if (cachedSystemProxy !== undefined) return cachedSystemProxy;
+  if (cachedSystemProxy !== undefined && Date.now() - cachedSystemProxyAt < SYSTEM_PROXY_CACHE_TTL_MS) return cachedSystemProxy;
   cachedSystemProxy = { enabled: false, proxy: null };
+  cachedSystemProxyAt = Date.now();
   if (process.platform !== 'win32') return cachedSystemProxy;
   let enabled = false;
   let value = '';
@@ -432,7 +544,14 @@ function readSystemProxy() {
   } catch {}
   const schemeValue = value.match(/(?:^|;)\s*https?=(?:https?:\/\/)?([^;]+)/i)?.[1];
   cachedSystemProxy = { enabled, proxy: parseProxyUrl(schemeValue || value) };
+  cachedSystemProxyAt = Date.now();
   return cachedSystemProxy;
+}
+
+// 手动清空系统代理缓存（改代理后调用立即生效，测试也用它隔离）
+export function clearSystemProxyCache() {
+  cachedSystemProxy = undefined;
+  cachedSystemProxyAt = 0;
 }
 
 function windowsSystemProxy() {
@@ -549,9 +668,121 @@ async function fetchBaiduApi(fetchImpl, lookupImpl, signal, proxy, apiKey, query
   return parseBaiduApiResults(body, Math.min(maxResults, MAX_RESULTS), policy);
 }
 
+// --- 通用搜索 API（Tavily / SearXNG） ---
+// 与 baidu-api 同级：可信配置提供 key/端点，模型无法控制，SSRF 风险面小。
+// Tavily 是固定公网端点，走完整 DNS 钉扎校验；SearXNG 允许自托管回环地址（受信配置）。
+
+async function validateApiUrl(rawUrl, { allowLocal = false } = {}, lookupImpl = lookup) {
+  let url;
+  try { url = new URL(rawUrl); } catch { throw new Error('Invalid URL'); }
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Only http and https URLs are allowed');
+  if (url.username || url.password) throw new Error('URLs with embedded credentials are not allowed');
+  if (allowLocal && (url.hostname === 'localhost' || url.hostname.endsWith('.localhost') || isIP(url.hostname) && privateAddress(url.hostname))) {
+    const addresses = isIP(url.hostname)
+      ? [{ address: url.hostname, family: isIP(url.hostname) }]
+      : await lookupImpl(url.hostname, { all: true });
+    if (addresses.length === 0 || addresses.some(item => !privateAddress(item.address))) {
+      throw new Error('The local Search API must resolve to a loopback or private address');
+    }
+    const address = addresses[0];
+    return { url, address: address.address, family: address.family || isIP(address.address) };
+  }
+  return validateAndResolve(rawUrl, lookupImpl);
+}
+
+async function fetchJsonApi(fetchImpl, lookupImpl, signal, proxy, { url: rawUrl, method = 'POST', headers = {}, body = null, allowLocal = false }) {
+  const resolved = await validateApiUrl(rawUrl, { allowLocal }, lookupImpl);
+  const response = fetchImpl === globalThis.fetch
+    ? await requestPinned(resolved.url, resolved, signal, headers, proxy, method, body ? JSON.stringify(body) : null)
+    : await fetchImpl(rawUrl, { method, redirect: 'manual', signal, headers, body: body ? JSON.stringify(body) : undefined });
+  const text = await readResponse(response);
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { throw new Error('Search API returned invalid JSON'); }
+  if (!response.ok) {
+    const detail = parsed?.error?.message || parsed?.error || parsed?.message;
+    throw new Error(`Search API failed with HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
+  }
+  return parsed;
+}
+
+async function fetchTavilySearch(fetchImpl, lookupImpl, signal, proxy, apiKey, query, maxResults) {
+  return fetchJsonApi(fetchImpl, lookupImpl, signal, proxy, {
+    url: TAVILY_ENDPOINT,
+    headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'ComfyMuse/0.2' },
+    body: {
+      api_key: apiKey,
+      query,
+      max_results: Math.min(Math.max(maxResults, 1), 20),
+      include_answer: true,
+      search_depth: 'advanced',
+    },
+  });
+}
+
+async function fetchSearxngSearch(fetchImpl, lookupImpl, signal, proxy, baseUrl, query) {
+  const base = String(baseUrl || '').trim().replace(/\/+$/, '');
+  const url = new URL('/search', base + '/');
+  url.searchParams.set('q', query);
+  url.searchParams.set('format', 'json');
+  url.searchParams.set('safesearch', '0');
+  url.searchParams.set('language', 'auto');
+  url.searchParams.set('categories', 'general');
+  return fetchJsonApi(fetchImpl, lookupImpl, signal, proxy, {
+    url: url.toString(),
+    method: 'GET',
+    headers: { accept: 'application/json', 'user-agent': 'ComfyMuse/0.2' },
+    allowLocal: true,
+  });
+}
+
+function parseApiResults(items, limit, policy = {}) {
+  const results = [];
+  const seen = new Set();
+  for (const item of items) {
+    const rawUrl = String(item?.url || '').trim();
+    if (!rawUrl || !allowedDomain(rawUrl, policy.allowedDomains)) continue;
+    let url;
+    try { url = new URL(rawUrl); } catch { continue; }
+    if (!['http:', 'https:'].includes(url.protocol) || seen.has(url.toString())) continue;
+    seen.add(url.toString());
+    results.push({
+      title: cleanText(item.title || url.hostname).slice(0, 300),
+      url: url.toString(),
+      snippet: cleanText(item.content || item.snippet || '').slice(0, 1200),
+      trustLevel: classifySource(url, policy),
+      ...(item.publishedDate || item.published_date ? { publishedAt: String(item.publishedDate || item.published_date).slice(0, 10) } : {}),
+    });
+    if (results.length >= limit) break;
+  }
+  return results;
+}
+
+function parseTavilyResults(payload, limit, policy = {}) {
+  return {
+    answer: cleanText(payload?.answer || '').slice(0, MAX_PAGE_CHARS),
+    results: parseApiResults(Array.isArray(payload?.results) ? payload.results : [], limit, policy),
+  };
+}
+
+function parseSearxngResults(payload, limit, policy = {}) {
+  const answer = String(payload?.answers?.[0] || '').trim() || String(payload?.answer || '').trim();
+  return {
+    answer: cleanText(answer).slice(0, MAX_PAGE_CHARS),
+    results: parseApiResults(Array.isArray(payload?.results) ? payload.results : [], limit, policy),
+  };
+}
+
 export function createWebTool(fetchImpl = globalThis.fetch, lookupImpl = lookup, options = {}) {
   const cache = new Map();
   const defaultCacheTtlMs = Number.isFinite(options.cacheTtlMs) ? options.cacheTtlMs : DEFAULT_CACHE_TTL_MS;
+  // 失败源短期冷却：同一工具实例内某个源失败后，冷却期内不再重试，避免每次搜索都撞墙
+  const failures = new Map();
+  const failureCooldownMs = Number.isFinite(options.failureCooldownMs) ? options.failureCooldownMs : DEFAULT_FAILURE_COOLDOWN_MS;
+  function recordFailure(name) { failures.set(name, Date.now()); }
+  function onCooldown(name) {
+    const at = failures.get(name);
+    return at !== undefined && Date.now() - at < failureCooldownMs;
+  }
 
   function readCache(key, ttlMs) {
     const item = cache.get(key);
@@ -609,7 +840,7 @@ export function createWebTool(fetchImpl = globalThis.fetch, lookupImpl = lookup,
       additionalProperties: false,
     },
 
-    async execute({ action, query = '', url = '', maxResults = MAX_RESULTS, timeoutMs = DEFAULT_TIMEOUT_MS, allowNetwork = true, cacheTtlMs = defaultCacheTtlMs, allowedDomains = [], sourcePolicy: inputPolicy = {}, providers = [], proxyUrl = '', baiduApiKey = '', signal }) {
+    async execute({ action, query = '', url = '', maxResults = MAX_RESULTS, timeoutMs = DEFAULT_TIMEOUT_MS, allowNetwork = true, cacheTtlMs = defaultCacheTtlMs, allowedDomains = [], sourcePolicy: inputPolicy = {}, providers = [], proxyUrl = '', baiduApiKey = '', searchApi = '', searchApiKey = '', searchApiBaseUrl = '', signal }) {
       if (allowNetwork === false) return { action, error: '未进行在线检索', researchStatus: 'disabled' };
       if (typeof fetchImpl !== 'function') return { action, error: 'Web fetch is unavailable in this runtime' };
       if (proxyUrl && !isLoopbackProxy(proxyUrl)) {
@@ -627,6 +858,7 @@ export function createWebTool(fetchImpl = globalThis.fetch, lookupImpl = lookup,
         proxy: proxy ? `${proxy.host}:${proxy.port}` : null,
         fallbackProxy: fallbackProxy ? `${fallbackProxy.host}:${fallbackProxy.port}` : null,
         baiduApi: Boolean(baiduApiKey),
+        searchApi: `${String(searchApi || '').trim().toLowerCase()}:${Boolean(String(searchApiKey).trim())}:${String(searchApiBaseUrl || '').trim()}`,
       });
       if (ttlMs > 0) {
         const cached = readCache(key, ttlMs);
@@ -657,59 +889,99 @@ export function createWebTool(fetchImpl = globalThis.fetch, lookupImpl = lookup,
           const trimmed = String(query).trim().slice(0, 300);
           if (!trimmed) return { action, error: 'Search query is empty' };
           const failures = [];
-          if (String(baiduApiKey).trim()) {
+          const apiKey = String(searchApiKey).trim();
+          const baiduKey = String(baiduApiKey).trim();
+          const apiName = String(searchApi || '').trim().toLowerCase();
+          const attempted = [];
+          // —— API 层（Tavily / SearXNG / 百度千帆，串行尝试，成功即返回）——
+          // 与 HTML 抓取不同，API 返回结构化结果和摘要，质量更高；失败后走冷却并回退抓取
+          const apiCandidates = [];
+          if (apiName === 'tavily' && apiKey && !onCooldown('tavily')) {
+            apiCandidates.push({ name: 'tavily', run: async (p, sig) => parseTavilyResults(await fetchTavilySearch(fetchImpl, lookupImpl, sig, p, apiKey, trimmed, maxResults), Math.min(maxResults, MAX_RESULTS), policy) });
+          }
+          if (apiName === 'searxng' && String(searchApiBaseUrl).trim() && !onCooldown('searxng')) {
+            apiCandidates.push({ name: 'searxng', run: async (p, sig) => parseSearxngResults(await fetchSearxngSearch(fetchImpl, lookupImpl, sig, p, String(searchApiBaseUrl).trim(), trimmed), Math.min(maxResults, MAX_RESULTS), policy) });
+          }
+          if (baiduKey && !onCooldown('baidu-api')) {
+            apiCandidates.push({ name: 'baidu-api', run: (p, sig) => fetchBaiduApi(fetchImpl, lookupImpl, sig, p, baiduKey, trimmed, maxResults, policy) });
+          }
+          for (const candidate of apiCandidates) {
+            attempted.push(candidate.name);
+            const apiRequest = createAbortSignal(providerTimeoutMs(), request.signal);
             try {
-              let apiResult;
-              const apiRequest = createAbortSignal(providerTimeoutMs(), request.signal);
+              let parsed;
               try {
-                apiResult = await fetchBaiduApi(fetchImpl, lookupImpl, apiRequest.signal, proxy, String(baiduApiKey).trim(), trimmed, maxResults, policy);
+                parsed = await candidate.run(proxy, apiRequest.signal);
               } catch (error) {
                 if (error.name === 'AbortError') {
                   if (request.signal.aborted) throw error;
-                  throw new Error('Baidu AI Search timed out');
+                  throw new Error(`${candidate.name} timed out`);
                 }
                 if (!fallbackProxy || !NETWORK_ERROR.test(error?.message || '')) throw error;
-                apiResult = await fetchBaiduApi(fetchImpl, lookupImpl, apiRequest.signal, fallbackProxy, String(baiduApiKey).trim(), trimmed, maxResults, policy);
-              } finally {
-                apiRequest.cleanup();
+                const retryRequest = createAbortSignal(providerTimeoutMs(), request.signal);
+                try {
+                  parsed = await candidate.run(fallbackProxy, retryRequest.signal);
+                } finally {
+                  retryRequest.cleanup();
+                }
               }
-              if (apiResult.results.length > 0 || apiResult.answer) {
-                const result = { action, query: trimmed, provider: 'baidu-api', answer: apiResult.answer, results: apiResult.results };
+              if (parsed.results.length > 0 || parsed.answer) {
+                const result = { action, query: trimmed, provider: candidate.name, attempted, answer: parsed.answer, results: parsed.results };
                 if (ttlMs > 0) writeCache(key, result);
                 return result;
               }
-              failures.push('baidu-api: no results returned');
+              failures.push(`${candidate.name}: no results returned`);
+              recordFailure(candidate.name);
             } catch (error) {
               if (error.name === 'AbortError') return { action, error: 'Web request timed out or was cancelled' };
-              failures.push(`baidu-api: ${error.message}`);
+              failures.push(`${candidate.name}: ${error.message}`);
+              recordFailure(candidate.name);
+            } finally {
+              apiRequest.cleanup();
             }
           }
+          // —— HTML 抓取层（并行发起，按 provider 排序顺序合并，结果确定性不变）——
           const merged = [];
           const seen = new Set();
           const contributors = [];
-          for (const name of searchProviders) {
+          const availableProviders = searchProviders.filter(name => !onCooldown(name) && SEARCH_PROVIDERS[name]);
+          attempted.push(...availableProviders);
+          const providerTasks = availableProviders.map(name => (async () => {
             const spec = SEARCH_PROVIDERS[name];
-            if (!spec) continue;
-            try {
-              const endpoint = spec.buildUrl(trimmed);
-              const response = await fetchForProvider(endpoint, {});
-              const results = spec.parse(response.text, Math.min(maxResults, MAX_RESULTS), policy);
-              if (results.length > 0) contributors.push(name);
-              for (const item of results) {
-                const key = item.url.split('#')[0];
-                if (seen.has(key)) continue;
-                seen.add(key);
-                merged.push(item);
-              }
-            } catch (error) {
-              if (error.name === 'AbortError') return { action, error: 'Web request timed out or was cancelled' };
-              failures.push(`${name}: ${error.message}`);
+            const endpoint = spec.buildUrl(trimmed);
+            const response = await fetchForProvider(endpoint, {});
+            const results = spec.parse(response.text, Math.min(maxResults, MAX_RESULTS), policy);
+            return { name, results };
+          })());
+          const settledProviders = await Promise.allSettled(providerTasks);
+          for (let index = 0; index < settledProviders.length; index += 1) {
+            const settled = settledProviders[index];
+            const name = availableProviders[index];
+            if (settled.status === 'rejected') {
+              if (settled.reason?.name === 'AbortError') throw settled.reason;
+              failures.push(`${name}: ${settled.reason?.message || 'provider failed'}`);
+              recordFailure(name);
+              continue;
+            }
+            const { results } = settled.value;
+            if (results.length > 0) contributors.push(name);
+            for (const item of results) {
+              const dedupeKey = item.url.split('#')[0];
+              if (seen.has(dedupeKey)) continue;
+              seen.add(dedupeKey);
+              merged.push(item);
             }
           }
           if (merged.length === 0) {
-            return { action, query: trimmed, error: failures.length ? `All search providers failed (${failures.join('; ')})` : 'No search providers configured', researchStatus: 'search_failed' };
+            return {
+              action, query: trimmed,
+              error: failures.length ? `All search providers failed (${failures.join('; ')})` : 'No search providers configured',
+              researchStatus: 'search_failed',
+              // 失败时也报告实际尝试过的来源（含 API 层），供界面显示"搜索来源/尝试了哪些搜索"
+              attempted,
+            };
           }
-          const result = { action, query: trimmed, provider: contributors[0] || '', results: merged.slice(0, maxResults) };
+          const result = { action, query: trimmed, provider: contributors[0] || '', attempted, results: merged.slice(0, maxResults) };
           if (ttlMs > 0) writeCache(key, result);
           return result;
         }
@@ -734,7 +1006,7 @@ export function createWebTool(fetchImpl = globalThis.fetch, lookupImpl = lookup,
 
 export const WebTool = createWebTool();
 export const SEARCH_PROVIDER_NAMES = Object.keys(SEARCH_PROVIDERS);
-export { cleanText, parsePage, parseSearchResults, parseBingResults, parseBaiduResults, privateAddress, validateRemoteUrl, resolveProxy, resolveSearchProviders, systemProxyCandidate };
+export { cleanText, stripNoiseBlocks, isRegistrableDomain, parsePage, parseSearchResults, parseBingResults, parseBaiduResults, parseTavilyResults, parseSearxngResults, privateAddress, validateRemoteUrl, resolveProxy, resolveSearchProviders, systemProxyCandidate };
 
 export async function openResultPages(webTool, results, settings = {}) {
   const items = Array.isArray(results) ? results.slice(0, Math.max(Number(settings.maxOpenPages) || 0, 0)) : [];

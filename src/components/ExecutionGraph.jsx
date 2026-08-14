@@ -3,7 +3,7 @@ import { useI18n } from '../i18n/I18nContext.jsx';
 
 function statusIcon(status) {
   if (status === 'completed') return 'executionDone';
-  if (['running', 'processing'].includes(status)) return 'executionActive';
+  if (['running', 'processing', 'queued', 'preparing', 'observing', 'retrying', 'replanning', 'stopping'].includes(status)) return 'executionActive';
   if (['failed', 'error', 'archive_failed', 'abandoned'].includes(status)) return 'executionError';
   return 'executionPending';
 };
@@ -11,6 +11,18 @@ function statusIcon(status) {
 function clampPercent(value) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(0, Math.min(100, number)) : null;
+}
+
+function providerLabel(provider) {
+  const names = {
+    bing: 'Bing',
+    duckduckgo: 'DuckDuckGo',
+    baidu: '百度',
+    'baidu-api': '百度AI',
+    tavily: 'Tavily',
+    searxng: 'SearXNG',
+  };
+  return names[provider] || provider || '';
 }
 
 function statusText(status, t) {
@@ -31,7 +43,7 @@ export default function ExecutionGraph({ steps, progress }) {
   if (!steps?.length) return <div className="graph-empty">{t('graphEmpty')}</div>;
 
   const activeIndex = steps.reduce((current, step, index) => (
-    ['running', 'processing'].includes(step.status) ? index : current
+    ['running', 'processing', 'queued', 'preparing', 'observing', 'retrying', 'replanning', 'stopping'].includes(step.status) ? index : current
   ), -1);
   const progressPercent = clampPercent(progress?.overallPercent ?? progress?.percent);
   const activeProgress = clampPercent(progress?.nodePercent);
@@ -49,6 +61,12 @@ export default function ExecutionGraph({ steps, progress }) {
                 <div className="exec-step-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={activeProgress ?? progressPercent ?? undefined}>
                   <div className="exec-step-progress-meta"><span>{progress?.message || progress?.node || t('graphExecuting')}</span>{activeProgress !== null && <b>{activeProgress}%</b>}</div>
                   <div className="generation-progress-track"><span className={activeProgress === null && progressPercent === null ? 'indeterminate' : ''} style={activeProgress !== null ? { width: `${Math.max(2, activeProgress)}%` } : progressPercent !== null ? { width: `${Math.max(2, progressPercent)}%` } : undefined} /></div>
+                </div>
+              )}
+              {(step.tool === 'web' && (step.result?.provider || step.result?.attempted?.length > 0)) && (
+                <div className="exec-graph-provider">
+                  {t('researchProvider')}：{step.result.provider ? providerLabel(step.result.provider) : (step.result.attempted || []).map(providerLabel).join(' / ')}
+                  {step.result.provider && !step.result.sources?.length && !step.result.results?.length ? '（未获取到可用结果）' : !step.result.provider ? '（全部失败）' : ''}
                 </div>
               )}
               {(step.error || step.reason || step.code) && <div className="exec-graph-error">{step.error || step.reason || step.code}</div>}

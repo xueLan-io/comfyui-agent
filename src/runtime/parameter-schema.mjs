@@ -30,7 +30,8 @@ function fieldType(input = {}) {
   return 'text';
 }
 
-export function buildParameterSchema(manifest = {}) {
+export function buildParameterSchema(manifest) {
+  manifest = manifest || {};
   const fields = [];
   const seen = new Set();
   const add = (input, source, nodeId = '') => {

@@ -313,13 +313,20 @@ export class Planner {
       const ids = new Set(plan.steps.map(step => step.id).filter(Boolean));
       let index = 1;
       while (ids.has(`step${index}`)) index++;
-      plan.steps.unshift({
+      const enhanceStep = {
         id: `step${index}`,
         tool: 'prompt_enhance',
         input: this._promptInput(prompt, mode, context),
         description: `Enhance prompt (${mode} mode)`,
         expected_output: 'prompt',
-      });
+      };
+      // 提示词增强必须排在 web 调研步骤之后，否则编译时 referenceContext
+      // 还没有角色外观事实。插到最后一个 web 步骤的后面。
+      let insertAt = plan.steps.length;
+      for (let i = plan.steps.length - 1; i >= 0; i--) {
+        if (plan.steps[i].tool === 'web') { insertAt = i + 1; break; }
+      }
+      plan.steps.splice(insertAt, 0, enhanceStep);
     }
   }
 

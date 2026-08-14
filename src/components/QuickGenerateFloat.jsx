@@ -5,10 +5,11 @@ import ImageAsset from './ImageAsset.jsx';
 import AssetPreviewModal from './AssetPreviewModal.jsx';
 import Icon from './Icon.jsx';
 import FloatingPresetView from './FloatingPresetView.jsx';
-import { presetDefaultControls, presetWorkflowName } from '../runtime/preset-generation.mjs';
+import { presetDefaultControls, presetWorkflowName, buildPresetGenerationRequest } from '../runtime/preset-generation.mjs';
 import H3VideoPanel from './H3VideoPanel.jsx';
 import { isMiniMaxH3Workflow } from './h3-video-controls.mjs';
 import { useI18n } from '../i18n/I18nContext.jsx';
+import { useBatchQueue } from '../contexts/BatchQueueContext.jsx';
 
 const INITIAL_PROMPT = '';
 const INITIAL_NEGATIVE = '';
@@ -31,14 +32,14 @@ function replacePrompt(value) {
   return normalizePrompt(value).trim();
 }
 
-function ProgressRing({ progress, status, indeterminate = false }) {
-  const radius = 27;
+function ProgressRing({ progress, status, indeterminate = false, size = 64 }) {
+  const radius = size * 0.42;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (Math.max(0, Math.min(100, progress)) / 100) * circumference;
   return (
-    <svg className={`quick-generate-ring quick-generate-ring-${status}${indeterminate ? ' indeterminate' : ''}`} viewBox="0 0 64 64" aria-hidden="true">
-      <circle className="quick-generate-ring-track" cx="32" cy="32" r={radius} />
-      <circle className="quick-generate-ring-value" cx="32" cy="32" r={radius} strokeDasharray={circumference} strokeDashoffset={offset} />
+    <svg className={`quick-generate-ring quick-generate-ring-${status}${indeterminate ? ' indeterminate' : ''}`} viewBox={`0 0 ${size} ${size}`} width={size} height={size} aria-hidden="true">
+      <circle className="quick-generate-ring-track" cx={size / 2} cy={size / 2} r={radius} />
+      <circle className="quick-generate-ring-value" cx={size / 2} cy={size / 2} r={radius} strokeDasharray={circumference} strokeDashoffset={offset} />
     </svg>
   );
 }
@@ -52,6 +53,8 @@ function PromptChips({ value, onRemove }) {
 
 export default function QuickGenerateFloat({ onClose, visible = true }) {
   const { t } = useI18n();
+  const queue = useBatchQueue();
+  const { activeBatches, queueItems, pauseBatch, resumeBatch, addToQueue } = queue;
   const { generationProgress, generationResult, runtimeView, statusMsg, preview, sendQuickGeneration, runLibraryGeneration, handleCancel, setPreview } = useAgent();
   const { selectedFile, selectWorkflow, workflowFiles, workflowManifest, generationControls, setGenerationControls } = useComfyUI();
   const [collapsed, setCollapsed] = useState(false);
@@ -70,8 +73,10 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
   const [generationPage, setGenerationPage] = useState('image');
   const [activePreset, setActivePreset] = useState(null);
   const [dragReceiving, setDragReceiving] = useState(false);
+  const [dragZone, setDragZone] = useState(null);
   const [h3Readiness, setH3Readiness] = useState(null);
   const incomingDragRef = useRef(null);
+  const miniBarRef = useRef(null);
   const status = runtimeView.phase === 'completed' ? 'complete'
     : ['failed', 'recovery'].includes(runtimeView.phase) ? 'failed'
       : runtimeView.phase === 'preview' ? 'confirming'
@@ -79,6 +84,57 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
           : runtimeView.phase || 'idle';
   const isBusy = runtimeView.busy;
   tabRef.current = tab;
+
+  const primaryBatch = activeBatches[0];
+  const queueTotalJobs = activeBatches.reduce((sum, batch) => sum + (batch.progress?.total || 0), 0);
+  const queueDoneJobs = activeBatches.reduce((sum, batch) => sum + (batch.progress?.done || 0), 0);
+  const queueProgress = queueTotalJobs ? Math.round(queueDoneJobs * 100 / queueTotalJobs) : 0;
+  const queueCanResume = primaryBatch && ['created', 'paused', 'interrupted'].includes(primaryBatch.status);
+  const queueIsRunning = primaryBatch?.status === 'running';
+
+  function zoneFromLocal(local) {
+    const rect = miniBarRef.current?.getBoundingClientRect();
+    if (!local || !rect) return 'prompt';
+    return local.x >= rect.left && local.x <= rect.right && local.y >= rect.top && local.y <= rect.bottom ? 'minibar' : 'prompt';
+  }
+
+  function payloadToPlan(payload) {
+    if (payload?.kind === 'preset-card') {
+      return buildPresetGenerationRequest({
+        ...payload,
+        id: payload.presetId || payload.id || '',
+        title: payload.title || '',
+        positive: payload.positive || '',
+        negative: payload.negative || '',
+        workflowName: payload.workflowName || payload.workflow || '',
+        parameters: payload.parameters || {},
+        nodeOverrides: payload.nodeOverrides || {},
+        outputNodeIds: payload.outputNodeIds || null,
+        sourceImages: payload.sourceImages || [],
+      });
+    }
+    return {
+      positive: payload?.positive || payload?.content || '',
+      negative: payload?.negative || '',
+      workflowName: payload?.workflowName || '',
+      parameters: payload?.parameters || {},
+      nodeOverrides: payload?.nodeOverrides || {},
+      outputNodeIds: payload?.outputNodeIds || null,
+      media: { images: [], videos: [] },
+    };
+  }
+
+  function enqueueDraggedCard(payload) {
+    const isPreset = payload?.kind === 'preset-card';
+    addToQueue(payloadToPlan(payload), {
+      sourceKind: isPreset ? 'preset' : 'plan',
+      sourceLabel: isPreset ? (payload.title || t('queueSourcePreset')) : t('queueSourcePlan'),
+    });
+  }
+
+  function openQueueTab() {
+    void window.electronAPI.queueOpenMainTab?.();
+  }
 
   function stopResultCountdown() {
     if (resultTimerRef.current) window.clearInterval(resultTimerRef.current);
@@ -140,25 +196,31 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
         cancelOrbDrag();
         incomingDragRef.current = event.payload || null;
         setDragReceiving(false);
+        setDragZone(null);
         return;
       }
       if (event?.phase === 'move') {
         setDragReceiving(Boolean(event.hit));
+        setDragZone(zoneFromLocal(event.local));
         return;
       }
       if (event?.phase === 'cancel') {
         incomingDragRef.current = null;
         setDragReceiving(false);
+        setDragZone(null);
         cancelOrbDrag();
         return;
       }
       if (event?.phase !== 'end') return;
       const payload = incomingDragRef.current;
+      const zone = zoneFromLocal(event.local);
       incomingDragRef.current = null;
       setDragReceiving(false);
+      setDragZone(null);
       if (!event.hit || !payload) return;
       cancelOrbDrag();
-      applyDraggedCard(payload);
+      if (zone === 'minibar') enqueueDraggedCard(payload);
+      else applyDraggedCard(payload);
     };
   });
 
@@ -424,7 +486,7 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
   return (
     <>
       <section className={`quick-generate-float${collapsed ? ' collapsed' : ''}${dragReceiving ? ' drag-receiving' : ''}${visible ? '' : ' quick-generate-hidden'}`} aria-label={t('floatController')}>
-       {dragReceiving && <div className="floating-drag-receive-layer" aria-live="polite"><div className="floating-drag-receive-orb"><Icon name="download" size={22} /><strong>{t('floatReleaseToLoad')}</strong><span>{t('floatReleaseHint')}</span></div></div>}
+       {dragReceiving && <div className={`floating-drag-receive-layer${dragZone === 'minibar' ? ' queue-drop-target' : ''}`} aria-live="polite"><div className="floating-drag-receive-orb"><Icon name={dragZone === 'minibar' ? 'queueAdd' : 'download'} size={22} /><strong>{dragZone === 'minibar' ? t('queueMiniBarDropToQueue') : t('floatReleaseToLoad')}</strong><span>{t('floatReleaseHint')}</span></div></div>}
       {view === 'presets' ? <FloatingPresetView onBack={() => setView('quick')} onAdjust={preset => selectPreset(preset)} onGenerate={preset => selectPreset(preset, true)} onReset={resetPreset} /> : collapsed ? (
         <button className="quick-generate-orb" type="button" onPointerDown={handleOrbPointerDown} onPointerMove={handleOrbPointerMove} onPointerUp={handleOrbPointerUp} onPointerCancel={handleOrbPointerUp} title={t('floatExpand')}>
           <ProgressRing progress={progress} status={status} indeterminate={indeterminate} />
@@ -501,6 +563,20 @@ export default function QuickGenerateFloat({ onClose, visible = true }) {
                 <small>{status === 'running' || status === 'failed' ? statusDescription : videoPage && !h3Selected ? t('floatChooseH3First') : videoPage && !h3Readiness?.ready ? h3Readiness?.message || t('floatCheckingH3') : t('floatUseCurrentWorkflow')}</small>
              </button>
              {!isBusy && <button type="button" className="btn quick-generate-reset" onClick={resetGeneration} title={t('floatClearReset')}><Icon name="trash" size={13} />{t('floatClear')}</button>}
+           </div>}
+
+           {!resultOnly && <div className={`quick-queue-minibar${dragReceiving && dragZone === 'minibar' ? ' drag-target' : ''}`} ref={miniBarRef}>
+             <div className="quick-queue-minibar-status">
+               {activeBatches.length > 0
+                 ? <><ProgressRing progress={queueProgress} status="running" size={26} /><span>{t('queueMiniBarRunning', { done: queueDoneJobs, total: queueTotalJobs })}</span></>
+                 : <><Icon name="grid" size={14} /><span>{queueItems.length > 0 ? t('queueMiniBarDraft', { count: queueItems.length }) : t('queueMiniBarEmpty')}</span></>}
+             </div>
+             <div className="quick-queue-minibar-actions">
+               {queueIsRunning
+                 ? <button type="button" className="btn btn-icon" onClick={() => pauseBatch(primaryBatch.id)} title={t('batchPause')}><Icon name="minus" size={12} /></button>
+                 : queueCanResume && <button type="button" className="btn btn-icon" onClick={() => resumeBatch(primaryBatch.id)} title={t('batchResume')}><Icon name="play" size={12} /></button>}
+               <button type="button" className="btn btn-icon" onClick={openQueueTab} title={t('queueMiniBarOpen')}><Icon name="panelRight" size={12} /></button>
+             </div>
            </div>}
         </div>
       )}

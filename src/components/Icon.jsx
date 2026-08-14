@@ -42,6 +42,7 @@ const PATHS = {
   restore: <><path d="M8 8h10v10H8z" /><path d="M6 16H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" /></>,
   windowClose: <><path d="m7 7 10 10M17 7 7 17" /></>,
   help: <><circle cx="12" cy="12" r="8.5" /><path d="M9.5 9.25a2.6 2.6 0 0 1 5.1.75c0 1.75-2.6 2.15-2.6 3.75M12 17h.01" /></>,
+  queueAdd: <><path d="M9 5.5h10M9 12h10M9 18.5h10" /><circle cx="4.75" cy="5.5" r=".6" fill="currentColor" stroke="none" /><circle cx="4.75" cy="12" r=".6" fill="currentColor" stroke="none" /><circle cx="4.75" cy="18.5" r=".6" fill="currentColor" stroke="none" /><path d="M18.5 2.25v3M17 3.75h3" /></>,
 };
 
 export default function Icon({ name, size = 16, strokeWidth = 1.8, className = '' }) {

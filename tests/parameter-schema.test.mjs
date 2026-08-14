@@ -17,6 +17,11 @@ test('parameter schema derives sliders, selects, and model fields from a workflo
   assert.equal(schema.find(item => item.key === 'ckpt_name').type, 'select');
 });
 
+test('parameter schema tolerates a null manifest (no workflow selected)', () => {
+  assert.deepEqual(buildParameterSchema(null), []);
+  assert.deepEqual(buildParameterSchema(undefined), []);
+});
+
 test('preset override layers merge with predictable precedence', () => {
   assert.deepEqual(mergePresetOverrides(
     { settings: { steps: 20, cfg: 5 } },

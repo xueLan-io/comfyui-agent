@@ -25,7 +25,7 @@ export const DEFAULTS = {
     external: [],
   },
   projects: {},
-  research: { baiduApiKey: '' },
+  research: { baiduApiKey: '', searchApiKey: '' },
   prompt: { mode: 'raw', customTemplate: '', personality: { enabled: false, strategy: 'append', text: '' } },
   comfyui: { baseUrl: 'http://127.0.0.1:8188' },
   ui: {
@@ -134,13 +134,23 @@ function decryptProviders(llm) {
 }
 
 function decryptResearch(research) {
-  if (!research.baiduApiKey?.startsWith('enc:')) return;
-  const encryptedApiKey = research.baiduApiKey;
-  const result = decrypt(encryptedApiKey.slice(4));
-  research.baiduApiKey = result.value;
-  if (result.error) {
-    research.baiduApiKeyError = result.error;
-    Object.defineProperty(research, '_encryptedBaiduApiKey', { value: encryptedApiKey, configurable: true });
+  if (research.baiduApiKey?.startsWith('enc:')) {
+    const encryptedApiKey = research.baiduApiKey;
+    const result = decrypt(encryptedApiKey.slice(4));
+    research.baiduApiKey = result.value;
+    if (result.error) {
+      research.baiduApiKeyError = result.error;
+      Object.defineProperty(research, '_encryptedBaiduApiKey', { value: encryptedApiKey, configurable: true });
+    }
+  }
+  if (research.searchApiKey?.startsWith('enc:')) {
+    const encryptedApiKey = research.searchApiKey;
+    const result = decrypt(encryptedApiKey.slice(4));
+    research.searchApiKey = result.value;
+    if (result.error) {
+      research.searchApiKeyError = result.error;
+      Object.defineProperty(research, '_encryptedSearchApiKey', { value: encryptedApiKey, configurable: true });
+    }
   }
 }
 
@@ -209,6 +219,7 @@ export class PreferenceMemory {
         }
       }
       delete toStore.research.baiduApiKeyError;
+      delete toStore.research.searchApiKeyError;
       if (!toStore.research.baiduApiKey && this.data.research._encryptedBaiduApiKey) {
         toStore.research.baiduApiKey = this.data.research._encryptedBaiduApiKey;
       } else if (toStore.research.baiduApiKey && !toStore.research.baiduApiKey.startsWith('enc:')) {
@@ -218,6 +229,17 @@ export class PreferenceMemory {
           toStore.research.baiduApiKeyError = '当前系统不支持安全存储，API Key 不会被保存，请每次使用时重新输入';
         } else {
           toStore.research.baiduApiKey = `enc:${encrypted}`;
+        }
+      }
+      if (!toStore.research.searchApiKey && this.data.research._encryptedSearchApiKey) {
+        toStore.research.searchApiKey = this.data.research._encryptedSearchApiKey;
+      } else if (toStore.research.searchApiKey && !toStore.research.searchApiKey.startsWith('enc:')) {
+        const encrypted = encrypt(toStore.research.searchApiKey);
+        if (encrypted === null) {
+          toStore.research.searchApiKey = '';
+          toStore.research.searchApiKeyError = '当前系统不支持安全存储，API Key 不会被保存，请每次使用时重新输入';
+        } else {
+          toStore.research.searchApiKey = `enc:${encrypted}`;
         }
       }
       const temporaryPath = `${this.configPath}.tmp-${process.pid}`;
@@ -244,6 +266,16 @@ export class PreferenceMemory {
     for (let i = 0; i < keys.length - 1; i++) {
       if (!target[keys[i]]) target[keys[i]] = {};
       target = target[keys[i]];
+    }
+    // 写回 research 时保留解不开的加密串：展开运算符不会复制不可枚举属性，
+    // 若不保留，用户仅保存其他设置就会把无法解密的密钥永久丢弃。
+    if (keyPath === 'research') {
+      const previous = this.data.research || {};
+      for (const field of ['_encryptedBaiduApiKey', '_encryptedSearchApiKey']) {
+        if (previous[field] && !value[field]) {
+          Object.defineProperty(value, field, { value: previous[field], configurable: true });
+        }
+      }
     }
     target[keys.at(-1)] = value;
     this._save();

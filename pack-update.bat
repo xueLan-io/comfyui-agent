@@ -17,3 +17,7 @@ if %errorlevel% neq 0 (
 )
 
 echo Done. Electron runtime is not included in the update package.
+echo.
+echo Install: close ComfyMuse, then extract ComfyMuse-update-v*.zip over
+echo the existing dist-portable folder and overwrite resources\app.
+echo Keep ComfyMuse.exe and its Chromium runtime files in place.

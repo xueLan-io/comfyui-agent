@@ -16,6 +16,25 @@ test('default local prompt stays intact without a boundary', () => {
   assert.ok(base.includes('核心运行规则'));
 });
 
+test('local prompt requires complete visual structure instead of short fragments', () => {
+  const base = buildChatSystemPrompt({ scope: 'local' });
+  assert.ok(!base.includes('通常用一两段话即可'));
+  assert.ok(base.includes('完整正文'));
+  assert.ok(base.includes('人物或主体'));
+  assert.ok(base.includes('镜头/构图'));
+  assert.ok(base.includes('光线与色彩'));
+  assert.ok(base.includes('不要因追求简短而省略必要的画面结构'));
+});
+
+test('local prompt allows bilingual layered writing for image workflows', () => {
+  const base = buildChatSystemPrompt({ scope: 'local' });
+  assert.ok(!base.includes('使用英文且不混用中文'));
+  assert.match(base, /中英协同分层写法/);
+  assert.match(base, /中文自然语言写语义、动作、情绪与镜头意图/);
+  assert.match(base, /同一句内不混排/);
+  assert.match(base, /包含完整画面结构：主体、外观、动作、镜头\/构图、场景、光线、氛围、风格/);
+});
+
 test('default cloud prompt stays intact without a boundary', () => {
   const cloud = buildChatSystemPrompt({ scope: 'cloud' });
   assert.ok(cloud.includes('你是 ComfyUI 创作助手'));

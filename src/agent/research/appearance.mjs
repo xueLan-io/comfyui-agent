@@ -15,9 +15,64 @@ function normalizeText(value, maxLength) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
 }
 
+const QUOTE_TRUNCATION = /\s*[.\u2026]+\s*$/;
+const STOP_WORDS = new Set('a an the she he her his its it had has have and or but with of for on in at to is was are were from by as this that these those s t'.split(' '));
+
 function quoteMatchesSource(quote, sourceText) {
   const normalize = value => String(value).replace(/\s+/g, ' ').trim().toLowerCase();
-  return normalize(sourceText).includes(normalize(quote));
+  const target = normalize(quote).replace(QUOTE_TRUNCATION, '');
+  if (!target) return false;
+  if (normalize(sourceText).includes(target)) return true;
+  return looseQuoteMatchesSource(quote, sourceText);
+}
+
+// 逐字匹配失败时的宽松校验：LLM 引文常因截断、省略、标点或轻微改写
+// 与原文有差异，只要保留足够多的顺序实词即可视为有据可查，
+// 避免「搜到了但引文对不上」就把外观事实全部丢弃。
+function looseQuoteMatchesSource(quote, sourceText) {
+  const normalize = value => String(value)
+    .replace(/\s+/g, ' ')
+    .replace(/[^\p{Script=Han}a-z0-9\s'’-]/giu, '')
+    .trim().toLowerCase();
+  const sourceTokens = normalize(sourceText).split(/\s+/).filter(Boolean);
+  const targetTokens = normalize(quote).replace(QUOTE_TRUNCATION, '')
+    .split(/\s+/).filter(token => token && !STOP_WORDS.has(token));
+  if (targetTokens.length < 2 || sourceTokens.length === 0) return false;
+  if (lcsLength(sourceTokens, targetTokens) / targetTokens.length >= 0.5) return true;
+  return longestCommonSubstring(sourceTokens, targetTokens) >= 4;
+}
+
+function lcsLength(a, b) {
+  const dp = new Uint32Array(b.length + 1);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = 0;
+    for (let j = 1; j <= b.length; j++) {
+      const temp = dp[j];
+      if (a[i - 1] === b[j - 1]) dp[j] = prev + 1;
+      else dp[j] = Math.max(dp[j], dp[j - 1]);
+      prev = temp;
+    }
+  }
+  return dp[b.length];
+}
+
+function longestCommonSubstring(a, b) {
+  const dp = new Uint16Array(b.length + 1);
+  let best = 0;
+  for (let i = 1; i <= a.length; i++) {
+    let prev = 0;
+    for (let j = 1; j <= b.length; j++) {
+      const temp = dp[j];
+      if (a[i - 1] === b[j - 1]) {
+        dp[j] = prev + 1;
+        if (dp[j] > best) best = dp[j];
+      } else {
+        dp[j] = 0;
+      }
+      prev = temp;
+    }
+  }
+  return best;
 }
 
 function emptyFacts() {
@@ -56,13 +111,17 @@ export function normalizeAppearanceFacts(value, sources = []) {
       url: normalizeText(item?.url, 2048),
     }))
     .filter(item => APPEARANCE_FIELDS.includes(item.field) && item.quote && sourcesByUrl.has(item.url))
-    .filter(item => quoteMatchesSource(item.quote, sourcesByUrl.get(item.url).content || sourcesByUrl.get(item.url).snippet || ''))
+    .filter(item => {
+      const source = sourcesByUrl.get(item.url);
+      const text = [source?.content, source?.originalContent, source?.snippet].filter(Boolean).join('\n');
+      return quoteMatchesSource(item.quote, text);
+    })
     .slice(0, 20);
 
-  const supportedFields = new Set(facts.evidence.map(item => item.field));
-  for (const field of APPEARANCE_FIELDS) {
-    if (!supportedFields.has(field)) facts[field] = '';
-  }
+  // 事实字段不再因证据缺失被清空：LLM 已从参考源提取的值直接保留，
+  // evidence 只用于标记「有逐字引文支持」的可信字段。证据校验的目的是
+  // 防止把凭名字/标题脑补的内容当事实，而不是把「搜到了但引文对不上」
+  // 的结果全部丢弃（引文常因截断/改写与原文有细微差异）。
   return facts;
 }
 
@@ -102,7 +161,15 @@ Evidence must be an array of objects with exactly field, quote, and url. quote m
     onChunk,
   });
 
-  return normalizeAppearanceFacts(parseJson(result.content), sources);
+  // 用 LLM 实际看到的预处理内容做引文校验（引文应当能匹配到原文），
+  // 同时保留原始 content 作为宽松匹配的兜底，避免预处理截断导致误删证据。
+  const validationSources = sources.map((source, index) => ({
+    ...source,
+    content: filteredSources[index]?.content ?? source.content,
+    originalContent: source.content || '',
+  }));
+
+  return normalizeAppearanceFacts(parseJson(result.content), validationSources);
 }
 
 export function publicAppearanceContext(referenceContext) {

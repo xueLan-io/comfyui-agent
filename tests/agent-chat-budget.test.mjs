@@ -45,7 +45,7 @@ test('Agent chat separates response language from local workflow prompt language
 
   const system = String(request.messages[0].content);
   assert.match(system, /解释、建议和问题使用用户的语言/);
-  assert.match(system, /正向和负向提示词使用英文且不混用中文/);
+  assert.match(system, /中英协同分层写法/);
 });
 
 test('Agent chat uses the persisted turn message ID for streamed replies', async () => {

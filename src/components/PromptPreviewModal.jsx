@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import Icon from './Icon.jsx';
 import { useI18n } from '../i18n/I18nContext.jsx';
+import { useBatchQueue } from '../contexts/BatchQueueContext.jsx';
 
 function constraintEntries(constraints) {
   return Object.entries(constraints || {}).filter(([, value]) => value !== undefined && value !== null && value !== '');
@@ -18,6 +19,7 @@ const TRUST_LABELS = { official: 'official', verified: 'verified', community: 'c
 
 export default function PromptPreviewModal({ preview, onConfirm, onCancel }) {
   const { t } = useI18n();
+  const { addToQueue } = useBatchQueue();
   const isDirect = preview?.source === 'direct';
   const isUpscale = preview?.operation === 'upscale' || preview?.workflowOperation === 'upscale' || preview?.intent === 'upscale';
   const sourceLabel = isDirect ? t('ppSourceDirect') : t('ppSourceAi');
@@ -30,6 +32,20 @@ export default function PromptPreviewModal({ preview, onConfirm, onCancel }) {
     setNegative(preview?.negative || '');
     setFacts(preview?.research?.facts || {});
   }, [preview]);
+
+  function enqueuePlan() {
+    if (!positive?.trim()) return;
+    addToQueue({
+      positive,
+      negative,
+      workflowName: preview?.workflowName || preview?.workflow?.name || '',
+      parameters: preview?.settings || preview?.parameters || {},
+      nodeOverrides: preview?.nodeOverrides || {},
+      outputNodeIds: preview?.outputNodeIds || null,
+      media: preview?.media || { images: [], videos: [] },
+    }, { sourceKind: 'plan', sourceLabel: isDirect ? t('ppSourceDirect') : t('ppSourceAi') });
+  }
+
   if (!preview) return null;
   if (preview.action === 'generation_suggestion') {
     return (
@@ -224,6 +240,7 @@ export default function PromptPreviewModal({ preview, onConfirm, onCancel }) {
           <span>{t('ppConfirmNote')}</span>
           <span className="settings-footer-spacer" />
           <button className="btn" onClick={onCancel}>{t('cancel')}</button>
+          <button className="btn" onClick={enqueuePlan} title={t('queueAddHint')}><Icon name="queueAdd" size={14} />{t('queueAdd')}</button>
           <button className="btn btn-primary" onClick={() => onConfirm({ positive, negative, ...(preview.research ? { appearanceFacts: { ...facts, evidence: (preview.research.evidence || []).filter(item => facts[item.field]) } } : {}) })} disabled={(preview.targets?.length === 0 && !isUpscale) || preview.workflow?.valid === false}>{t('ppConfirmGenerate')}</button>
         </footer>
       </section>

@@ -1,6 +1,9 @@
 export const DEFAULT_RESEARCH_SETTINGS = {
   allowNetwork: true,
   baiduApiKey: '',
+  searchApi: '',
+  searchApiKey: '',
+  searchApiBaseUrl: '',
   providers: ['bing', 'duckduckgo', 'baidu'],
   proxyUrl: '',
   maxResults: 5,
@@ -36,6 +39,9 @@ export function normalizeResearchSettings(value = {}) {
   return {
     allowNetwork: next.allowNetwork !== false,
     baiduApiKey: String(next.baiduApiKey || '').trim(),
+    searchApi: ['tavily', 'searxng'].includes(String(next.searchApi || '').trim().toLowerCase()) ? String(next.searchApi || '').trim().toLowerCase() : '',
+    searchApiKey: String(next.searchApiKey || '').trim(),
+    searchApiBaseUrl: String(next.searchApiBaseUrl || '').trim().slice(0, 500),
     providers: providers(next.providers, DEFAULT_RESEARCH_SETTINGS.providers),
     proxyUrl: String(next.proxyUrl || '').trim(),
     maxResults: integer(next.maxResults, DEFAULT_RESEARCH_SETTINGS.maxResults, 1, 10),

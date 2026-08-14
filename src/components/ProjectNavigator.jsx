@@ -162,10 +162,6 @@ export default function ProjectNavigator({ activeView = 'chat', onViewChange, on
               <span className="workspace-nav-icon"><Icon name="library" /></span>
                <span>{t('promptWorkspace')}</span>
             </button>
-            <button className={`workspace-nav-item${activeView === 'batch' ? ' active' : ''}`} onClick={() => { setProjectMenuOpen(false); onViewChange?.('batch'); }} title={t('batchWorkspace')}>
-              <span className="workspace-nav-icon"><Icon name="grid" /></span>
-               <span>{t('batchWorkspace')}</span>
-            </button>
           </nav>
 
         {!collapsed && <>

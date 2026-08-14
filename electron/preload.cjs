@@ -63,6 +63,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   agentSetPromptMode: (mode) => ipcRenderer.invoke('agent:prompt-mode', { mode }),
   projectUpdateState: (patch) => ipcRenderer.invoke('project:update-state', patch),
   sessionUpsertGenerationRecord: (record) => ipcRenderer.invoke('session:upsert-generation-record', { record }),
+  sessionAppendExecutionEvent: (event) => ipcRenderer.invoke('session:append-execution-event', { event }),
   agentDetectWorkflow: (workflowName) => ipcRenderer.invoke('agent:detect-workflow', { workflowName }),
   agentInspectWorkflow: (workflowName) => ipcRenderer.invoke('agent:inspect-workflow', { workflowName }),
   agentGetArtifacts: (opts) => ipcRenderer.invoke('agent:artifacts', opts),
@@ -151,6 +152,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
   batchGet: (batchId) => ipcRenderer.invoke('batch:get', { batchId }),
   batchList: (projectId, limit) => ipcRenderer.invoke('batch:list', { projectId, limit }),
   batchCurate: (batchId, limit) => ipcRenderer.invoke('batch:curate', { batchId, limit }),
+  queueList: () => ipcRenderer.invoke('queue:list'),
+  queueAdd: (item) => ipcRenderer.invoke('queue:add', { item }),
+  queueRemove: (id) => ipcRenderer.invoke('queue:remove', { id }),
+  queueMove: (id, direction) => ipcRenderer.invoke('queue:move', { id, direction }),
+  queueUpdate: (id, patch) => ipcRenderer.invoke('queue:update', { id, patch }),
+  queueClear: () => ipcRenderer.invoke('queue:clear'),
+  queueStart: () => ipcRenderer.invoke('queue:start'),
+  queueOpenMainTab: () => ipcRenderer.invoke('queue:open-main-tab'),
+  onQueueEvent: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on('queue:event', listener);
+    return () => ipcRenderer.removeListener('queue:event', listener);
+  },
+  onQueueOpenTab: (handler) => {
+    const listener = () => handler();
+    ipcRenderer.on('queue:open-tab', listener);
+    return () => ipcRenderer.removeListener('queue:open-tab', listener);
+  },
   onBatchEvent: (handler) => {
     const listener = (_event, payload) => handler(payload);
     ipcRenderer.on('batch:event', listener);

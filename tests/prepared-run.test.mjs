@@ -3,6 +3,7 @@ import test from 'node:test';
 import { Agent } from '../src/agent/runtime/agent.mjs';
 import { AgentEventTypes, on } from '../src/agent/events/agent-events.mjs';
 import { ComfyUITool } from '../src/agent/tools/comfyui/index.mjs';
+import { ANIME_QUALITY_BASELINE } from '../src/agent/tools/prompt/anime-presets.mjs';
 
 test('confirmed preview executes the frozen plan without another LLM call', async () => {
   let llmCalls = 0;
@@ -81,7 +82,7 @@ test('confirmed preview executes the frozen plan without another LLM call', asyn
     assert.equal(event.outcome, 'completed');
   }
   assert.equal(llmCalls, 1);
-  assert.equal(preview.positive, 'masterpiece, 1girl\n\nA girl stands in soft light.');
+  assert.equal(preview.positive, `${ANIME_QUALITY_BASELINE}, 1girl\n\nA girl stands in soft light.`);
   assert.equal(preview.targets.length, 3);
   assert.ok(recorded.some(entry => entry.role === 'user' && entry.content === 'one girl'));
 

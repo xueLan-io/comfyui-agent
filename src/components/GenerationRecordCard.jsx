@@ -30,8 +30,9 @@ function RenderingPlaceholder({ record }) {
   return <div className="generation-rendering-placeholder" style={{ '--generation-aspect-ratio': renderAspectRatio(record) }} role="status" aria-live="polite">
     <div className="generation-rendering-frame" aria-hidden="true">
       <span className="generation-rendering-orb" />
-      <span className="generation-rendering-scan" />
-      <span className="generation-rendering-grain" />
+    </div>
+    <div className="generation-rendering-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={percent ?? undefined}>
+      <span className="generation-rendering-progress-track" style={percent !== null ? { width: `${percent}%` } : undefined} />
     </div>
     <div className="generation-rendering-meta">
       <span>{label}</span>

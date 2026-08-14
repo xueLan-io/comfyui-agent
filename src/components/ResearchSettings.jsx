@@ -15,18 +15,27 @@ export default function ResearchSettings() {
   const { t } = useI18n();
   const [settings, setSettings] = useState(DEFAULT_RESEARCH_SETTINGS);
   const [baiduApiKey, setBaiduApiKey] = useState('');
+  const [searchApiKey, setSearchApiKey] = useState('');
+  const [keyErrors, setKeyErrors] = useState({ baidu: '', searchApi: '' });
   const [status, setStatus] = useState('');
 
   useEffect(() => {
     setSettings(normalizeResearchSettings(session.project?.researchSettings));
-    window.electronAPI.researchSettings().then(value => setBaiduApiKey(value?.hasBaiduApiKey ? '********' : '')).catch(() => setStatus('Research settings failed to load'));
+    window.electronAPI.researchSettings().then(value => {
+      setBaiduApiKey(value?.hasBaiduApiKey ? '********' : '');
+      setSearchApiKey(value?.hasSearchApiKey ? '********' : '');
+      setKeyErrors({ baidu: value?.baiduApiKeyError || '', searchApi: value?.searchApiKeyError || '' });
+    }).catch(() => setStatus('Research settings failed to load'));
   }, [session.project?.researchSettings]);
 
   function update(patch) { setSettings(current => normalizeResearchSettings({ ...current, ...patch })); setStatus(''); }
 
   async function save() {
     try {
-      await window.electronAPI.researchSaveSettings({ baiduApiKey: baiduApiKey === '********' ? undefined : baiduApiKey });
+      await window.electronAPI.researchSaveSettings({
+        baiduApiKey: baiduApiKey === '********' ? undefined : baiduApiKey,
+        searchApiKey: searchApiKey === '********' ? undefined : searchApiKey,
+      });
       session.applyState(await window.electronAPI.projectUpdateState({ researchSettings: normalizeResearchSettings(settings) }));
       setStatus(t('saved'));
     } catch (error) { setStatus(error.message || t('saveFailed')); }
@@ -46,6 +55,21 @@ export default function ResearchSettings() {
       <label className="settings-field span-2"><span>{t('searchProviders')}</span><input value={settings.providers.join(', ')} onChange={event => update({ providers: event.target.value })} placeholder="bing, duckduckgo, baidu" /></label>
       <label className="settings-field span-2"><span>{t('proxy')}</span><input value={settings.proxyUrl} onChange={event => update({ proxyUrl: event.target.value })} placeholder="http://127.0.0.1:7897" /></label>
       <label className="settings-field span-2"><span>{t('baiduKey')}</span><input type="password" value={baiduApiKey} onChange={event => setBaiduApiKey(event.target.value)} placeholder="Optional" /></label>
+      {keyErrors.baidu && <small className="settings-muted span-2 settings-error">{keyErrors.baidu}</small>}
+    </div>
+    <div className="settings-grid">
+      <label className="settings-field span-2"><span>{t('searchApi')}</span>
+        <select value={settings.searchApi} onChange={event => update({ searchApi: event.target.value })}>
+          <option value="">{t('searchApiNone')}</option>
+          <option value="tavily">{t('searchApiTavily')}</option>
+          <option value="searxng">{t('searchApiSearxng')}</option>
+        </select>
+      </label>
+      {settings.searchApi === 'tavily' && <label className="settings-field span-2"><span>{t('searchApiKey')}</span><input type="password" value={searchApiKey} onChange={event => setSearchApiKey(event.target.value)} placeholder="tvly-..." /></label>}
+      {keyErrors.searchApi && settings.searchApi === 'tavily' && <small className="settings-muted span-2 settings-error">{keyErrors.searchApi}</small>}
+      {settings.searchApi === 'tavily' && <small className="settings-muted span-2">{t('searchApiKeyDescription')}</small>}
+      {settings.searchApi === 'searxng' && <label className="settings-field span-2"><span>{t('searchApiBaseUrl')}</span><input value={settings.searchApiBaseUrl} onChange={event => update({ searchApiBaseUrl: event.target.value })} placeholder="http://127.0.0.1:8888" /></label>}
+      {settings.searchApi === 'searxng' && <small className="settings-muted span-2">{t('searchApiBaseUrlDescription')}</small>}
     </div>
     <div className="settings-grid">{DOMAIN_FIELDS.map(([field]) => <label className="settings-field span-2" key={field}><span>{languageLabel(domainLabels[field], t)}</span><input value={settings[field].join(', ')} onChange={event => update({ [field]: event.target.value })} placeholder="example.com, game.example" /></label>)}</div>
     <div className="settings-actions"><button className="btn btn-primary" onClick={() => void save()}>{t('saveResearch')}</button>{status && <span className="settings-save-state">{status}</span>}</div>

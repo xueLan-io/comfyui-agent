@@ -222,7 +222,12 @@ export function AgentProvider({ children }) {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
 
   const addActivityEvent = useCallback(event => {
-    setActivityEvents(previous => [...previous, { ...event, time: event.time || timeStr() }]);
+    const turnId = event.turnId || activeTurnIdRef.current || '';
+    const normalized = { ...event, ...(turnId ? { turnId } : {}), time: event.time || timeStr() };
+    setActivityEvents(previous => [...previous, normalized]);
+    if (turnId && window.electronAPI?.sessionAppendExecutionEvent) {
+      void window.electronAPI.sessionAppendExecutionEvent(normalized).catch(() => {});
+    }
   }, []);
 
   const transitionGeneration = useCallback((nextPhase, patch = {}) => {
@@ -1000,27 +1005,25 @@ export function AgentProvider({ children }) {
       // Planner/executor events already carry ctx.eventMeta.turnId. They must be
       // allowed to claim this turn even when no reasoning stream preceded them.
       if (!isCurrentAgentEvent(data, { canClaimTask: true })) return;
-      setActivityEvents(previous => [...previous, { ...data, time: timeStr() }]);
+      addActivityEvent(data);
     }));
 
     unsubs.push(window.electronAPI.onAgentToolCall(data => {
       if (!isCurrentAgentEvent(data, { canClaimTask: true })) return;
-      setActivityEvents(previous => [...previous, {
+      addActivityEvent({
         ...data,
         description: `正在调用 ${toolLabel(data.tool)}...`,
         status: 'running',
-        time: timeStr(),
-      }]);
+      });
     }));
 
     unsubs.push(window.electronAPI.onAgentToolResult(data => {
       if (!isCurrentAgentEvent(data, { canClaimTask: true })) return;
-      setActivityEvents(previous => [...previous, {
+      addActivityEvent({
         ...data,
         description: `${toolLabel(data.tool)} 已完成`,
         status: data.error && data.researchStatus ? 'warning' : (data.error ? 'error' : 'completed'),
-        time: timeStr(),
-      }]);
+      });
     }));
 
     unsubs.push(window.electronAPI.onAgentMessage(data => {

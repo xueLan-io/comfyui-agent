@@ -38,6 +38,7 @@ import { OperationGateway, confirmationDigest, assertConfirmationBinding } from 
 import { createGovernanceContext } from '../src/runtime/governance/context.mjs';
 import { createWindowRegistry } from '../src/runtime/window-registry.mjs';
 import { BatchScheduler } from '../src/runtime/batch/batch-scheduler.mjs';
+import { expandQueueItems } from '../src/runtime/batch/seed-strategy.mjs';
 import { JSONFileStore } from '../src/agent/memory/store.mjs';
 import { createMetrics } from '../src/runtime/metrics.mjs';
 
@@ -977,6 +978,12 @@ function floatingDragHit(x, y) {
   return x >= bounds.x && x <= bounds.x + bounds.width && y >= bounds.y && y <= bounds.y + bounds.height;
 }
 
+function floatingLocalPoint(point) {
+  if (!point || !floatingWindow || floatingWindow.isDestroyed()) return null;
+  const bounds = floatingWindow.getBounds();
+  return { x: point.x - bounds.x, y: point.y - bounds.y };
+}
+
 function sendFloatingDrag(data) {
   if (floatingWindow && !floatingWindow.isDestroyed() && !floatingWindow.webContents.isLoading()) {
     floatingWindow.webContents.send('floating:drag', data);
@@ -1364,7 +1371,7 @@ ipcMain.handle('floating:drag-move', (event, { clientX, clientY } = {}) => {
   const point = screenPointFromEvent(event, clientX, clientY);
   if (!point) return { hit: false };
   const hit = floatingDragHit(point.x, point.y);
-  sendFloatingDrag({ phase: 'move', point, hit });
+  sendFloatingDrag({ phase: 'move', point, local: floatingLocalPoint(point), hit });
   return { hit, point };
 });
 
@@ -1372,7 +1379,7 @@ ipcMain.handle('floating:drag-end', (event, { clientX, clientY, dragId } = {}) =
   if (dragId && pendingFloatingDrag?.dragId && dragId !== pendingFloatingDrag.dragId) return { hit: false, point: null };
   const point = screenPointFromEvent(event, clientX, clientY);
   const hit = point ? floatingDragHit(point.x, point.y) : false;
-  sendFloatingDrag({ phase: 'end', point, hit });
+  sendFloatingDrag({ phase: 'end', point, local: floatingLocalPoint(point), hit });
   pendingFloatingDrag = null;
   floatingWindowPointerGrab = null;
   return { hit, point };
@@ -2961,21 +2968,10 @@ ipcMain.handle('agent:remove-conversation-turn', async (_, { turnId } = {}) => {
   return agent.removeConversationTurn(turnId);
 });
 
-ipcMain.handle('queue:list', async () => agent ? agent.listQueue() : { error: 'agent not ready' });
-
 ipcMain.handle('queue:cancel-prompt', async (_, { promptId }) => {
   if (!agent) return { error: 'agent not ready' };
   try {
     return await runGovernedIpcMutation({ action: 'comfyui.cancel', input: { promptId }, execute: () => agent.cancelPrompt(promptId) });
-  } catch (e) {
-    return { error: e.message };
-  }
-});
-
-ipcMain.handle('queue:clear', async () => {
-  if (!agent) return { error: 'agent not ready' };
-  try {
-    return await runGovernedIpcMutation({ action: 'comfyui.cancel', execute: () => agent.clearQueue() });
   } catch (e) {
     return { error: e.message };
   }
@@ -3103,6 +3099,14 @@ ipcMain.handle('session:upsert-generation-record', async (_, { record = {} } = {
   if (!agent?.sessionManager?.upsertGenerationRecord) return { ok: false };
   const merged = agent.sessionManager.upsertGenerationRecord(record);
   return { ok: Boolean(merged) };
+});
+
+ipcMain.handle('session:append-execution-event', async (_, { event = {} } = {}) => {
+  if (!event?.turnId) return { ok: false };
+  await startAgent(getStoredConfig());
+  if (!agent?.sessionManager?.appendExecutionEvent) return { ok: false };
+  const saved = agent.sessionManager.appendExecutionEvent(event);
+  return { ok: Boolean(saved) };
 });
 
 ipcMain.handle('llm:providers', async () => {
@@ -3542,16 +3546,34 @@ ipcMain.handle('ui:save-preferences', async (_, preferences = {}) => {
 
 ipcMain.handle('research:settings', async () => {
   const research = prefStore.get('research') || {};
-  return { hasBaiduApiKey: Boolean(research.baiduApiKey || research._encryptedBaiduApiKey), baiduApiKeyError: research.baiduApiKeyError || '' };
+  return {
+    // 只有解密成功（明文可用）才算有 key；解不开的加密串会通过 *KeyError 提示重新输入，
+    // 避免界面显示 ****** 但实际运行时 key 为空
+    hasBaiduApiKey: Boolean(research.baiduApiKey),
+    hasSearchApiKey: Boolean(research.searchApiKey),
+    baiduApiKeyError: research.baiduApiKeyError || '',
+    searchApiKeyError: research.searchApiKeyError || '',
+  };
 });
 
 ipcMain.handle('research:save-settings', async (_, settings = {}) => {
   const research = prefStore.get('research') || {};
   const nextResearch = { ...research };
+  // 展开运算符不复制不可枚举属性，这里显式保留解不开的加密串（_save 会把它写回磁盘）
+  for (const field of ['_encryptedBaiduApiKey', '_encryptedSearchApiKey']) {
+    if (research[field]) Object.defineProperty(nextResearch, field, { value: research[field], configurable: true });
+  }
   if (settings.baiduApiKey !== undefined) nextResearch.baiduApiKey = String(settings.baiduApiKey || '').trim();
+  if (settings.searchApiKey !== undefined) nextResearch.searchApiKey = String(settings.searchApiKey || '').trim();
   prefStore.set('research', nextResearch);
   await agent?.reconfigureResearch(prefStore.get('research') || {});
-  return { hasBaiduApiKey: Boolean(prefStore.get('research')?.baiduApiKey || prefStore.get('research')?._encryptedBaiduApiKey) };
+  const stored = prefStore.get('research') || {};
+  return {
+    hasBaiduApiKey: Boolean(stored.baiduApiKey),
+    hasSearchApiKey: Boolean(stored.searchApiKey),
+    baiduApiKeyError: stored.baiduApiKeyError || '',
+    searchApiKeyError: stored.searchApiKeyError || '',
+  };
 });
 
 function promptRuntimeConfig() {
@@ -3652,6 +3674,76 @@ ipcMain.handle('batch:cancel', async (_, { batchId = '' } = {}) => getBatchSched
 ipcMain.handle('batch:retry-job', async (_, { batchId = '', jobId = '' } = {}) => getBatchScheduler().retryJob(batchId, jobId));
 ipcMain.handle('batch:get', async (_, { batchId = '' } = {}) => getBatchScheduler().publicBatch(batchId));
 ipcMain.handle('batch:list', async (_, { projectId = '', limit = 20 } = {}) => getBatchScheduler().listBatches({ projectId, limit }));
+
+// Cross-window queue draft: assembled in the renderer (main or floating window),
+// shared through the main process so both windows see the same queue before
+// start. In-memory only (lost on restart) — the "one-shot execution ticket"
+// model. Started batches persist via BatchScheduler.
+let queueDraft = [];
+
+function broadcastQueueDraft() {
+  windowRegistry.send('queue:event', { type: 'changed', items: queueDraft }, () => true);
+}
+
+ipcMain.handle('queue:list', () => queueDraft);
+
+ipcMain.handle('queue:add', (_, { item = {} } = {}) => {
+  const entry = { ...item, id: item.id || `queue_item_${Date.now()}_${randomUUID().slice(0, 6)}` };
+  queueDraft = [...queueDraft, entry];
+  broadcastQueueDraft();
+  return { item: entry, position: queueDraft.length };
+});
+
+ipcMain.handle('queue:remove', (_, { id = '' } = {}) => {
+  queueDraft = queueDraft.filter(item => item.id !== id);
+  broadcastQueueDraft();
+  return true;
+});
+
+ipcMain.handle('queue:move', (_, { id = '', direction = 0 } = {}) => {
+  const index = queueDraft.findIndex(item => item.id === id);
+  const target = index + (Number(direction) < 0 ? -1 : 1);
+  if (index >= 0 && target >= 0 && target < queueDraft.length) {
+    const next = [...queueDraft];
+    const [item] = next.splice(index, 1);
+    next.splice(target, 0, item);
+    queueDraft = next;
+  }
+  broadcastQueueDraft();
+  return true;
+});
+
+ipcMain.handle('queue:update', (_, { id = '', patch = {} } = {}) => {
+  queueDraft = queueDraft.map(item => item.id === id ? { ...item, ...patch } : item);
+  broadcastQueueDraft();
+  return true;
+});
+
+ipcMain.handle('queue:clear', () => {
+  queueDraft = [];
+  broadcastQueueDraft();
+  return true;
+});
+
+ipcMain.handle('queue:start', async () => {
+  const owner = executionOwner();
+  const jobs = expandQueueItems(queueDraft);
+  if (!jobs.length) throw Object.assign(new Error('queue empty'), { code: 'QUEUE_EMPTY' });
+  const batch = await getBatchScheduler().createBatch({ jobs, title: '', projectId: owner.projectId, sessionId: owner.sessionId });
+  queueDraft = [];
+  broadcastQueueDraft();
+  // Fire-and-forget: run to completion in the background. Progress flows to
+  // the renderer via batch:event + batch:list; the IPC must return immediately
+  // so the caller sees the batch start right away.
+  void getBatchScheduler().start(batch.id).catch(() => {});
+  return batch;
+});
+
+ipcMain.handle('queue:open-main-tab', () => {
+  showMainWindow();
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('queue:open-tab');
+  return true;
+});
 
 // Batch curation: score completed jobs' first output image via the agent
 // evaluator (technical + vision), record scores, return the Top-K.

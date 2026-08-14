@@ -8,55 +8,66 @@ import ActivityTimeline from './ActivityTimeline.jsx';
 import ModelSelector from './ModelSelector.jsx';
 import Icon from './Icon.jsx';
 import GenerationRecordCard from './GenerationRecordCard.jsx';
+import BatchResultCard from './BatchResultCard.jsx';
 import ShortcutsHelpModal from './ShortcutsHelpModal.jsx';
 import { useI18n } from '../i18n/I18nContext.jsx';
+import { useBatchQueue } from '../contexts/BatchQueueContext.jsx';
 import { matchingSlashCommands, parseSlashCommand } from '../runtime/slash-commands.mjs';
 
 function conversationSearchId(message = {}) {
   return message.messageId || message.id || `${message.turnId || 'message'}:${message.role || 'x'}`;
 }
 
-function buildConversationExport({ entries, sessionTitle, projectTitle, format }) {
+function buildConversationExport({ entries, executionRecords, sessionTitle, projectTitle, format }) {
+  const diagnostics = Object.entries(executionRecords || {}).map(([turnId, events]) => ({
+    turnId,
+    events: (events || []).map(event => ({
+      time: event.time || '', type: event.type || '', stage: event.stage || '', status: event.status || '', description: event.description || event.message || '', tool: event.tool || '', taskId: event.taskId || '', traceId: event.traceId || '', code: event.code || '', error: event.error || null, result: event.result || null,
+    })),
+  })).filter(item => item.events.length > 0);
   const meta = {
     title: sessionTitle || '会话',
     project: projectTitle || '',
     exportedAt: new Date().toLocaleString(),
     entries: entries.filter(entry => entry.kind === 'message').map(entry => {
       const message = entry.data;
-      const base = { role: message.role, time: message.time || '', content: message.content || '', prompt: message.prompt || '', negative: message.negative || '' };
+      const base = { role: message.role, time: message.time || '', content: message.content || '', prompt: message.prompt || '', negative: message.negative || '', turnId: message.turnId || '' };
       const attachments = (message.attachments || []).map(item => ({ name: item.name || '', kind: item.kind || 'image' }));
-      const images = (message.images || []).map(image => ({ filename: image.filename || '', subfolder: image.subfolder || '' }));
-      return { ...base, attachments, images };
+      const media = (message.media || [...(message.images || []), ...(message.videos || [])]).map(item => ({ filename: item.filename || item.name || '', subfolder: item.subfolder || '', type: item.type || item.mediaType || '' }));
+      return { ...base, attachments, media };
     }),
     records: entries.filter(entry => entry.kind === 'record').map(entry => ({
-      prompt: entry.data.prompt || '',
-      negative: entry.data.negative || '',
-      workflowName: entry.data.workflowName || '',
-      status: entry.data.status || '',
-      parameters: entry.data.parameters || {},
-      images: (entry.data.images || []).map(image => ({ filename: image.filename || '', subfolder: image.subfolder || '' })),
+      turnId: entry.data.turnId || '', prompt: entry.data.prompt || '', negative: entry.data.negative || '', workflowName: entry.data.workflowName || '', status: entry.data.status || '', parameters: entry.data.parameters || {}, error: entry.data.error || null,
+      media: (entry.data.media || [...(entry.data.images || []), ...(entry.data.videos || [])]).map(item => ({ filename: item.filename || item.name || '', subfolder: item.subfolder || '', type: item.type || item.mediaType || '' })),
     })),
+    diagnostics,
   };
   if (format === 'json') return JSON.stringify(meta, null, 2);
   const lines = [`# ${meta.title}`, '', `- 项目：${meta.project || '未指定'}`, `- 导出时间：${meta.exportedAt}`, ''];
   for (const entry of meta.entries) {
     if (entry.role === 'user') {
-      lines.push(`## 用户`, '', entry.content || '（图片）', '');
+      lines.push('## 用户', '', entry.content || '（图片）', '');
       if (entry.attachments.length) lines.push(`参考素材：${entry.attachments.map(item => item.name).join('、')}`, '');
     } else {
-      lines.push(`## 助手`, '', entry.content || '', '');
+      lines.push('## 助手', '', entry.content || '', '');
       if (entry.prompt) lines.push(`正向提示词：${entry.prompt}`, '');
       if (entry.negative) lines.push(`负向提示词：${entry.negative}`, '');
     }
   }
   if (meta.records.length) {
-    lines.push(`## 生成记录`, '');
-    for (const record of meta.records) {
-      lines.push(`- ${record.workflowName || '未指定工作流'} · ${record.status || ''}`, `  正向：${record.prompt || '无'}`, record.negative ? `  负向：${record.negative}` : '', record.images.length ? `  图片：${record.images.map(image => image.filename).join('、')}` : '');
-    }
+    lines.push('## 生成记录', '');
+    for (const record of meta.records) lines.push(`- ${record.workflowName || '未指定工作流'} · ${record.status || ''}`, `  正向：${record.prompt || '无'}`, record.negative ? `  负向：${record.negative}` : '', record.media.length ? `  媒体：${record.media.map(item => item.filename).join('、')}` : '', record.error ? `  错误：${record.error.message || JSON.stringify(record.error)}` : '');
     lines.push('');
   }
-  return lines.join('\n');
+  if (meta.diagnostics.length) {
+    lines.push('## 执行诊断', '');
+    for (const diagnostic of meta.diagnostics) {
+      lines.push(`### 轮次 ${diagnostic.turnId}`, '');
+      for (const event of diagnostic.events) lines.push(`- [${event.status || 'info'}] ${event.description || event.type || '执行事件'}${event.tool ? ` · ${event.tool}` : ''}${event.code ? ` · ${event.code}` : ''}${event.traceId ? ` · Trace: ${event.traceId}` : ''}`);
+      lines.push('');
+    }
+  }
+  return lines.filter((line, index, list) => line || list[index - 1] !== '').join('\n');
 }
 
 function formatTokens(value) {
@@ -148,30 +159,38 @@ function graphStepsFor(events = []) {
   events.forEach((event, index) => {
     const item = displayExecutionEvent(event);
     if (!item.status || (!item.tool && item.stage !== 'planning')) return;
-    const key = item.stepId || item.tool || item.stage || `event-${index}`;
-    steps.set(key, { ...steps.get(key), ...item, _key: key, _order: steps.get(key)?._order ?? index });
+    const key = [item.stepId || item.tool || item.stage || 'event', item.attemptId || item.currentAttempt || item.attempt || '', item.sequence ?? index].join(':');
+    steps.set(key, { ...item, _key: key, _order: index });
   });
   return [...steps.values()].sort((a, b) => a._order - b._order);
 }
 
-function ExecutionThread({ events, progress, active, statusMsg, t }) {
+function ExecutionThread({ events, progress, active, statusLabel, statusMsg, recoverable, onCancel, t, onOpenTrace }) {
   const [open, setOpen] = useState(false);
   const visibleEvents = events.filter(isVisibleExecutionEvent).map(displayExecutionEvent);
   const steps = graphStepsFor(visibleEvents);
   useEffect(() => {
     if (active) setOpen(true);
   }, [active]);
-  if (!visibleEvents.length) return null;
+  const terminalEvent = [...visibleEvents].reverse().find(event => ['completed', 'error', 'failed', 'cancelled', 'abandoned', 'archive_failed'].includes(event.status));
+  if (!active && !visibleEvents.length) return null;
+  const summary = statusMsg || t('processing');
   return (
-    <section className="execution-thread">
+    <section className={`execution-thread${active ? ' execution-thread-active' : ''}`}>
       <button className="execution-thread-toggle" onClick={() => setOpen(value => !value)} aria-expanded={open}>
-        <span>{t('runtime')} · {active ? (statusMsg || t('processing')) : `${steps.length} ${t('steps')}`}</span>
+        <span>{active ? (statusLabel || t('runtime')) : `${t('runtime')} · ${steps.length} ${t('steps')}`}</span>
         <Icon name={open ? 'chevronDown' : 'chevronRight'} size={13} />
       </button>
       {open && <>
-        {active && <div className="execution-thread-summary" role="status">{statusMsg || t('processing')}</div>}
+        {active && <div className="execution-thread-live-status" role="status" aria-live="polite">
+          <span className="execution-thread-live-indicator" aria-hidden="true" />
+          <span>{summary}</span>
+          {recoverable && <small>{t('continueWatching')}</small>}
+          {onCancel && <button className="btn btn-clear execution-thread-stop" onClick={onCancel} title={t('stopTask')} aria-label={t('stopTask')}><Icon name="stop" size={13} /></button>}
+        </div>}
+        {!active && terminalEvent && <div className={`execution-thread-summary execution-thread-summary-${terminalEvent.status}`}>{terminalEvent.description || terminalEvent.message || terminalEvent.status}</div>}
         {steps.length > 0 && <ExecutionGraph steps={steps} progress={progress} />}
-        <ActivityTimeline events={visibleEvents} />
+        {visibleEvents.length > 0 && <ActivityTimeline events={visibleEvents} onOpenTrace={onOpenTrace} />}
       </>}
     </section>
   );
@@ -221,6 +240,7 @@ function ContextRing({ usage, t }) {
 export default function ChatPanel({ active = true, onReady }) {
   const { t } = useI18n();
   const session = useSession();
+  const { completedBatches } = useBatchQueue();
   const [chatAction, setChatAction] = useState('creative');
   const [imageOptions, setImageOptions] = useState({ size: 'auto', count: 1, quality: 'auto' });
   const [presetFeedback, setPresetFeedback] = useState('');
@@ -263,6 +283,8 @@ export default function ChatPanel({ active = true, onReady }) {
     thinkingTextRef,
     handleConversationScroll,
     setPreview,
+    setTrace,
+    setShowTrace,
     clearConversation,
     compactConversation,
     createNewSession,
@@ -358,6 +380,16 @@ export default function ChatPanel({ active = true, onReady }) {
     inputRef.current?.focus();
   };
   const taskActive = runtimeView.busy;
+  const openTrace = async taskId => {
+    if (!taskId) return;
+    try {
+      const nextTrace = await window.electronAPI.agentGetTrace(taskId);
+      setTrace(nextTrace);
+      setShowTrace(true);
+    } catch (error) {
+      setPresetFeedback(error.message || '无法读取任务 Trace');
+    }
+  };
   const [taskStartedAt, setTaskStartedAt] = useState(0);
   const generationSourceLabel = generationSource === 'direct'
     ? t('sourceDirect')
@@ -392,6 +424,7 @@ export default function ChatPanel({ active = true, onReady }) {
     return () => window.clearInterval(timer);
   }, [taskActive, taskStartedAt]);
 
+  const activeTurnId = taskActive ? messages.filter(message => message.role === 'user').at(-1)?.turnId || '' : '';
   const hasStreamingReply = messages.some(message => message.role === 'agent' && message.streaming && message.content);
   const waitSeconds = taskStartedAt ? Math.floor((now - taskStartedAt) / 1000) : 0;
   const progressMessage = generationProgress?.percentScope === 'node' && generationProgress?.nodePercent !== null
@@ -438,13 +471,15 @@ export default function ChatPanel({ active = true, onReady }) {
     for (const entry of conversationEntries) {
       if (entry.kind !== 'message') continue;
       const message = entry.data;
-      const haystack = [message.content, message.prompt, message.negative, ...(message.attachments || []).map(item => item.name || '')].filter(Boolean).join('\n').toLowerCase();
+      const diagnostics = executionByTurn[message.turnId] || [];
+      const records = Object.values(generationRecords || {}).filter(record => record.turnId && record.turnId === message.turnId);
+      const haystack = [message.content, message.prompt, message.negative, ...(message.attachments || []).map(item => item.name || ''), ...diagnostics.flatMap(event => [event.description, event.message, event.error, event.code, event.tool, event.traceId]), ...records.flatMap(record => [record.workflowName, record.status, record.error?.message])].filter(value => typeof value === 'string' && value).join('\n').toLowerCase();
       if (!haystack.includes(query)) continue;
       const content = message.content || message.prompt || (message.attachments || []).map(item => item.name).join('、');
       results.push({ id: conversationSearchId(message), role: message.role, snippet: String(content || '').slice(0, 80), time: message.time || '' });
     }
     return results.slice(0, 50);
-  }, [conversationEntries, searchQuery]);
+  }, [conversationEntries, executionByTurn, generationRecords, searchQuery]);
 
   function jumpToSearchResult(id) {
     setSearchActiveId(id);
@@ -468,7 +503,7 @@ export default function ChatPanel({ active = true, onReady }) {
     try {
       const activeProject = session.projects?.find(project => project.id === session.activeProjectId);
       const sessionTitle = activeProject?.sessions?.find(item => item.id === session.activeSessionId)?.title || '会话';
-      const content = buildConversationExport({ entries: conversationEntries, sessionTitle, projectTitle: activeProject?.name || '', format });
+      const content = buildConversationExport({ entries: conversationEntries, executionRecords: executionByTurn, sessionTitle, projectTitle: activeProject?.name || '', format });
       const defaultName = `${sessionTitle || 'conversation'}-${new Date().toISOString().slice(0, 10)}.${format}`;
       const result = await window.electronAPI.saveTextFile({ defaultName, content, filterName: format === 'json' ? 'JSON 文件' : 'Markdown 文档' });
       if (result.saved) setPresetFeedback(format === 'json' ? '对话已导出为 JSON。' : '对话已导出为 Markdown。');
@@ -487,17 +522,18 @@ export default function ChatPanel({ active = true, onReady }) {
            {conversationEntries.length === 0 && <div className="conversation-empty"><strong>{t('startCreation')}</strong></div>}
            {conversationEntries.map((entry, entryIndex) => entry.kind === 'message' ? <div key={entry.data.messageId || entry.data.id || `${entry.data.turnId || 'message'}:${entry.index}`} className={`conversation-turn${searchActiveId && conversationSearchId(entry.data) === searchActiveId ? ' search-target' : ''}`} data-search-id={conversationSearchId(entry.data)}>
               <AgentMessage msg={entry.data} onOpenImage={setPreview} onImageError={removeAsset} onContinue={taskActive ? undefined : continueTruncatedReply} onEdit={() => handleEditMessage(entry.index)} onInsertPrompt={text => { if (text) { setInput(text); inputRef.current?.focus(); } }} hideImages={Boolean(entry.data.turnId && Object.values(generationRecords || {}).some(record => record.turnId === entry.data.turnId))} />
-              {entry.data.role === 'user' && <ExecutionThread events={executionByTurn[entry.data.turnId] || []} progress={generationProgress} active={taskActive && entry.data.turnId === messages.filter(item => item.role === 'user').at(-1)?.turnId} statusMsg={statusMsg} t={t} />}
+              {entry.data.role === 'user' && <ExecutionThread events={executionByTurn[entry.data.turnId] || []} progress={generationProgress} active={entry.data.turnId === activeTurnId} statusLabel={runtimeView.label} statusMsg={entry.data.turnId === activeTurnId ? progressMessage : statusMsg} recoverable={entry.data.turnId === activeTurnId && runtimeView.recoverable} onCancel={entry.data.turnId === activeTurnId ? handleCancel : undefined} t={t} onOpenTrace={openTrace} />}
             </div> : <GenerationRecordCard key={entry.data.requestId || entry.data.turnId || `record-${entry.data.createdAt || entryIndex}`} record={entry.data} onOpenImage={setPreview} onError={removeAsset} onRegenerate={handleRegenerate} onEdit={record => { setInput(record.prompt || ''); inputRef.current?.focus(); }} onAdjust={() => setShowNodeControls(true)} />)}
 
-           {thinking && <section className="execution-thread execution-thread-live"><div className="thinking-live"><div className="thinking-live-label"><span className="streaming-cursor" />{t('thinking')}</div><pre ref={thinkingTextRef} className="thinking-live-text">{thinking.slice(-600)}</pre></div></section>}
+           {thinking && <section className="execution-thread execution-thread-live"><div className="thinking-live"><div className="thinking-live-label"><span className="streaming-cursor" />{t('thinking')}</div><pre ref={thinkingTextRef} className="thinking-live-text">{thinking}</pre></div></section>}
+
+           {completedBatches.map(batch => <BatchResultCard key={batch.id} batch={batch} onOpenImage={setPreview} />)}
 
           <div ref={msgEndRef} />
         </div>
       </div>
 
       <div className="chat-input-area">
-            {runtimeView.phase !== 'idle' && runtimeView.phase !== 'completed' && <div className={`generation-progress-chat generation-status-line tone-${runtimeView.tone}`} role="status" aria-live="polite"><strong>{runtimeView.label}</strong><span>{progressMessage}</span>{runtimeView.recoverable && <small>{t('continueWatching')}</small>}</div>}
           <div className="composer-toolbar">
               <select className="composer-intent" value={chatAction} onChange={event => setChatAction(event.target.value)} aria-label={t('chatActions')} disabled={taskActive}>
                 <option value="creative">{t('creativeChat')}</option>

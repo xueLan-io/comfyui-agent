@@ -18,6 +18,8 @@ import { promptProfileLabel } from '../tools/comfyui/prompt-profile.mjs';
 import { normalizeRuntimeParameters, freezeRuntimeRequest, runtimeRequestDigest } from '../../runtime/runtime-parameters-contract.mjs';
 import { attachMediaToPlan } from './planner.mjs';
 import { assessPromptReadiness } from '../tools/prompt/readiness.mjs';
+import { researchCharacterIfPlanned, shouldResearchCharacter } from './research-ops.mjs';
+import { APPEARANCE_FIELDS } from '../research/appearance.mjs';
 
 export function newRequestId() {
   return `request_${randomUUID()}`;
@@ -71,6 +73,25 @@ function researchPreview(context) {
     evidence: context.evidence || [],
     unknownFields: fields.filter(field => !context[field]),
   };
+}
+
+// 调研失败/被禁用时给用户显式提示，而不是让结果静默退化。
+function researchWarnings(context) {
+  if (!context) return [];
+  const status = context.researchStatus || '';
+  if (status === 'disabled') {
+    return ['联网检索已在设置中关闭，外观细节将依据模型自身知识补全。'];
+  }
+  if (status === 'search_failed') {
+    return ['在线检索失败，外观细节将依据模型自身知识补全。'];
+  }
+  if (status === 'no_sources') {
+    return ['在线检索未返回可用资料，外观细节可能不准确。'];
+  }
+  if (status === 'extraction_failed') {
+    return ['外观事实抽取失败，已保留部分检索到的信息。'];
+  }
+  return [];
 }
 
 export async function prepareFileMutation(agent, userMessage, options = {}) {
@@ -475,6 +496,13 @@ export async function prepareGeneration(agent, userMessage, options = {}) {
     }
     attachMediaToPlan(plan, ctx.attachedMedia);
     if (agent._cancelRequested) return { cancelled: true, taskId: agent._taskId };
+    // 在编译提示词之前先跑角色调研（若计划含 web 步骤），确保外观事实
+    // 能作为 referenceContext 进入编译器；同时移除已消费的 web 步骤，
+    // 避免确认后执行阶段再重复调研。
+    // 规划器没输出 web 步骤时，只要意图路由器判定需要研究或启发式命中
+    // 角色外观请求，也强制调研——恢复 v0.3.6「出图路径保证调研」的语义。
+    const researchForced = options.execution?.needsResearch === true || shouldResearchCharacter(request, intent);
+    await researchCharacterIfPlanned(agent, plan, ctx, request, { force: researchForced });
     agent._transitionState('planning', {
       message: intent === 'refine'
         ? '正在根据修改要求编译提示词...'
@@ -484,7 +512,15 @@ export async function prepareGeneration(agent, userMessage, options = {}) {
     agent._promptCompileController = compileController;
     const enhanceStep = plan.steps.find(step => step.tool === 'prompt_enhance');
     const profile = workflowManifest.promptProfile || {};
-    const enhanceMode = ctx.characterResearch?.sources?.length > 0 ? 'anime-character' : (enhanceStep?.input?.mode || 'raw');
+    let enhanceMode = enhanceStep?.input?.mode || 'raw';
+    const researchHasFacts = Boolean(ctx.characterResearch && APPEARANCE_FIELDS.some(field => String(ctx.characterResearch[field] || '').trim()));
+    if (ctx.characterResearch?.sources?.length > 0 || researchHasFacts) {
+      enhanceMode = 'anime-character';
+    } else if (ctx.characterResearch && !enhanceStep) {
+      // raw 模式 + 计划里含 web 调研步骤：把编译模式提升为 anime-character，
+      // 让「无资料也要补全完整外观」的降级规则生效，而不是被 raw 的「保持原样」压掉。
+      enhanceMode = 'anime-character';
+    }
     const compileInput = {
       prompt: request,
       mode: enhanceMode,
@@ -685,7 +721,7 @@ export async function prepareGeneration(agent, userMessage, options = {}) {
       droppedNegative: compiledPrompt.droppedNegative || [],
       targets,
       readiness,
-      warnings: readiness.warnings,
+      warnings: [...(readiness.warnings || []), ...researchWarnings(ctx.characterResearch)],
       error: compiledPrompt.error,
       confirmation,
       research: researchPreview(ctx.characterResearch),

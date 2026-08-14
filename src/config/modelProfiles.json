@@ -1,28 +1,30 @@
 {
   "anima": {
-    "format": "tags_block + newline + narrative",
-    "tagOrder": ["quality", "subjectCount", "identity", "artist", "appearance", "pose", "scene"],
+    "format": "tags_block + natural_language",
+    "tagOrder": ["meta", "quality", "safety", "subjectCount", "character", "series", "artist", "general"],
+    "tagsArray": "quality/safety/artist 英文标签（可选）",
     "negative": "baseline + defects_only",
-    "escapeParentheses": true,
-    "weightedTags": "仅用于真实视觉属性",
-    "tagsArray": "non-empty"
+    "weightedTags": "(word:2.0) 约 2.0 权重才明显生效",
+    "positive": "混合写法：英文标签块 + 至少两句自然语言正文；自然语言中英均可，先命名角色再描述外貌；不要转义括号"
   },
   "flux": {
     "format": "natural_language_only",
     "tagsArray": "empty",
     "negative": "empty_string",
-    "positive": "包含构图/光照/相机/风格/主体细节"
+    "positive": "中英协同分层写法：中文写语义/动作/情绪/镜头，英文写视觉与模型关键词（风格、质量、艺术家、材质、构图词）；分段组织、同一句不混排；包含构图/光照/相机/风格/主体细节等完整画面结构"
   },
   "wan": {
     "format": "natural_language_only",
     "tagsArray": "empty",
     "negative": "可包含静态帧/模糊/字幕/异常运动/解剖缺陷",
+    "positive": "中英协同分层写法：中文写语义/动作/情绪/镜头，英文写视觉与模型关键词；分段组织、同一句不混排",
     "motion": "必须含明确的运动/时间/相机运动描述"
   },
   "animatediff": {
     "format": "natural_language_only",
     "tagsArray": "empty",
     "negative": "可包含静态帧/模糊/伪影/文本/解剖缺陷",
+    "positive": "中英协同分层写法：中文写语义/动作/情绪/镜头，英文写视觉与模型关键词；分段组织、同一句不混排",
     "motion": "必须含明确的运动/时间描述"
   },
   "minimax_h3": {
@@ -36,11 +38,12 @@
     "format": "tags_block + natural_language",
     "tagsArray": "optional",
     "negative": "standard_sdxl_negative",
-    "note": "保留用户主体和构图约束"
+    "note": "保留用户主体和构图约束；可中英协同分层组织"
   },
   "generic": {
     "format": "natural_language_only",
     "tagsArray": "empty",
-    "negative": "按工作流定义"
+    "negative": "按工作流定义",
+    "positive": "中英协同分层写法：中文自然语言写语义、动作、情绪与镜头意图，英文写视觉与模型关键词（风格、质量、艺术家、材质、构图词）；分段或分行组织、同一句内不混排；包含主体、外观、动作、镜头/构图、场景、光线、氛围、风格等完整画面结构"
   }
 }

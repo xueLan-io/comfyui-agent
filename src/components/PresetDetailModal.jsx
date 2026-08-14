@@ -3,9 +3,12 @@ import Icon from './Icon.jsx';
 import PresetParameterEditor from './PresetParameterEditor.jsx';
 import { presetTagNodes } from './PresetTags.jsx';
 import { useI18n } from '../i18n/I18nContext.jsx';
+import { useBatchQueue } from '../contexts/BatchQueueContext.jsx';
+import { buildPresetGenerationRequest } from '../runtime/preset-generation.mjs';
 
 export default function PresetDetailModal({ preset, tagTranslations = new Map(), onClose, onReuse }) {
   const { t } = useI18n();
+  const { addToQueue } = useBatchQueue();
   const [src, setSrc] = useState('');
   const [copied, setCopied] = useState('');
   const [dependencyReport, setDependencyReport] = useState(null);
@@ -49,6 +52,9 @@ export default function PresetDetailModal({ preset, tagTranslations = new Map(),
       onReuse({ ...preset, positive, negative }, immediate, { settings: overrides });
     } catch (error) { setOverrideError(error.message || t('ppeJsonInvalid')); }
   }
+  function enqueuePreset() {
+    addToQueue(buildPresetGenerationRequest({ ...preset, positive, negative }), { sourceKind: 'preset', sourceLabel: preset.title });
+  }
   if (!preset) return null;
   const modelIssues = dependencyReport?.dependencies?.missingModels || [];
   let overrideValue = {};
@@ -70,6 +76,6 @@ export default function PresetDetailModal({ preset, tagTranslations = new Map(),
       <div className="preset-dependency-section"><div className="preset-detail-heading"><h3>{t('pdDepsTitle')}</h3><button className="btn btn-small" onClick={() => void checkDependencies()} disabled={checking}>{checking ? t('settingsChecking') : t('pdCheckDeps')}</button></div>{dependencyReport && (dependencyReport.valid ? <div className="preset-dependency-ok"><Icon name="check" size={13} />{t('pdDepsOk')}</div> : <div className="preset-dependency-errors">{dependencyReport.issues?.map((issue, index) => <span key={`${issue.code || 'issue'}-${index}`}>{issue.message}</span>)}{modelIssues.map(model => <span key={`model-${model.value}`}>{t('pdSuggestReplace', { candidates: model.candidates?.length ? model.candidates.join('、') : t('pdNoSimilar') })}</span>)}</div>)}{!dependencyReport && <small>{t('pdDepsHint')}</small>}</div>
       {preset.versions?.length > 0 && <div className="preset-version-section"><h3>{t('pdVersionsTitle')}</h3>{preset.versions.slice(-5).reverse().map((version, index) => <small key={`${version.savedAt}-${index}`}>{new Date(version.savedAt).toLocaleString()} · {version.workflow || t('pdCurrentWorkflow')}</small>)}</div>}
     </div></div>
-    <footer className="settings-footer"><button className="btn" onClick={onClose}>{t('pdClose')}</button><button className="btn" onClick={() => void exportPreset()}>{t('pdExport')}</button><span className="settings-footer-spacer" /><button className="btn btn-primary" onClick={() => reuse(false)}>{t('floatPresetAdjustGenerate')}</button><button className="btn" onClick={() => reuse(true)}>{t('floatPresetGenerateNow')}</button></footer>
+    <footer className="settings-footer"><button className="btn" onClick={onClose}>{t('pdClose')}</button><button className="btn" onClick={() => void exportPreset()}>{t('pdExport')}</button><span className="settings-footer-spacer" /><button className="btn" onClick={enqueuePreset} title={t('queueAddHint')}><Icon name="queueAdd" size={13} />{t('queueAdd')}</button><button className="btn btn-primary" onClick={() => reuse(false)}>{t('floatPresetAdjustGenerate')}</button><button className="btn" onClick={() => reuse(true)}>{t('floatPresetGenerateNow')}</button></footer>
   </section></div>;
 }

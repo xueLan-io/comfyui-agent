@@ -3,7 +3,7 @@ import test from 'node:test';
 import https from 'node:https';
 import { gzipSync } from 'node:zlib';
 import { Readable } from 'node:stream';
-import { classifySource, createWebTool, parsePage, parseBingResults, parseBaiduResults, privateAddress, resolveProxy, resolveSearchProviders } from '../src/agent/tools/web/index.mjs';
+import { classifySource, createWebTool, parsePage, parseBingResults, parseBaiduResults, parseTavilyResults, parseSearxngResults, stripNoiseBlocks, isRegistrableDomain, privateAddress, resolveProxy, resolveSearchProviders, clearSystemProxyCache } from '../src/agent/tools/web/index.mjs';
 
 function response(text, contentType = 'text/html') {
   return {
@@ -320,4 +320,173 @@ test('parsePage keeps a bounded reference context', () => {
   const result = parsePage('https://93.184.216.34', 'text/html', '<title>Title</title><p>text</p>');
   assert.equal(result.title, 'Title');
   assert.equal(result.content, 'Title text');
+});
+
+test('denoises navigation, footer, and advertisement blocks from page content', () => {
+  const html = '<title>Hero</title><nav>Home Menu Links</nav><article><p>Blue eyes and red coat</p></article><footer>Copyright 2024 All rights reserved</footer><div class="ad-banner">Buy now</div>';
+  const page = parsePage('https://93.184.216.34', 'text/html', html);
+  assert.match(page.content, /Blue eyes and red coat/);
+  assert.doesNotMatch(page.content, /Home Menu Links/);
+  assert.doesNotMatch(page.content, /Copyright 2024/);
+  assert.doesNotMatch(page.content, /Buy now/);
+});
+
+test('stripNoiseBlocks keeps plain content without noise tags intact', () => {
+  assert.equal(stripNoiseBlocks('<p>plain text</p>').trim(), 'plain text');
+  const cleaned = stripNoiseBlocks('<nav>nav</nav><main>main</main>');
+  assert.match(cleaned, /main/);
+  assert.doesNotMatch(cleaned, /nav/);
+});
+
+test('isRegistrableDomain distinguishes registrable domains from deeper subdomains', () => {
+  assert.equal(isRegistrableDomain('example'), true);
+  assert.equal(isRegistrableDomain('example.com'), true);
+  assert.equal(isRegistrableDomain('example.com.cn'), true);
+  assert.equal(isRegistrableDomain('cn.bing.com'), false);
+  assert.equal(isRegistrableDomain('com.cn'), false);
+});
+
+test('domain policy does not let deep subdomains of a subdomain through', async () => {
+  const tool = createWebTool(
+    async () => response('<a class="result__a" href="https://evil.cn.bing.com/hero">Bad</a><a class="result__a" href="https://cn.bing.com/ok">Ok</a>'),
+    async () => [{ address: '93.184.216.34' }],
+  );
+  const result = await tool.execute({ action: 'search', query: 'Hero', allowedDomains: ['cn.bing.com'], providers: ['duckduckgo'] });
+  assert.ok(!result.results || result.results.every(item => item.url === 'https://cn.bing.com/ok'));
+});
+
+test('Tavily search API maps structured answer and references', async () => {
+  let request;
+  const fetchImpl = async (url, options) => {
+    request = { url: String(url), options };
+    return response(JSON.stringify({
+      answer: 'Tavily answer',
+      results: [{ title: 'Hero wiki', url: 'https://example.com/hero', content: 'Blue eyes', published_date: '2024-05-01T00:00:00Z' }],
+    }), 'application/json');
+  };
+  const tool = createWebTool(fetchImpl, async () => [{ address: '93.184.216.34' }], { resolveProxy: () => null });
+  const result = await tool.execute({ action: 'search', query: 'Hero', searchApi: 'tavily', searchApiKey: 'tvly-test' });
+  assert.equal(result.provider, 'tavily');
+  assert.equal(result.answer, 'Tavily answer');
+  assert.equal(result.results[0].title, 'Hero wiki');
+  assert.equal(result.results[0].publishedAt, '2024-05-01');
+  assert.equal(request.url, 'https://api.tavily.com/search');
+  assert.equal(request.options.method, 'POST');
+  assert.equal(JSON.parse(request.options.body).api_key, 'tvly-test');
+});
+
+test('SearXNG search API maps structured results from a self-hosted instance', async () => {
+  let request;
+  const fetchImpl = async (url, options) => {
+    request = { url: String(url), options };
+    return response(JSON.stringify({
+      results: [{ title: 'Hero wiki', url: 'https://example.com/hero', content: 'Blue eyes' }],
+    }), 'application/json');
+  };
+  const tool = createWebTool(fetchImpl, async () => [{ address: '93.184.216.34' }], { resolveProxy: () => null });
+  const result = await tool.execute({ action: 'search', query: 'Hero', searchApi: 'searxng', searchApiBaseUrl: 'http://127.0.0.1:8888' });
+  assert.equal(result.provider, 'searxng');
+  assert.equal(result.results[0].title, 'Hero wiki');
+  assert.match(String(request.url), /127\.0\.0\.1:8888\/search/);
+});
+
+test('SearXNG validates non-local endpoints instead of bypassing DNS safety checks', async () => {
+  const tool = createWebTool(
+    async () => { throw new Error('fetch must not run'); },
+    async () => [{ address: '127.0.0.1', family: 4 }],
+    { resolveProxy: () => null },
+  );
+  const result = await tool.execute({ action: 'search', query: 'Hero', searchApi: 'searxng', searchApiBaseUrl: 'https://searx.example' });
+  assert.match(result.error, /private|local/i);
+});
+
+test('Tavily success is used once and never discarded by a duplicate request', async () => {
+  let tavilyCalls = 0;
+  const fetchImpl = async url => {
+    if (String(url).includes('tavily.com')) {
+      tavilyCalls += 1;
+      // 第二次调用模拟波动：旧代码重复 run 会把首次成功丢掉并回退抓取
+      if (tavilyCalls > 1) throw new Error('connection reset by peer');
+      return response(JSON.stringify({
+        answer: 'Tavily answer',
+        results: [{ title: 'Hero wiki', url: 'https://example.com/hero', content: 'Blue eyes' }],
+      }), 'application/json');
+    }
+    return response('<a class="result__a" href="https://93.184.216.34/hero">Hero</a><div class="result__snippet">Blue eyes</div>');
+  };
+  const tool = createWebTool(fetchImpl, async () => [{ address: '93.184.216.34' }], { resolveProxy: () => null });
+  const result = await tool.execute({ action: 'search', query: 'Hero', searchApi: 'tavily', searchApiKey: 'tvly-test' });
+  assert.equal(result.provider, 'tavily');
+  assert.equal(result.answer, 'Tavily answer');
+  assert.equal(tavilyCalls, 1);
+});
+
+test('SearXNG search API is invoked exactly once on success', async () => {
+  let calls = 0;
+  const fetchImpl = async url => {
+    calls += 1;
+    return response(JSON.stringify({
+      results: [{ title: 'Hero wiki', url: 'https://example.com/hero', content: 'Blue eyes' }],
+    }), 'application/json');
+  };
+  const tool = createWebTool(fetchImpl, async () => [{ address: '93.184.216.34' }], { resolveProxy: () => null });
+  const result = await tool.execute({ action: 'search', query: 'Hero', searchApi: 'searxng', searchApiBaseUrl: 'http://127.0.0.1:8888' });
+  assert.equal(result.provider, 'searxng');
+  assert.equal(calls, 1);
+});
+
+test('successful API responses report their only attempted provider', async () => {
+  const tool = createWebTool(
+    async () => response(JSON.stringify({ results: [{ title: 'Hero', url: 'https://example.com/hero', content: 'Blue eyes' }] }), 'application/json'),
+    async () => [{ address: '93.184.216.34' }],
+    { resolveProxy: () => null },
+  );
+  const result = await tool.execute({ action: 'search', query: 'Hero', searchApi: 'tavily', searchApiKey: 'tvly-test' });
+  assert.deepEqual(result.attempted, ['tavily']);
+});
+
+test('parseTavilyResults applies the allowed-domain policy', () => {
+  const parsed = parseTavilyResults({
+    answer: 'Summary',
+    results: [
+      { title: 'A', url: 'https://allowed.example/a', content: 'Snippet A', published_date: '2024-05-01T00:00:00Z' },
+      { title: 'B', url: 'https://blocked.example/b', content: 'Snippet B' },
+    ],
+  }, 10, { allowedDomains: ['allowed.example'] });
+  assert.equal(parsed.answer, 'Summary');
+  assert.equal(parsed.results.length, 1);
+  assert.equal(parsed.results[0].url, 'https://allowed.example/a');
+  assert.equal(parsed.results[0].publishedAt, '2024-05-01');
+});
+
+test('parseSearxngResults reads answers and results', () => {
+  const parsed = parseSearxngResults({
+    answers: ['Searx answer'],
+    results: [{ title: 'Hero', url: 'https://example.com/hero', content: 'Blue eyes' }],
+  }, 10, {});
+  assert.equal(parsed.answer, 'Searx answer');
+  assert.equal(parsed.results[0].title, 'Hero');
+});
+
+test('failed providers are skipped during the cooldown window', async () => {
+  const urls = [];
+  const fetchImpl = async url => {
+    urls.push(String(url));
+    if (String(url).includes('bing.com')) throw new Error('connection refused');
+    return response('<a class="result__a" href="https://93.184.216.34/hero">Hero</a>');
+  };
+  const tool = createWebTool(fetchImpl, async () => [{ address: '93.184.216.34' }], { resolveProxy: () => null });
+  const first = await tool.execute({ action: 'search', query: 'First query' });
+  assert.equal(first.error, undefined);
+  assert.equal(first.provider, 'duckduckgo');
+  const second = await tool.execute({ action: 'search', query: 'Second query' });
+  assert.equal(second.error, undefined);
+  const bingCalls = urls.filter(u => u.includes('bing.com')).length;
+  assert.equal(bingCalls, 1);
+});
+
+test('clearSystemProxyCache resets the cached system proxy', () => {
+  assert.equal(typeof clearSystemProxyCache, 'function');
+  clearSystemProxyCache();
+  clearSystemProxyCache();
 });
