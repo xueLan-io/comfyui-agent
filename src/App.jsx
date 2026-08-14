@@ -15,6 +15,7 @@ import PolicyConfirmModal from './components/PolicyConfirmModal.jsx';
 import AssetLibraryPage from './components/AssetLibraryPage.jsx';
 import PromptLibraryPage from './components/PromptLibraryPage.jsx';
 import PresetLibraryPage from './components/PresetLibraryPage.jsx';
+import BatchWorkspacePage from './components/BatchWorkspacePage.jsx';
 import ComfyUISetup from './components/ComfyUISetup.jsx';
 import Icon from './components/Icon.jsx';
 import QuickGenerateFloat from './components/QuickGenerateFloat.jsx';
@@ -136,7 +137,7 @@ function AppLayout({ floating = false }) {
         <Header onOpenSetup={openSetup} />
         <main className="body">
           <ProjectSidebar activeView={activeView} onViewChange={handleViewChange} onOpenQuickGenerate={() => window.electronAPI.floatingShow?.()} />
-          {activeView === 'assets' ? <AssetLibraryPage onBack={() => setActiveView('chat')} /> : <ChatPanel active={activeView === 'chat'} onReady={handleChatReady} />}
+          {activeView === 'batch' ? <BatchWorkspacePage onBack={() => setActiveView('chat')} /> : activeView === 'assets' ? <AssetLibraryPage onBack={() => setActiveView('chat')} /> : <ChatPanel active={activeView === 'chat'} onReady={handleChatReady} />}
           {activeView === 'chat' && <WorkspacePanel onOpenPromptLibrary={openPromptLibrary} />}
         </main>
       </div>

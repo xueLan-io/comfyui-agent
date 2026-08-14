@@ -41,6 +41,25 @@ const electronAPI = {
   memoryClear: async () => null,
   memoryExport: async () => '{}',
   appSaveTextFile: async () => true,
+  listWorkflows: async () => ['anima.json', 'flux.json'],
+  batchList: async () => [
+    {
+      id: 'batch_1', title: '夜晚车站系列', projectId: 'project-a', workflowName: 'anima.json',
+      status: 'completed', progress: { total: 2, done: 2, completed: 2, failed: 0, cancelled: 0 },
+      jobs: [
+        { index: 0, id: 'job_1', status: 'completed', seed: 42, score: 95, result: { images: [{ path: 'out_1.png', name: 'out_1.png' }] } },
+        { index: 1, id: 'job_2', status: 'completed', seed: 1337, score: 60, result: { images: [{ path: 'out_2.png', name: 'out_2.png' }] } },
+      ],
+    },
+  ],
+  batchCreate: async () => ({ id: 'batch_new', jobs: [] }),
+  batchStart: async () => ({}),
+  batchResume: async () => ({}),
+  batchPause: async () => ({}),
+  batchCancel: async () => ({}),
+  batchRetryJob: async () => ({}),
+  batchCurate: async () => ({ scored: 2, top: [{ index: 0, score: 95 }] }),
+  onBatchEvent: () => () => {},
 };
 
 window.electronAPI = new Proxy(electronAPI, {
