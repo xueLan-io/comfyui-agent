@@ -248,10 +248,11 @@ ComfyMuse 的**差异化资产是“能力平台”**：agent 规划/执行/治�
 | 拆分第四刀：联网研究子系统 | ✅ | `fb02043` | `src/agent/runtime/research-ops.mjs`：_researchCharacter/_buildSearchQuery/_chatResearch + researchQuery/researchContext/emptyAppearanceFacts 外提（原样迁移，含原查询模板与空事实结构）；清理 openResultPages/extractAppearanceFacts 导入 |
 | 拆分第五刀：会话/项目管理子系统 | ✅ | `c99e57f` | `src/agent/runtime/session-ops.mjs`：useSession/createProject/createSession/suggestSessionTitle/deleteProject/deleteSession 外提（initSession 经 events 重导出） |
 | 拆分第六刀：对话装配辅助 | ✅ | `1256eac` | `src/agent/runtime/chat-ops.mjs`：_chatWithDegradation（降级重试循环 120 行）+ _localResponse（离线回复 70 行）外提；chat() 主方法保留（依赖面广，后续按需再拆） |
-| 拆分第七刀：准备与已备执行 | ✅ | `79b1b1a` | `src/agent/runtime/prepare-ops.mjs`：prepareFileMutation/prepareWorkflowMutation/runPrepared（约 280 行）外提（经实例方法回调保持覆盖语义）；清理 WorkflowMutation 工具/确认绑定/编辑检查导入 |
+| 拆分第七刀：准备与已备执行 | ✅ | `5eb0edf` | `src/agent/runtime/prepare-ops.mjs`：prepareFileMutation/prepareWorkflowMutation/runPrepared（约 280 行）外提（经实例方法回调保持覆盖语义）；清理 WorkflowMutation 工具/确认绑定/编辑检查导入 |
+| 拆分第八刀：生成准备管线 | ✅ | `03d7562` | prepareGeneration（约 425 行，最大方法）+ 共享辅助（newRequestId/isCancellationError/emitTiming/timingOutcome/aiFailure/researchPreview）移入 prepare-ops.mjs；清理 promptProfileLabel/运行时参数契约/confirmationForPlan 导入 |
 
-agent.mjs：162.5KB → **113.4KB**（-49KB，七刀累计）；核心套件 945 tests / 938 pass 全绿即行为快照；lint 287 文件；build 通过。
-剩余：P0-5 第八刀（prepareGeneration 约 425 行、chat() 约 480 行）→ 发布 v0.3.8。
+agent.mjs：162.5KB → **90.5KB**（-72KB，八刀累计，跌破 100KB）；核心套件 945 tests / 938 pass 全绿即行为快照；lint 287 文件；build 通过。
+剩余：P0-5 第九刀（chat() 约 480 行对话装配主方法、handleTurn 约 190 行）→ 发布 v0.3.8。
 
 ---
 
