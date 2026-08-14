@@ -200,7 +200,7 @@ ComfyMuse 的**差异化资产是“能力平台”**：agent 规划/执行/治�
 | P0-2 清理孤儿组件 | ✅ | `51a7fd8` | 删除未引用的 ProjectSidebar.jsx 重复件（−155 行） |
 | P0-3 GUI 确认绑定 digest | ✅ | `f471718` | prepareGeneration 计算 requestDigest 并回显 preview；runPrepared 用 assertConfirmationBinding 校验（accepted/digest/requestId/previewId）；渲染层发 digest 形态 confirmation + 独立 previewEdits；重启恢复保留 digest；5 个新测试 |
 | P0-4 治理层接入 | ✅（收敛） | `18fe91b` | 实测治理栈已由 main.mjs 协调器接入全部生成执行（policy+admission+audit）；补齐 comfyui.submit 的 generation_count 配额扣减（与 CLI 对齐）+ 协调器接线模式测试（含配额耗尽拒绝） |
-| P0-5 拆分 agent.mjs | 🔶 第一刀 | `a9defb9` | 抽出 chat-intents.mjs（确认/身份/联网启发式、附件归一化）与 agent-tools.mjs（工具清单+工厂）；`_getTools` 改工厂；6 个新测试；后续按 对话/规划执行/生成装配/会话 继续拆分 |
+| P0-5 拆分 agent.mjs | ✅ 三刀 | `a9defb9` `0d9d4b7` `a6c57ac` | 第一刀：chat-intents.mjs（确认/身份/联网启发式、附件归一化）+ agent-tools.mjs（工具清单+工厂）；第二刀：context-archive.mjs（归档/压缩/记忆召回 8 方法 ~150 行）；第三刀：execution-ops.mjs（执行循环/重试/结果记录 12 方法 + backoffDelay ~350 行，经实例方法回调用以保留测试覆盖语义）。agent.mjs 162.5KB → 144.3KB；945 测试即行为快照 |
 | P0-6 渲染层测试骨架 | ✅ | `798f227` | vitest + jsdom + @vitejs/plugin-react；`npm run test:ui`；electronAPI/matchMedia mock；Icon / GenerationProgress / PromptPersonalitySettings 冒烟测试（8 个） |
 
 核心套件基线：**917 tests / 910 pass / 0 fail** + 渲染层 8 个冒烟测试；lint 278 文件；build 通过。
@@ -238,6 +238,16 @@ ComfyMuse 的**差异化资产是“能力平台”**：agent 规划/执行/治�
 
 核心套件基线（P3 后）：**945 tests / 938 pass / 0 fail** + 渲染层 14 个冒烟测试；lint 281 文件；build 通过。
 剩余：P3 可选增强 → P0-5 拆分续（execution/chat/context 子系统）→ 发布 v0.3.8（`pack-portable.bat` + 门禁）。
+
+### 3.10 P0-5 拆分续落地进度（2026-08-14 更新）
+
+| 步骤 | 状态 | 提交 | 说明 |
+|---|---|---|---|
+| 拆分第二刀：上下文归档子系统 | ✅ | `0d9d4b7` | `src/agent/runtime/context-archive.mjs`：_contextArchive/_archivePrompt/_compactConversationSegment/_prepareConversationArchive/_prefetchContextArchive/compactConversation/_memoryContext/_archiveMessage 外提为行为等价函数，Agent 方法一行转发 |
+| 拆分第三刀：执行/重试子系统 | ✅ | `a6c57ac` | `src/agent/runtime/execution-ops.mjs`：执行循环/重试决策/参数轮换/重规划/结果记录 12 方法 + backoffDelay 外提；子系统函数经 agent 实例方法回调，保持测试/子类覆盖语义（agent-retry rewrite 测试验证） |
+
+agent.mjs：162.5KB → **144.3KB**（-18KB）；核心套件 945 tests / 938 pass 全绿即行为快照；lint 283 文件；build 通过。
+剩余：P0-5 第四刀（会话管理/研究/对话装配子系统，agent.mjs 仍有 144KB）→ 发布 v0.3.8。
 
 ---
 
