@@ -245,10 +245,11 @@ ComfyMuse 的**差异化资产是“能力平台”**：agent 规划/执行/治�
 |---|---|---|---|
 | 拆分第二刀：上下文归档子系统 | ✅ | `0d9d4b7` | `src/agent/runtime/context-archive.mjs`：_contextArchive/_archivePrompt/_compactConversationSegment/_prepareConversationArchive/_prefetchContextArchive/compactConversation/_memoryContext/_archiveMessage 外提为行为等价函数，Agent 方法一行转发 |
 | 拆分第三刀：执行/重试子系统 | ✅ | `a6c57ac` | `src/agent/runtime/execution-ops.mjs`：执行循环/重试决策/参数轮换/重规划/结果记录 12 方法 + backoffDelay 外提；子系统函数经 agent 实例方法回调，保持测试/子类覆盖语义（agent-retry rewrite 测试验证） |
-| 拆分第四刀：联网研究子系统 | ✅ | `d12ec49` | `src/agent/runtime/research-ops.mjs`：_researchCharacter/_buildSearchQuery/_chatResearch + researchQuery/researchContext/emptyAppearanceFacts 外提（原样迁移，含原查询模板与空事实结构）；清理 openResultPages/extractAppearanceFacts 导入 |
+| 拆分第四刀：联网研究子系统 | ✅ | `fb02043` | `src/agent/runtime/research-ops.mjs`：_researchCharacter/_buildSearchQuery/_chatResearch + researchQuery/researchContext/emptyAppearanceFacts 外提（原样迁移，含原查询模板与空事实结构）；清理 openResultPages/extractAppearanceFacts 导入 |
+| 拆分第五刀：会话/项目管理子系统 | ✅ | `d4498c0` | `src/agent/runtime/session-ops.mjs`：useSession/createProject/createSession/suggestSessionTitle/deleteProject/deleteSession 外提（initSession 经 events 重导出） |
 
-agent.mjs：162.5KB → **134.5KB**（-28KB，四刀累计）；核心套件 945 tests / 938 pass 全绿即行为快照；lint 284 文件；build 通过。
-剩余：P0-5 第五刀（会话管理/对话装配子系统，agent.mjs 仍有 134.5KB）→ 发布 v0.3.8。
+agent.mjs：162.5KB → **132.8KB**（-30KB，五刀累计）；核心套件 945 tests / 938 pass 全绿即行为快照；lint 285 文件；build 通过。
+剩余：P0-5 第六刀（对话装配 chat/_localResponse/_chatWithDegradation 约 500 行，agent.mjs 仍有 132.8KB）→ 发布 v0.3.8。
 
 ---
 
