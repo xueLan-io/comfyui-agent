@@ -3606,6 +3606,20 @@ ipcMain.handle('skills:delete-external', async (_, { id }) => {
   return skills;
 });
 
+// Create an external (declarative) skill from form fields instead of a JSON
+// file: validates through the same normalize/validate path as file import.
+ipcMain.handle('skills:add-external', async (_, input = {}) => {
+  const skill = normalizeExternalSkill(input, 'form');
+  const skills = prefStore.get('skills');
+  if (skills.system[skill.id] || skills.custom.some(item => item.id === skill.id) || skills.external.some(item => item.id === skill.id)) {
+    throw new Error(`Skill ID 已存在：${skill.id}`);
+  }
+  skills.external.push(externalSkillConfig(skill));
+  prefStore.set('skills', skills);
+  configureSkills({ systemEnabled: skills.system, custom: skills.custom, external: skills.external });
+  return skills;
+});
+
 ipcMain.handle('memory:get-state', async (_, { projectId = '' } = {}) => agent.call('memory.getState', [projectId]));
 ipcMain.handle('memory:set-profile', async (_, { projectId = '', patch = {} } = {}) => agent.call('memory.setProfile', [projectId, patch]));
 ipcMain.handle('memory:upsert-character-card', async (_, { projectId = '', card = {} } = {}) => agent.call('memory.upsertCharacterCard', [projectId, card]));

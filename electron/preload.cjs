@@ -130,6 +130,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   skillAddCustom: (skill) => ipcRenderer.invoke('skills:add-custom', { skill }),
   skillDeleteCustom: (id) => ipcRenderer.invoke('skills:delete-custom', { id }),
   skillImportExternal: () => ipcRenderer.invoke('skills:import-external'),
+  skillAddExternal: (skill) => ipcRenderer.invoke('skills:add-external', skill),
   skillDeleteExternal: (id) => ipcRenderer.invoke('skills:delete-external', { id }),
   memoryGetState: (projectId) => ipcRenderer.invoke('memory:get-state', { projectId }),
   memorySetProfile: (projectId, patch) => ipcRenderer.invoke('memory:set-profile', { projectId, patch }),

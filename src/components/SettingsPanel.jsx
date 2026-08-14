@@ -13,6 +13,7 @@ import { TEMPLATES, EMPTY_PROVIDER } from '../provider-templates.js';
 import ProviderPickerModal from './ProviderPickerModal.jsx';
 
 const EMPTY_SKILL = { id: '', name: '', description: '', keywords: '', promptMode: 'raw', enabled: true };
+const EMPTY_EXTERNAL = { id: '', name: '', description: '', version: '1.0.0', keywords: '', tool: 'comfyui', workflowName: '', promptMode: 'raw', settingsText: '' };
 
 function ProviderForm({ value, onChange, onSave, onTest, testState, saveState }) {
   const { t } = useI18n();
@@ -137,6 +138,8 @@ export default function SettingsPanel({ onClose }) {
   const [editing, setEditing] = useState(EMPTY_PROVIDER);
   const [skills, setSkills] = useState({ system: {}, custom: [] });
   const [custom, setCustom] = useState(EMPTY_SKILL);
+  const [external, setExternal] = useState(EMPTY_EXTERNAL);
+  const [externalStatus, setExternalStatus] = useState('');
   const [testState, setTestState] = useState({ status: '', message: '' });
   const [saveState, setSaveState] = useState({ status: '', message: '' });
   const [budgets, setBudgets] = useState({ positiveTokens: '', negativeTokens: '' });
@@ -299,6 +302,40 @@ export default function SettingsPanel({ onClose }) {
     setCustom(EMPTY_SKILL);
   }
 
+  async function addExternalSkill() {
+    let settings = {};
+    if (external.settingsText.trim()) {
+      try {
+        const parsed = JSON.parse(external.settingsText);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('must be an object');
+        settings = parsed;
+      } catch {
+        setExternalStatus(t('externalSettingsInvalid'));
+        return;
+      }
+    }
+    try {
+      const next = await window.electronAPI.skillAddExternal({
+        id: external.id,
+        name: external.name,
+        description: external.description,
+        version: external.version,
+        keywords: external.keywords.split(/[,，]/).map(item => item.trim()).filter(Boolean),
+        target: {
+          tool: external.tool,
+          workflowName: external.workflowName,
+          promptMode: external.promptMode,
+          settings,
+        },
+      });
+      setSkills(next);
+      setExternal(EMPTY_EXTERNAL);
+      setExternalStatus('');
+    } catch (error) {
+      setExternalStatus(error.message || t('externalCreateFailed'));
+    }
+  }
+
   async function saveBudgets() {
     setBudgetState({ status: 'saving', message: '' });
     try {
@@ -416,6 +453,21 @@ export default function SettingsPanel({ onClose }) {
              <div className="settings-grid"><div className="settings-field"><label>{t('customId')}</label><input value={custom.id} onChange={event => setCustom({ ...custom, id: event.target.value })} /></div><div className="settings-field"><label>{t('customName')}</label><input value={custom.name} onChange={event => setCustom({ ...custom, name: event.target.value })} /></div><div className="settings-field span-2"><label>{t('customDescription')}</label><input value={custom.description} onChange={event => setCustom({ ...custom, description: event.target.value })} /></div><div className="settings-field"><label>{t('customKeywords')}</label><input value={custom.keywords} onChange={event => setCustom({ ...custom, keywords: event.target.value })} /></div><div className="settings-field"><label>{t('promptMode')}</label><select value={custom.promptMode} onChange={event => setCustom({ ...custom, promptMode: event.target.value })}><option value="raw">{t('rawPromptMode')}</option><option value="cinematic">{t('cinematicPromptMode')}</option><option value="anime">{t('animePromptMode')}</option><option value="photorealistic">{t('photoPromptMode')}</option><option value="concept">{t('conceptPromptMode')}</option></select></div></div>
              <button className="btn btn-primary" onClick={addCustom} disabled={!/^[a-z0-9_-]+$/.test(custom.id) || !custom.name || !custom.keywords.trim()}>{t('addSkill')}</button>
           </section>
+            <section className="custom-skill-form"><h3>{t('externalCreateTitle')}</h3>
+              {externalStatus && <p className="settings-status">{externalStatus}</p>}
+              <div className="settings-grid">
+                <div className="settings-field"><label>{t('externalId')} *</label><input value={external.id} onChange={event => setExternal({ ...external, id: event.target.value })} placeholder="comic-panel" /></div>
+                <div className="settings-field"><label>{t('externalVersion')}</label><input value={external.version} onChange={event => setExternal({ ...external, version: event.target.value })} /></div>
+                <div className="settings-field"><label>{t('externalName')} *</label><input value={external.name} onChange={event => setExternal({ ...external, name: event.target.value })} /></div>
+                <div className="settings-field"><label>{t('externalKeywords')} *</label><input value={external.keywords} onChange={event => setExternal({ ...external, keywords: event.target.value })} placeholder="comic, 漫画分镜" /></div>
+                <div className="settings-field span-2"><label>{t('externalDescription')} *</label><input value={external.description} onChange={event => setExternal({ ...external, description: event.target.value })} /></div>
+                <div className="settings-field"><label>{t('externalTool')}</label><select value={external.tool} onChange={event => setExternal({ ...external, tool: event.target.value })}><option value="comfyui">comfyui</option><option value="prompt_enhance">prompt_enhance</option></select></div>
+                <div className="settings-field"><label>{t('externalWorkflow')}</label><input value={external.workflowName} onChange={event => setExternal({ ...external, workflowName: event.target.value })} placeholder="comic.json" /></div>
+                <div className="settings-field"><label>{t('promptMode')}</label><select value={external.promptMode} onChange={event => setExternal({ ...external, promptMode: event.target.value })}><option value="raw">{t('rawPromptMode')}</option><option value="cinematic">{t('cinematicPromptMode')}</option><option value="anime">{t('animePromptMode')}</option><option value="photorealistic">{t('photoPromptMode')}</option><option value="concept">{t('conceptPromptMode')}</option></select></div>
+                <div className="settings-field span-2"><label>{t('externalSettings')}</label><textarea rows={2} value={external.settingsText} onChange={event => setExternal({ ...external, settingsText: event.target.value })} placeholder='{"steps":20,"cfg":7}' /></div>
+              </div>
+              <button className="btn btn-primary" onClick={() => void addExternalSkill()} disabled={!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(external.id) || !external.name.trim() || !external.keywords.trim()}>{t('externalCreate')}</button>
+            </section>
         </div>}
         {tab === 'generation' && <div className="generation-settings">
           <ResearchSettings />
