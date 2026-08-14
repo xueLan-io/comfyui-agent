@@ -34,3 +34,36 @@ test('gateway emits deny only when execution was never entered', async () => {
   await assert.rejects(() => gateway.run({ context, action: 'service.invoke', input: {}, execute: async () => ({}) }), error => error.code === 'CONFIRMATION_REQUIRED');
   assert.deepEqual(events.map(event => event.decision), ['deny']);
 });
+
+test('coordinator-style comfyui.submit passes quota and confirmation binding (Electron wiring pattern)', async () => {
+  const events = [];
+  const context = createGovernanceContext({ principalId: 'p', tenantId: 't', projectId: 'pr', sessionId: 's', requestId: 'r1', taskId: 'task1', traceId: 'trace1' });
+  const policyEngine = createPolicyEngine({ principals: new Map([['p', { id: 'p', tenantId: 't', roles: ['operator'] }]]) });
+  const admission = new AdmissionController({ policyEngine, rateLimiter: new RateLimiter({ limit: 10, burst: 10 }), quotaManager: new QuotaManager({ limits: { generation_count: 1 } }) });
+  const gateway = new OperationGateway({ policyEngine, admission, audit: { emit: async event => { events.push(event); } } });
+  const resource = { projectId: 'pr', sessionId: 's', previewId: 'preview1' };
+  const action = 'comfyui.submit';
+  const input = { confirmation: true };
+  const confirmation = { accepted: true, digest: confirmationDigest({ action, resource, input }), requestId: context.requestId, previewId: resource.previewId };
+  assert.deepEqual(await gateway.run({ context, action, resource, input, quota: { generation_count: 1 }, confirmation, execute: async () => ({ state: 'submitted' }) }), { state: 'submitted' });
+  assert.equal(events.some(event => event.decision === 'started'), true);
+  assert.equal(events.some(event => event.decision === 'allow'), true);
+});
+
+test('coordinator-style generation is denied when generation quota is exhausted', async () => {
+  const events = [];
+  const context = createGovernanceContext({ principalId: 'p', tenantId: 't', projectId: 'pr', sessionId: 's', requestId: 'r2', taskId: 'task2', traceId: 'trace2' });
+  const policyEngine = createPolicyEngine({ principals: new Map([['p', { id: 'p', tenantId: 't', roles: ['operator'] }]]) });
+  const admission = new AdmissionController({ policyEngine, rateLimiter: new RateLimiter({ limit: 10, burst: 10 }), quotaManager: new QuotaManager({ limits: { generation_count: 1 } }) });
+  const gateway = new OperationGateway({ policyEngine, admission, audit: { emit: async event => { events.push(event); } } });
+  const action = 'comfyui.submit';
+  const resource = { projectId: 'pr', sessionId: 's', previewId: 'preview2' };
+  const input = { confirmation: true };
+  const makeConfirmation = requestId => ({ accepted: true, digest: confirmationDigest({ action, resource, input }), requestId, previewId: resource.previewId });
+  await gateway.run({ context, action, resource, input, quota: { generation_count: 1 }, confirmation: makeConfirmation(context.requestId), execute: async () => ({ state: 'submitted' }) });
+  await assert.rejects(
+    () => gateway.run({ context, action, resource, input, quota: { generation_count: 1 }, confirmation: makeConfirmation(context.requestId), execute: async () => ({ state: 'submitted' }) }),
+    error => error.code === 'QUOTA_EXCEEDED',
+  );
+  assert.equal(events.some(event => event.decision === 'deny'), true);
+});

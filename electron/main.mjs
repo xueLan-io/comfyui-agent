@@ -2142,7 +2142,10 @@ function governedCoordinatorExecute(options = {}) {
       const resource = { projectId: owner.projectId, sessionId: owner.sessionId, ...(options.previewId ? { previewId: options.previewId } : {}) };
       const input = { confirmation: true };
       const confirmation = { accepted: true, digest: confirmationDigest({ action, resource, input }), requestId: context.requestId, ...(options.previewId ? { previewId: options.previewId } : {}) };
-      return getGovernanceGateway().run({ context, action, resource, input, confirmation, execute: ({ signal }) => work(Object.assign(entry, { signal })) });
+      // Charge generation quota when a ComfyUI submission actually runs,
+      // matching the CLI governance wiring; no-op when no quota limits are set.
+      const quota = action === 'comfyui.submit' ? { generation_count: 1 } : undefined;
+      return getGovernanceGateway().run({ context, action, resource, input, quota, confirmation, execute: ({ signal }) => work(Object.assign(entry, { signal })) });
     },
   });
 }
