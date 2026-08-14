@@ -217,6 +217,17 @@ ComfyMuse 的**差异化资产是“能力平台”**：agent 规划/执行/治�
 核心套件基线（P1 后）：**929 tests / 922 pass / 0 fail** + 渲染层 10 个冒烟测试；lint 279 文件；build 通过。
 剩余：P1 可选增强（记忆设置开关、用户级记忆、召回在生成规划中的应用）→ P2 批量流水线 → P3 插件生态。
 
+### 3.8 P2 批量创作流水线落地进度（2026-08-14 更新）
+
+| 步骤 | 状态 | 提交 | 说明 |
+|---|---|---|---|
+| P2 调度核心 | ✅ | `a120f57` | `src/runtime/batch/batch-scheduler.mjs`：seed 矩阵 × 参数组合展开（含随机种子数）、job 生命周期 pending/running/completed/failed/cancelled/interrupted、受限并发（可配）、暂停（停取任务、在跑任务完成）、取消（中断在跑 + 标记排队）、单条重试（自动重启）、JSON 持久化 + 崩溃恢复（running→interrupted 重新入队）、批次/任务上限与旧批次淘汰、进度统计与事件、结果摘要。9 个新测试 |
+| P2 接线与策展 | ✅ | `e284ca9` | job 携带 workflow 上下文；runJob 注入 governed executionCoordinator（policy/quota/audit 全复用）+ DirectService 逐 job 执行；worker 新增 `evaluator.score` RPC（技术分+视觉分 → 0-100）；main 持有调度器（agent-data/batch.json）并暴露 batch:* IPC（create/start/pause/resume/cancel/retry-job/get/list/curate）+ batch:event 转发；preload 对应通道；策展 Top-K 按分排序。3 个新测试 |
+| P2 批量工作室 UI | ✅ | `129a7d8` | `BatchWorkspacePage.jsx`：新建批次表单（标题/工作流/正负提示词/种子数或指定种子/参数组合 JSON）、批次卡片（进度条 + job 表格：种子/状态/评分/操作）、开始/暂停/继续/取消、单条重试、查看图片、策展 Top-K；`batch` 视图 + 导航项；zh/en i18n；2 个渲染层冒烟测试 |
+
+核心套件基线（P2 后）：**940 tests / 933 pass / 0 fail** + 渲染层 12 个冒烟测试；lint 280 文件；build 通过。
+剩余：P2 可选增强（结果 A/B 对比灯箱、批量策略化 seed 管理、批次内分页）→ P3 插件生态 → P0-5 拆分续。
+
 ---
 
 ## 附录 A · 关键文件地图
