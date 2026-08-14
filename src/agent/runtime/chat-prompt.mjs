@@ -8,7 +8,7 @@ export const DEFAULT_PERSONALITY = {
   text: '',
 };
 
-export const PLACEHOLDER_IDS = ['projectContext', 'workflowContext', 'researchContext', 'runtimeContext'];
+export const PLACEHOLDER_IDS = ['projectContext', 'workflowContext', 'researchContext', 'runtimeContext', 'memoryContext'];
 
 export const CHAT_SYSTEM_PROMPT_LIMIT = 4000;
 
@@ -92,7 +92,7 @@ export function normalizePersonality(value = {}) {
 }
 
 function substitutePlaceholders(text, contexts = {}) {
-  return String(text).replace(/\{(projectContext|workflowContext|researchContext|runtimeContext)\}/g, (_, id) => String(contexts[id] || '').trim());
+  return String(text).replace(/\{(projectContext|workflowContext|researchContext|runtimeContext|memoryContext)\}/g, (_, id) => String(contexts[id] || '').trim());
 }
 
 export function buildChatSystemPrompt({
@@ -103,6 +103,7 @@ export function buildChatSystemPrompt({
   workflowContext = '',
   researchContext = '',
   runtimeContext = '',
+  memoryContext = '',
   visionSupported = false,
   visionImages = [],
 }) {
@@ -116,6 +117,10 @@ export function buildChatSystemPrompt({
   } else {
     prompt += contextBlock('project_context', projectContext, 'application_state');
     prompt += contextBlock('workflow_context', workflowContext, 'application_state');
+    // Cross-session memory is injected only into the local model: it is user
+    // data distilled from past sessions and must not be sent to cloud models
+    // by default (privacy-preserving).
+    prompt += contextBlock('memory_context', memoryContext, 'application_state');
     prompt += contextBlock('research_context', researchContext, 'untrusted_reference');
     if (visionSupported && visionImages.length > 0) prompt += contextBlock('vision_capability', VISION_NOTE, 'tool_capability');
     prompt += contextBlock('runtime_context', runtimeContext, 'tool_output');
@@ -129,6 +134,7 @@ export function buildChatSystemPrompt({
       workflowContext,
       researchContext,
       runtimeContext,
+      memoryContext,
     }).trim();
     merged = personalityConfig.strategy === 'replace'
       ? `【自定义人格】\n${customText}`

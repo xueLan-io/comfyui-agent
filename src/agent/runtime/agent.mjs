@@ -250,6 +250,9 @@ export class Agent {
     this._toolRegistry = options.toolRegistry || null;
     this.projectId = options.projectId || '';
     this.sessionId = options.sessionId || '';
+    // Optional cross-session memory (LongTermMemory). When absent the agent
+    // behaves exactly as before: no recall injection, no session capture.
+    this.memory = options.memory || null;
 
     this.llm = new LLMProvider(this.llmConfig);
     this.llm.setPolicyStateHandler(({ state }) => {
@@ -320,6 +323,7 @@ export class Agent {
   }
 
   async init() {
+    if (this.memory?.init) await this.memory.init();
     await this.sessionManager.init();
     initSession(this.sessionManager.activeProjectId, this.sessionManager.activeSessionId);
     if (!this.project.get('promptMode')) this.project.set('promptMode', this._promptMode);
@@ -1984,6 +1988,20 @@ export class Agent {
       archivedMessageIds: [...new Set([...archive.archivedMessageIds, ...ids])].slice(-200),
     };
     this.sessionManager.setSessionState?.({ contextArchive: next });
+    // Best-effort distillation into cross-session memory: the compacted summary
+    // feeds the project profile and a deduped memory segment. Failures must not
+    // affect the conversation archive itself.
+    if (this.memory?.captureSession) {
+      try {
+        await this.memory.captureSession(this.sessionManager.activeProjectId || this.projectId, {
+          summary: segment.summary,
+          sourceTurnId: this._traceId || this._requestId || '',
+          workflowName: this.project.get('workflow') || '',
+        });
+      } catch {
+        // memory capture is best-effort
+      }
+    }
     return next;
   }
 
@@ -2018,6 +2036,19 @@ export class Agent {
       currentMessages: messages,
     });
     return { archived: archive.segments?.length || 0, archive };
+  }
+
+  // Recall cross-session memory for system-prompt injection. Returns '' when
+  // no memory is configured, the project has nothing stored, or recall fails.
+  async _memoryContext(query = '') {
+    if (!this.memory?.recall) return '';
+    try {
+      return await this.memory.recall(this.sessionManager.activeProjectId || this.projectId, {
+        query: String(query || '').slice(0, 200),
+      });
+    } catch {
+      return '';
+    }
   }
 
   _archiveMessage(archive) {
@@ -2985,7 +3016,7 @@ export class Agent {
       throw new Error('有待确认的生成预览，请先确认或取消当前预览。');
     }
     this._running = true;
-    this._taskId = `chat_${Date.now()}`;
+    this._taskId = `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this._traceId = nextTraceId();
     const taskId = this._taskId;
     const traceId = this._traceId;
@@ -3074,6 +3105,7 @@ export class Agent {
             researchContext = chatResearchContext(await this._chatResearch(userMessage, researchSettings));
           }
         }
+        const memoryContext = await this._memoryContext(userMessage);
         const visionImages = collectChatImages(userMessage, options.media, { authorizePath: path => this._authorizeVisionPath(path) });
           const chatMessages = (this.conversation.getMessages?.({ limit: 100 }) || []).map(message => ({
             ...message,
@@ -3108,6 +3140,7 @@ export class Agent {
                workflowContext,
                researchContext,
                runtimeContext,
+               memoryContext,
                visionSupported,
                visionImages,
              }),

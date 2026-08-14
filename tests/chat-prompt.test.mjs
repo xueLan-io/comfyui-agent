@@ -38,6 +38,23 @@ test('cloud prompt only carries the research context', () => {
   assert.ok(!cloud.includes('Runtime: local'));
 });
 
+test('memory context is injected into the local prompt only', () => {
+  const local = buildChatSystemPrompt({ scope: 'local', ...contexts, memoryContext: '\nMemory:\n用户偏好冷色系' });
+  assert.ok(local.includes('<memory_context trust="application_state">'));
+  assert.ok(local.includes('用户偏好冷色系'));
+  const cloud = buildChatSystemPrompt({ scope: 'cloud', ...contexts, memoryContext: '\nMemory:\n用户偏好冷色系' });
+  assert.ok(!cloud.includes('<memory_context'));
+  assert.ok(!cloud.includes('用户偏好冷色系'));
+});
+
+test('personality placeholders substitute the memory context', () => {
+  const prompt = buildChatSystemPrompt({
+    personality: { enabled: true, strategy: 'append', text: '引用项目记忆：{memoryContext}' },
+    memoryContext: '冷色系偏好',
+  });
+  assert.ok(prompt.includes('引用项目记忆：冷色系偏好'));
+});
+
 test('append strategy keeps the default and appends custom text and boundary', () => {
   const prompt = buildChatSystemPrompt({ personality: { enabled: true, strategy: 'append', text: '你是一位严谨的助手。' } });
   assert.ok(prompt.includes('提示词助手'));
