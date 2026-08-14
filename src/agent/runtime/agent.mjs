@@ -6,7 +6,7 @@ import { JSONFileStore } from '../memory/store.mjs';
 import { SessionManager } from './session-manager.mjs';
 import { TaskManager, canTransition } from './task-manager.mjs';
 import { RetryPolicy, classifyFailure } from '../optimizer/retry-policy.mjs';
-import { checkEditedPrompt, estimateTokens } from '../optimizer/prompt-guard.mjs';
+import { estimateTokens } from '../optimizer/prompt-guard.mjs';
 import { ComfyUITool } from '../tools/comfyui/index.mjs';
 import { RuntimeTools } from '../tools/comfyui/runtime.mjs';
 import { WorkflowReadTools } from '../tools/comfyui/workflow-read.mjs';
@@ -16,7 +16,6 @@ import { WorkflowInspectTool } from '../tools/comfyui/workflow-inspect.mjs';
 import { InspectImageTool } from '../tools/comfyui/image-inspect.mjs';
 import { WorkflowPatchTool } from '../tools/comfyui/workflow-patch.mjs';
 import { WorkflowMutationTools } from '../tools/comfyui/workflow-mutation-tools.mjs';
-import { WorkflowMutationPreviewTool, WorkflowMutationCommitTool } from '../tools/comfyui/workflow-mutation-tools.mjs';
 import { PromptEnhanceTool } from '../tools/prompt/enhance.mjs';
 import { PromptLibraryTool } from '../tools/prompt-library/index.mjs';
 import { FilesystemTool } from '../tools/filesystem/index.mjs';
@@ -40,7 +39,6 @@ import { existsSync, readdirSync } from 'fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { normalizeGenerationResult } from '../../runtime/generation-contract.mjs';
-import { assertConfirmationBinding } from '../../runtime/governance/operation-gateway.mjs';
 import { isConfirmTurn, messageAttachments, needsWorkflowChatContext, wantsWebResearch, IDENTITY_QUERY } from './chat-intents.mjs';
 import { createAgentToolRegistry } from './agent-tools.mjs';
 import { contextArchiveOf, archivePrompt, compactConversationSegment, prepareConversationArchive, prefetchContextArchive, compactConversation, memoryContext, archiveMessage } from './context-archive.mjs';
@@ -48,6 +46,7 @@ import { resultSummary, recordGenerationArtifact, recordArtifact, replanPlan, ex
 import { researchCharacter, buildSearchQuery, chatResearch } from './research-ops.mjs';
 import { useSession as sessionUse, createProject as createProjectOp, createSession as createSessionOp, suggestSessionTitle as suggestSessionTitleOp, deleteProject as deleteProjectOp, deleteSession as deleteSessionOp } from './session-ops.mjs';
 import { chatWithDegradation, localResponse } from './chat-ops.mjs';
+import { prepareFileMutation as prepareFileMutationOp, prepareWorkflowMutation as prepareWorkflowMutationOp, runPrepared as runPreparedOp } from './prepare-ops.mjs';
 
 registerAdapters();
 
@@ -1449,221 +1448,15 @@ export class Agent {
   }
 
   async prepareFileMutation(userMessage, options = {}) {
-    const queued = this._enqueue(() => this.prepareFileMutation(userMessage, options));
-    if (queued) return queued;
-    if (this._state === 'awaiting_confirmation') throw new Error('A file change preview is awaiting confirmation');
-    this._running = true;
-    this._taskId = `task_${Date.now()}`;
-    this._traceId = nextTraceId();
-    this.taskManager?.create?.({ id: this._taskId, kind: 'file_mutation', message: options.effectiveRequest || userMessage, traceId: this._traceId, intent: 'file_edit', projectId: this.sessionManager.activeProjectId });
-    if (this._state !== 'classifying') this._transitionState('classifying', { message: 'Classifying file change...' });
-    try {
-      const request = options.effectiveRequest || userMessage;
-      if (!options.turnId) this._writeTurnMessage('user', userMessage, { intent: 'file_edit', action: 'prepare' });
-      this._transitionState('planning', { message: 'Planning file change...' });
-      const ctx = buildAgentContext(request, {
-        conversation: this._conversationForLLM(6),
-        project: {
-          currentCharacter: this.project.get('character'),
-          currentStyle: this.project.get('style'),
-          currentModel: this.project.get('model'),
-          currentWorkflow: this.project.get('workflow'),
-          lastPrompt: this.project.get('lastPrompt'),
-          promptMode: this.promptMode,
-          budgets: this.project.get('budgets') || null,
-          confirmedConstraints: this.project.get('confirmedConstraints') || {},
-        },
-        availableWorkflows: this._listWorkflows(),
-        workflowDir: this.workflowDir,
-        previousArtifacts: this._artifacts.slice(-5),
-      });
-      ctx.filesystemRoots = this._filesystemRoots();
-      ctx.comfyRoot = this.comfyRoot;
-      const plan = options.plan || await this.planner.createPlan(request, ctx);
-      const validation = validatePlan(plan, { tools: this.tools, context: ctx, maxSteps: this.planner.maxSteps });
-      if (!validation.valid) throw new Error(`Plan validation failed: ${validation.errors.join('; ')}`);
-      if (!plan.steps.some(step => step.tool === 'filesystem_mutate')) throw new Error('The file change plan has no filesystem_mutate step');
-      if (plan.steps.some(step => !['filesystem', 'filesystem_mutate'].includes(step.tool))) {
-        throw new Error('File change plans may only use filesystem read and filesystem_mutate tools');
-      }
-
-      const previews = [];
-      for (const step of plan.steps) {
-        const previewStep = structuredClone(step);
-        if (previewStep.tool === 'filesystem_mutate') previewStep.input.execute = false;
-        const output = await this.executor.executeStep(previewStep, ctx);
-        if (output.error) throw new Error(output.error);
-        previews.push({ stepId: step.id, result: output.result });
-      }
-      this.taskManager?.recordPlan?.(this._taskId, plan);
-      const previewId = `preview_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const confirmation = confirmationForPlan(plan, { tools: this.tools });
-      this._preparedRuns.clear();
-      this._preparedRuns.set(previewId, {
-        kind: 'file_mutation',
-        userMessage,
-        effectiveRequest: request,
-        plan,
-        options,
-        confirmation,
-        status: 'prepared',
-      });
-      this._transitionState('awaiting_confirmation', { message: 'Awaiting file change confirmation', needsConfirmation: true });
-      const preview = { previewId, source: 'file_mutation', request, plan, previews, confirmation, needsConfirmation: true, status: 'prepared' };
-      this.sessionManager.setSessionState?.({
-        preparedPreview: preview,
-        pending: { kind: 'file_mutation', previewId, request, turnId: options.turnId || '' },
-        taskStatus: 'awaiting_confirmation',
-        needsConfirmation: true,
-      });
-      return preview;
-    } catch (error) {
-      this.taskManager?.complete?.(this._taskId, { error: { message: error.message, stage: 'prepare' } });
-      if (this._state !== 'cancelled' && this._state !== 'failed') this._transitionState('failed', { lastError: error.message, message: error.message });
-      throw error;
-    } finally {
-      this._running = false;
-      await this._drainQueue();
-    }
+    return prepareFileMutationOp(this, userMessage, options);
   }
 
   async prepareWorkflowMutation(input, options = {}) {
-    const queued = this._enqueue(() => this.prepareWorkflowMutation(input, options));
-    if (queued) return queued;
-    if (this._state === 'awaiting_confirmation') throw new Error('A workflow mutation preview is awaiting confirmation');
-    this._running = true;
-    try {
-      const request = { ...input, workflowDir: input.workflowDir || this.workflowDir };
-      const result = await WorkflowMutationPreviewTool.execute(request);
-      if (result.error || result.code || !result.ready) return result;
-      const previewId = result.previewId;
-      this._preparedRuns.clear();
-      this._preparedRuns.set(previewId, { kind: 'workflow_mutation', input: request, preview: result, options, status: 'prepared' });
-      this._transitionState('awaiting_confirmation', { message: 'Awaiting workflow mutation confirmation', needsConfirmation: true });
-      const preview = { ...result, source: 'workflow_mutation', kind: 'workflow_mutation', needsConfirmation: true, status: 'prepared' };
-      this.sessionManager.setSessionState?.({ preparedPreview: preview, pending: { kind: 'workflow_mutation', previewId, request, turnId: options.turnId || '' }, taskStatus: 'awaiting_confirmation', needsConfirmation: true });
-      return preview;
-    } finally {
-      this._running = false;
-      await this._drainQueue();
-    }
+    return prepareWorkflowMutationOp(this, input, options);
   }
 
   async runPrepared(previewId, edits = {}) {
-    if (edits.turnId) initTurn(edits.turnId);
-    const prepared = this._preparedRuns.get(previewId);
-    if (!prepared) throw new Error('Prompt preview expired; prepare it again');
-    if (prepared.status && prepared.status !== 'prepared') {
-      const error = new Error('Generation preview is already being consumed');
-      error.code = 'GENERATION_PREVIEW_BUSY';
-      throw error;
-    }
-    // When a confirmation object is supplied and this prepared run carries a
-    // digest, the confirmation must bind to this exact preview: same digest,
-    // same request id, same preview id, accepted === true. This aligns the GUI
-    // path with the MCP generation bridge and the direct generation path.
-    if (edits.confirmation && prepared.requestDigest) {
-      assertConfirmationBinding({
-        confirmation: edits.confirmation,
-        expectedDigest: prepared.requestDigest,
-        requestId: prepared.requestId,
-        previewId,
-      });
-    }
-    prepared.status = 'consuming';
-    this.sessionManager.setSessionState?.({
-      preparedPreview: { ...(this.sessionManager.getSessionState?.().preparedPreview || {}), status: 'consuming' },
-      taskStatus: 'consuming',
-    });
-    if (prepared.kind === 'file_mutation') {
-      try {
-        const result = await this.run(prepared.userMessage, {
-          ...prepared.options,
-          turnId: edits.turnId || prepared.options.turnId || '',
-          preparedPlan: prepared.plan,
-          effectiveRequest: prepared.effectiveRequest,
-          requestId: prepared.requestId,
-          intent: 'file_edit',
-          confirmedFileMutation: true,
-        });
-        this._preparedRuns.delete(previewId);
-        return result;
-      } catch (error) {
-        prepared.status = 'prepared';
-        this.sessionManager.setSessionState?.({
-          preparedPreview: { ...(this.sessionManager.getSessionState?.().preparedPreview || {}), status: 'prepared' },
-          taskStatus: 'awaiting_confirmation',
-        });
-        throw error;
-      }
-    }
-    if (prepared.kind === 'workflow_mutation') {
-      try {
-        const result = await WorkflowMutationCommitTool.execute({
-          ...prepared.input,
-          previewId,
-          expectedHash: prepared.preview.baseRevision?.sha256,
-          confirmation: edits.confirmation !== false,
-        });
-        if (!result.committed) throw Object.assign(new Error(result.error || result.code || 'Workflow mutation failed'), { code: result.code });
-        this._preparedRuns.delete(previewId);
-        return result;
-      } catch (error) {
-        prepared.status = 'prepared';
-        this.sessionManager.setSessionState?.({ preparedPreview: { ...(this.sessionManager.getSessionState?.().preparedPreview || {}), status: 'prepared' }, taskStatus: 'awaiting_confirmation' });
-        throw error;
-      }
-    }
-    let compiledPrompt = prepared.compiledPrompt;
-    try {
-      if (edits.appearanceFacts && prepared.compileInput?.llmProvider && prepared.compileInput.mode !== 'raw') {
-        const referenceContext = {
-          ...(prepared.compileInput.referenceContext || {}),
-          ...edits.appearanceFacts,
-        };
-        compiledPrompt = await PromptEnhanceTool.execute({
-          ...prepared.compileInput,
-          referenceContext,
-          onChunk: this._thinkingStream(),
-        });
-        if (compiledPrompt.aiFailure) {
-          throw new Error(compiledPrompt.error || 'Prompt compilation failed');
-        }
-      }
-      const positive = typeof edits.positive === 'string' ? edits.positive.trim() : compiledPrompt.positive;
-      if (!positive) throw new Error('Positive prompt cannot be empty');
-      compiledPrompt = {
-        ...prepared.compiledPrompt,
-        ...compiledPrompt,
-        positive,
-        enhanced: positive,
-        negative: typeof edits.negative === 'string' ? edits.negative.trim() : compiledPrompt.negative,
-      };
-      if (prepared.workflowName) this.project.set?.('workflow', prepared.workflowName);
-      const editIssues = checkEditedPrompt(compiledPrompt, { budgets: this.project.get('budgets') });
-      if (editIssues.length > 0) {
-        const known = new Set((compiledPrompt.issues || []).map(issue => issue.detail));
-        compiledPrompt.issues = [...(compiledPrompt.issues || []), ...editIssues.filter(issue => !known.has(issue.detail))];
-      }
-      const result = await this.run(prepared.userMessage, {
-        ...prepared.options,
-        workflowManifest: prepared.workflowManifest,
-        preparedPlan: prepared.plan,
-        compiledPrompt,
-        effectiveRequest: prepared.effectiveRequest || prepared.userMessage,
-        requestId: prepared.requestId,
-        intent: prepared.intent || 'generate',
-      });
-      this._preparedRuns.delete(previewId);
-      return result;
-    } catch (error) {
-      prepared.status = 'prepared';
-      this.sessionManager.setSessionState?.({
-        preparedPreview: { ...(this.sessionManager.getSessionState?.().preparedPreview || {}), status: 'prepared' },
-        taskStatus: 'awaiting_confirmation',
-      });
-      throw error;
-    }
+    return runPreparedOp(this, previewId, edits);
   }
 
   _contextArchive() {
