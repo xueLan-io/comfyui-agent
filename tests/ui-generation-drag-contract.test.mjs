@@ -67,10 +67,11 @@ test('preset saving uses current media and persisted asset recipes', async () =>
 
 test('frontend keeps archived media renderable and session-scoped', async () => {
   const context = await source('src/contexts/AgentContext.jsx');
+  const utils = await source('src/contexts/agent-utils.mjs');
   const asset = await source('src/components/ImageAsset.jsx');
   const main = await source('electron/main.mjs');
   const session = await source('src/contexts/SessionContext.jsx');
-  assert.match(context, /const all = \[\.\.\.images, \.\.\.videos, \.\.\.supplied\]/);
+  assert.match(utils, /const all = \[\.\.\.images, \.\.\.videos, \.\.\.supplied\]/);
   assert.match(context, /task\.projectId === session\.activeProjectId[\s\S]*task\.sessionId === session\.activeSessionId/);
   assert.match(asset, /if \(image\?\.previewUrl\) return image\.previewUrl/);
   assert.match(main, /media: \[\.\.\.archived, \.\.\.archivedVideos\]/);
