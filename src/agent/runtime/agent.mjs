@@ -46,6 +46,7 @@ import { createAgentToolRegistry } from './agent-tools.mjs';
 import { contextArchiveOf, archivePrompt, compactConversationSegment, prepareConversationArchive, prefetchContextArchive, compactConversation, memoryContext, archiveMessage } from './context-archive.mjs';
 import { resultSummary, recordGenerationArtifact, recordArtifact, replanPlan, executeWithRetry, retryDecision, retryParameters, rotateRetryParameters, recordStepAttempt, recompilePrompt, collectPromptIssues, collectArtifacts } from './execution-ops.mjs';
 import { researchCharacter, buildSearchQuery, chatResearch } from './research-ops.mjs';
+import { useSession as sessionUse, createProject as createProjectOp, createSession as createSessionOp, suggestSessionTitle as suggestSessionTitleOp, deleteProject as deleteProjectOp, deleteSession as deleteSessionOp } from './session-ops.mjs';
 
 registerAdapters();
 
@@ -803,68 +804,27 @@ export class Agent {
   }
 
   async useSession(projectId, sessionId) {
-    if (projectId === this.sessionManager.activeProjectId && sessionId === this.sessionManager.activeSessionId) {
-      return this.sessionManager.getState();
-    }
-    this._assertSessionSwitchAllowed();
-    const state = await this.sessionManager.activate(projectId, sessionId);
-    this._resetRuntimeState();
-    this._preparedRuns.clear();
-    initSession(state.activeProjectId, state.activeSessionId);
-    return state;
+    return sessionUse(this, projectId, sessionId);
   }
 
   async createProject(input) {
-    this._assertSessionSwitchAllowed();
-    await this.sessionManager.createProject(input);
-    this._resetRuntimeState();
-    this._preparedRuns.clear();
-    initSession(this.sessionManager.activeProjectId, this.sessionManager.activeSessionId);
-    return this.sessionManager.getState();
+    return createProjectOp(this, input);
   }
 
   async createSession(title, projectId, { activate = true } = {}) {
-    if (activate) this._assertSessionSwitchAllowed();
-    await this.sessionManager.createSession(title, projectId, { activate });
-    if (activate) {
-      this._resetRuntimeState();
-      this._preparedRuns.clear();
-      initSession(this.sessionManager.activeProjectId, this.sessionManager.activeSessionId);
-    }
-    return this.sessionManager.getState();
+    return createSessionOp(this, title, projectId, { activate });
   }
 
   async suggestSessionTitle(message) {
-    const text = String(message || '').trim().slice(0, 200);
-    if (!text) return { title: '新会话' };
-    // Session titles must not compete with a user-visible chat request for the
-    // same model connection. A stable local title is sufficient metadata.
-    const cleaned = text.replace(/\s+/g, ' ').trim();
-    return { title: cleaned.slice(0, 12) || '新会话' };
+    return suggestSessionTitleOp(this, message);
   }
 
   async deleteProject(projectId) {
-    const active = projectId === this.sessionManager.activeProjectId;
-    if (active) this._assertSessionSwitchAllowed();
-    const state = await this.sessionManager.deleteProject(projectId);
-    if (active) {
-      this._resetRuntimeState();
-      this._preparedRuns.clear();
-      initSession(state.activeProjectId, state.activeSessionId);
-    }
-    return state;
+    return deleteProjectOp(this, projectId);
   }
 
   async deleteSession(sessionId, projectId = this.sessionManager.activeProjectId) {
-    const active = projectId === this.sessionManager.activeProjectId && sessionId === this.sessionManager.activeSessionId;
-    if (active) this._assertSessionSwitchAllowed();
-    const state = await this.sessionManager.deleteSession(sessionId, projectId);
-    if (active) {
-      this._resetRuntimeState();
-      this._preparedRuns.clear();
-      initSession(state.activeProjectId, state.activeSessionId);
-    }
-    return state;
+    return deleteSessionOp(this, sessionId, projectId);
   }
 
   _listWorkflows() {
