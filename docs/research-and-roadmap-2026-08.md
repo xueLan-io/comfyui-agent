@@ -206,6 +206,17 @@ ComfyMuse 的**差异化资产是“能力平台”**：agent 规划/执行/治�
 核心套件基线：**917 tests / 910 pass / 0 fail** + 渲染层 8 个冒烟测试；lint 278 文件；build 通过。
 后续：P0-5 继续拆分（execution/chat/context 子系统）、P1 长期记忆、P2 批量流水线、P3 插件生态。
 
+### 3.7 P1 长期记忆系统落地进度（2026-08-14 更新）
+
+| 步骤 | 状态 | 提交 | 说明 |
+|---|---|---|---|
+| P1 核心（存储+沉淀+注入） | ✅ | `569797a` | `src/agent/memory/long-term.mjs`：项目级记忆（风格偏好/不要清单/常用工作流计数/角色卡/去重记忆段，均带上限），原子 JSON 持久化，`distillProfileSignals` 确定性蒸馏，关键词+时效排序的 recall 格式化；chat-prompt.mjs 新增 `{memoryContext}` 占位符与 `<memory_context>` trust 块（**仅本地模型注入，云端默认不注入**——比"过云策略门再发云端"更保守）；agent.mjs 可选 memory 选项、压缩管线沉淀钩子（尽力而为不阻断）、chat() 召回注入；顺带修复 chat taskId 同毫秒碰撞（`chat_<ts>_<rand>`）。13 个新测试 |
+| P1 UI + 接线 | ✅ | `198178d` | worker 创建 LongTermMemory 并暴露 memory.* RPC；main 新增 memory:* IPC；preload 暴露 7 个通道；`MemorySettings.jsx`（偏好 tag 编辑器、角色卡增删改、记忆段浏览、清空确认、JSON 导出）挂入设置页 memory tab；zh/en i18n；2 个渲染层冒烟测试 |
+| P1 隐私与治理 | ✅（设计收敛） | — | 记忆仅注入本地模型（与既有 cloud 提示词刻意剔除项目上下文的模式一致）；记忆数据属用户本地数据，UI 可查看/编辑/清空/导出；无云端外发路径 |
+
+核心套件基线（P1 后）：**929 tests / 922 pass / 0 fail** + 渲染层 10 个冒烟测试；lint 279 文件；build 通过。
+剩余：P1 可选增强（记忆设置开关、用户级记忆、召回在生成规划中的应用）→ P2 批量流水线 → P3 插件生态。
+
 ---
 
 ## 附录 A · 关键文件地图
