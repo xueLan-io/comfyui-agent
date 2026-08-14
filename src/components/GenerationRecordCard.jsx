@@ -6,6 +6,12 @@ import GenerationActions from './GenerationActions.jsx';
 import { useI18n } from '../i18n/I18nContext.jsx';
 import { generationRecordView } from '../runtime/runtime-status.mjs';
 
+// When a record carries many outputs the full grid pushes the conversation far
+// apart. Above this threshold the media area collapses into a single summary
+// strip (first few thumbnails + count); the full grid is one click away.
+const MEDIA_COLLAPSE_THRESHOLD = 6;
+const MEDIA_STRIP_PREVIEW_COUNT = 4;
+
 function progressValue(record) {
   const value = Number(record.progressPercent ?? record.progressNodePercent);
   return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : null;
@@ -41,6 +47,29 @@ function RenderingPlaceholder({ record }) {
   </div>;
 }
 
+function MediaGallery({ media, onOpenImage, onError }) {
+  return <div className={`image-grid chat-output-grid ${outputGalleryClass(media.length)}`}>{media.map((image, index) => <article key={`${image.assetId || image.filename || image.name || index}`} className="image-item"><ImageAsset image={image} onOpen={preview => onOpenImage?.({ ...preview, images: media, index })} onError={onError} /><div className="image-item-info"><span title={image.filename}>{image.filename || image.name || ''}</span><b>{String(index + 1).padStart(2, '0')}</b></div></article>)}</div>;
+}
+
+// Collapsed representation for media-heavy records: a single strip showing the
+// first few thumbnails plus the total count, expanding into the full grid.
+function MediaCollapsible({ media, onOpenImage, onError, t }) {
+  const collapsed = media.length > MEDIA_COLLAPSE_THRESHOLD;
+  if (!collapsed) return <MediaGallery media={media} onOpenImage={onOpenImage} onError={onError} />;
+  const previews = media.slice(0, MEDIA_STRIP_PREVIEW_COUNT);
+  return <details className="generation-record-media">
+    <summary className="generation-record-media-summary">
+      <span className="generation-record-media-strip" aria-hidden="true">
+        {previews.map((image, index) => <span key={`${image.assetId || image.filename || image.name || index}`} className="generation-record-media-strip-item"><ImageAsset image={image} compact onOpen={preview => onOpenImage?.({ ...preview, images: media, index })} onError={onError} /></span>)}
+      </span>
+      <span className="generation-record-media-count"><Icon name="images" size={14} />{t('recordMediaCount', { count: media.length })}</span>
+    </summary>
+    <div className="generation-record-media-expanded">
+      <MediaGallery media={media} onOpenImage={onOpenImage} onError={onError} />
+    </div>
+  </details>;
+}
+
 export default function GenerationRecordCard({ record, onOpenImage, onError, onRegenerate, onEdit, onAdjust }) {
   const { t } = useI18n();
   const media = record.media || [];
@@ -51,7 +80,7 @@ export default function GenerationRecordCard({ record, onOpenImage, onError, onR
   const hasOutput = media.length > 0 && ['completed', 'recovery'].includes(runtime.phase);
   return <section className={`generation-record generation-record-${record.status || 'preparing'}${pending ? ' generation-record-pending' : ''}`} data-turn-id={record.turnId}>
     {hasOutput ? <>
-      <div className={`image-grid chat-output-grid ${outputGalleryClass(media.length)}`}>{media.map((image, index) => <article key={`${image.assetId || image.filename || image.name || index}`} className="image-item"><ImageAsset image={image} onOpen={preview => onOpenImage?.({ ...preview, images: media, index })} onError={onError} /><div className="image-item-info"><span title={image.filename}>{image.filename || image.name || ''}</span><b>{String(index + 1).padStart(2, '0')}</b></div></article>)}</div>
+      <MediaCollapsible media={media} onOpenImage={onOpenImage} onError={onError} t={t} />
       {runtime.recoverable && <div className="generation-record-warning" role="status"><Icon name="circleAlert" size={14} />{record.error?.message || '结果已生成，但归档未完成'}</div>}
       <details className="generation-details">
         <summary>提示词与参数</summary>

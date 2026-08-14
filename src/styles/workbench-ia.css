@@ -640,6 +640,25 @@
   .generation-record .output-primary-actions { flex-wrap: wrap; }
 }
 .generation-record-placeholder.terminal { min-height: 110px; color: var(--text-secondary); }
+
+/* Collapsible media strip for records with many outputs: one slim row with a
+   few compact thumbnails + total count; the full grid expands on click. */
+.generation-record-media { margin-top: 2px; }
+.generation-record-media-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 8px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-surface); cursor: pointer; list-style: none; }
+.generation-record-media-summary::-webkit-details-marker { display: none; }
+.generation-record-media-summary:hover { border-color: var(--border-strong); }
+.generation-record-media-strip { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 6px; overflow: hidden; }
+.generation-record-media-strip-item { flex: 0 0 auto; width: 52px; overflow: hidden; border: 1px solid var(--border-subtle); border-radius: 6px; background: #090b0e; }
+.generation-record-media-strip-item .image-preview-trigger { aspect-ratio: 1; }
+.generation-record-media-strip-item img, .generation-record-media-strip-item video { display: block; width: 100%; height: 52px; object-fit: cover; }
+.generation-record-media-count { display: flex; flex: 0 0 auto; align-items: center; gap: 5px; color: var(--text-secondary); font-size: 11px; white-space: nowrap; }
+.generation-record-media[open] .generation-record-media-summary { border-bottom: 0; border-radius: var(--radius-md) var(--radius-md) 0 0; }
+.generation-record-media-expanded { padding: 8px; border: 1px solid var(--border-subtle); border-top: 0; border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--bg-surface); }
+.generation-record-media-expanded .image-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+@media (max-width: 560px) {
+  .generation-record-media-strip-item { width: 44px; }
+  .generation-record-media-strip-item img, .generation-record-media-strip-item video { height: 44px; }
+}
 .generation-record-failed .generation-record-placeholder, .generation-record-error .generation-record-placeholder, .generation-record-abandoned .generation-record-placeholder, .generation-record-cancelled .generation-record-placeholder { border-left: 2px solid var(--red); }
 .generation-progress { width: min(320px, 70vw); }
 .generation-progress.compact { width: 100%; }
