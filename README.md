@@ -25,6 +25,24 @@ ComfyUI 是外部依赖，不包含在本仓库源代码或发布包的模型目
 - 提供工作流、文件、批量、图像检查、模型搜索、队列、提示词检查、诊断等命令的 CLI
 - 提供标准 MCP stdio 与受保护的 Streamable HTTP 风格 JSON-RPC 接入
 
+## 界面预览
+
+<img src="docs/workspace.png" alt="主工作台" width="680" />
+
+主工作台：左侧项目 / 会话导航，中间对话区，右侧工作流参数与生成控制。
+
+<img src="docs/asset-library.png" alt="素材库" width="680" />
+
+素材库：项目生成的图片、视频与执行追踪记录管理。
+
+<img src="docs/settings-models.png" alt="设置 - 模型" width="680" />
+
+设置 - 模型：模型选择与模型目录管理。
+
+<img src="docs/settings-Appearance.png" alt="设置 - 外观" width="680" />
+
+设置 - 外观：界面主题与外观选项。
+
 ## 下载使用
 
 最新版本 v0.3.7（正式版）：
