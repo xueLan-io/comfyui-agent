@@ -1,4 +1,4 @@
-﻿import assert from 'node:assert/strict';
+import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
@@ -13,7 +13,9 @@ const files = {
   worker: await readFile(new URL('../electron/agent-worker.mjs', import.meta.url), 'utf8'),
   agent: await readFile(new URL('../src/agent/runtime/agent.mjs', import.meta.url), 'utf8'),
   chatFlow: await readFile(new URL('../src/agent/runtime/chat-flow.mjs', import.meta.url), 'utf8'),
+  chatRequest: await readFile(new URL('../src/agent/runtime/chat-request.mjs', import.meta.url), 'utf8'),
   turnFlow: await readFile(new URL('../src/agent/runtime/turn-flow.mjs', import.meta.url), 'utf8'),
+  turnOps: await readFile(new URL('../src/agent/runtime/turn-ops.mjs', import.meta.url), 'utf8'),
 };
 
 test('chat actions expose creative conversation, direct generation, and cloud generation choices', () => {
@@ -78,7 +80,7 @@ test('task recovery monitors the remote prompt before archiving completed output
 
 test('unified turn chat branch forwards attached media and intent to the Agent', () => {
   assert.match(files.agent, /return handleTurnFlow\(this, input\);/);
-  assert.match(files.turnFlow, /agent\.chat\(text, \{ \.\.\.options, intent: decision\.intent, execution: decision\.execution, turnId, skipUserMessage: true \}\)/);
+  assert.match(files.turnOps, /agent\.chat\(text, \{ \.\.\.options, intent: decision\.intent, execution: decision\.execution, turnId, skipUserMessage: true \}\)/);
   assert.match(files.preload, /agentHandleTurn: \(turn = \{\}\) => ipcRenderer\.invoke\('agent:turn', turn\)/);
 });
 
@@ -142,10 +144,10 @@ test('creative chat creates a generation record only after the user confirms exe
 
 test('streamed reasoning is surfaced as thinking plan events and cleared on first content', () => {
   assert.match(files.chatFlow, /emit\(AgentEventTypes\.PLAN, \{ stage: 'thinking', partial: '正在思考…', taskId, traceId, turnId \}\);/);
-  assert.match(files.chatFlow, /onReasoningStart: \(\) => \{ thinking = ''; emit\(AgentEventTypes\.PLAN, \{ stage: 'thinking', partial: '正在思考…', taskId, traceId, turnId \}\);/);
-  assert.match(files.chatFlow, /onReasoningText: text => \{ thinking \+= text; emit\(AgentEventTypes\.PLAN, \{ stage: 'thinking', partial: thinking\.slice\(-1500\), taskId, traceId, turnId \}\);/);
-  assert.match(files.chatFlow, /if \(!started\) \{ started = true; emit\(AgentEventTypes\.PLAN, \{ stage: 'complete', taskId, traceId, turnId \}\);/);
-  assert.match(files.chatFlow, /emit\(AgentEventTypes\.PLAN, \{ stage: 'error', taskId, traceId \}\);/);
+  assert.match(files.chatRequest, /onReasoningStart: \(\) => \{ thinking = ''; emit\(AgentEventTypes\.PLAN, \{ stage: 'thinking', partial: '正在思考…', taskId, traceId, turnId \}\);/);
+  assert.match(files.chatRequest, /onReasoningText: text => \{ thinking \+= text; emit\(AgentEventTypes\.PLAN, \{ stage: 'thinking', partial: thinking\.slice\(-1500\), taskId, traceId, turnId \}\);/);
+  assert.match(files.chatRequest, /if \(!started\) \{ started = true; emit\(AgentEventTypes\.PLAN, \{ stage: 'complete', taskId, traceId, turnId \}\);/);
+  assert.match(files.chatRequest, /emit\(AgentEventTypes\.PLAN, \{ stage: 'error', taskId, traceId \}\);/);
   assert.match(files.panel, /thinking-live-text">\{thinking\}<\/pre>/);
   assert.match(files.context, /onAgentPlan\(data => \{[\s\S]*isCurrentAgentEvent\(data, \{ canClaimTask: true \}\)/);
 });
