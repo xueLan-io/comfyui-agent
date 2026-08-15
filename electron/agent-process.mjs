@@ -1,4 +1,4 @@
-import { fork, spawn } from 'node:child_process';
+﻿import { fork, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,6 +49,8 @@ export class AgentProcessClient {
       getState: () => this.cache.sessionManager,
       getSessionState: () => this.cache.sessionManager.sessionState || null,
       setSessionState: patch => this.call('session.setState', [patch]),
+      setStateFor: (projectId, sessionId, patch) => this.call('session.setStateFor', [projectId, sessionId, patch]),
+      upsertGenerationRecordFor: (projectId, sessionId, record) => this.call('session.upsertGenerationRecordFor', [projectId, sessionId, record]),
       appendExecutionEvent: event => this.call('session.appendExecutionEvent', [event]),
       upsertGenerationRecord: record => this.call('session.upsertGenerationRecord', [record]),
       flush: () => this.call('session.flush'),

@@ -1,4 +1,4 @@
-﻿import pkg from 'electron';
+import pkg from 'electron';
 import { spawn, spawnSync } from 'child_process';
 import { get as httpGet } from 'http';
 import { get as httpsGet } from 'https';
@@ -658,33 +658,47 @@ async function archiveProjectResult(result, owner = {}) {
     agent.taskManager.update(result.taskId, { archiveStatus: 'archived', result: archivedResult });
     await agent.taskManager.persist();
   }
-  if (sessionManager?.activeProjectId === project.id && sessionManager?.activeSessionId === ownerSessionId) {
-    sessionManager.setSessionState({ lastTaskId: result.taskId, taskStatus: 'completed', currentArtifactId: archived[0]?.assetId || archivedVideos[0]?.assetId || '', lastResult: archivedResult });
+  // 归档终态必须写入「目标会话」的持久化快照，而不是只在目标会话仍是活跃
+  // 会话时才写：用户可能在恢复任务/后台生成期间切走，切回来时若只有活跃会话
+  // 更新过，原会话 state 仍是 executing（没有终态的虚空响应），最新预览也丢失。
+  if (sessionManager && ownerSessionId) {
+    const terminalPatch = {
+      lastTaskId: result.taskId,
+      taskStatus: 'completed',
+      state: 'completed',
+      currentArtifactId: archived[0]?.assetId || archivedVideos[0]?.assetId || '',
+      lastResult: archivedResult,
+    };
     const recordRequestId = result.requestId || owner.requestId || '';
-    if (recordRequestId) {
-      sessionManager.upsertGenerationRecord({
-        requestId: recordRequestId,
-        turnId: result.turnId || owner.turnId || recordRequestId,
-        taskId,
-        projectId: project.id,
-        sessionId: ownerSessionId,
-        source: result.source || owner.source || 'direct',
-        status: 'completed',
-        prompt: result.compiledPrompt?.positive || result.positive || '',
-        negative: result.compiledPrompt?.negative || result.negative || '',
-        workflowName: result.workflowName || result.workflow?.name || '',
-        parameters: result.parameters || result.settings || {},
-        nodeOverrides: result.nodeOverrides || {},
-        outputNodeIds: Array.isArray(result.outputNodeIds) ? result.outputNodeIds : null,
-        media: [...archived, ...archivedVideos],
-        durationMs: result.durationMs || result.duration_ms || 0,
-        completedAt: Date.now(),
-        progressPercent: 100,
-        progressNodePercent: 100,
-        progressMessage: '生成完成',
-        progressStage: 'completed',
-        error: null,
-      });
+    const generationRecord = recordRequestId ? {
+      requestId: recordRequestId,
+      turnId: result.turnId || owner.turnId || recordRequestId,
+      taskId,
+      projectId: project.id,
+      sessionId: ownerSessionId,
+      source: result.source || owner.source || 'direct',
+      status: 'completed',
+      prompt: result.compiledPrompt?.positive || result.positive || '',
+      negative: result.compiledPrompt?.negative || result.negative || '',
+      workflowName: result.workflowName || result.workflow?.name || '',
+      parameters: result.parameters || result.settings || {},
+      nodeOverrides: result.nodeOverrides || {},
+      outputNodeIds: Array.isArray(result.outputNodeIds) ? result.outputNodeIds : null,
+      media: [...archived, ...archivedVideos],
+      durationMs: result.durationMs || result.duration_ms || 0,
+      completedAt: Date.now(),
+      progressPercent: 100,
+      progressNodePercent: 100,
+      progressMessage: '生成完成',
+      progressStage: 'completed',
+      error: null,
+    } : null;
+    if (sessionManager.activeProjectId === project.id && sessionManager.activeSessionId === ownerSessionId) {
+      sessionManager.setSessionState(terminalPatch);
+      if (generationRecord) sessionManager.upsertGenerationRecord(generationRecord);
+    } else {
+      await sessionManager.setStateFor?.(project.id, ownerSessionId, terminalPatch);
+      if (generationRecord) await sessionManager.upsertGenerationRecordFor?.(project.id, ownerSessionId, generationRecord);
     }
     await sessionManager.flush();
   }
@@ -1763,7 +1777,7 @@ async function batchRunJob(job, { signal, batchId, jobIndex, projectId, sessionI
     },
     work: async () => service.run(preview.previewId, {}, {
       signal: abortController.signal,
-      onProgress: progress => onProgress({ percent: progress?.percent, message: progress?.message }),
+      onProgress: progress => onProgress?.(progress?.percent ?? 0, progress?.message || ''),
     }),
   });
 }

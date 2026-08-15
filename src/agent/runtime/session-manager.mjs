@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+﻿import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { ConversationMemory, createSessionMemory, SessionMemory } from '../memory/conversation.mjs';
 import { ProjectMemory } from '../memory/project.mjs';
@@ -435,7 +435,26 @@ export class SessionManager {
     if (!record?.requestId) return null;
     if (record.projectId && record.projectId !== this.activeProjectId) return null;
     if (record.sessionId && record.sessionId !== this.activeSessionId) return null;
-    const current = this.sessionState.generationRecords || {};
+    const merged = this._upsertGenerationRecordInto(this.activeProjectId, this.activeSessionId, record, this.sessionState);
+    this.setSessionState({ generationRecords: { ...(this.sessionState.generationRecords || {}) } });
+    return merged;
+  }
+
+  // 写入指定会话的生成记录。后台任务（恢复、跨会话归档）完成时目标会话
+  // 可能已经不是活跃会话，必须直接落到该会话的持久化快照，否则切回会话后
+  // 会恢复成没有终态的空状态（虚空响应），最新预览也随之丢失。
+  upsertGenerationRecordFor(projectId, sessionId, record = {}) {
+    if (!projectId || !sessionId || !record?.requestId) return null;
+    if (!this.sessionStates[projectId]) this.sessionStates[projectId] = {};
+    const stored = this.sessionStates[projectId][sessionId] || sessionStateDefaults();
+    const merged = this._upsertGenerationRecordInto(projectId, sessionId, record, stored);
+    this.sessionStates[projectId][sessionId] = stored;
+    void this._queuePersist(() => this._persistConversations());
+    return merged;
+  }
+
+  _upsertGenerationRecordInto(projectId, sessionId, record, target) {
+    const current = target.generationRecords || {};
     const existing = current[record.requestId] || {};
     const hasValue = value => typeof value === 'string' ? value.trim().length > 0 : value !== undefined && value !== null;
     const hasObjectValues = value => Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0);
@@ -443,8 +462,8 @@ export class SessionManager {
       ...existing,
       ...record,
       requestId: record.requestId,
-      projectId: record.projectId || this.activeProjectId,
-      sessionId: record.sessionId || this.activeSessionId,
+      projectId: record.projectId || projectId,
+      sessionId: record.sessionId || sessionId,
       createdAt: existing.createdAt || record.createdAt || Date.now(),
       updatedAt: Date.now(),
     };
@@ -452,8 +471,48 @@ export class SessionManager {
       if (!hasValue(record[field]) && hasValue(existing[field])) merged[field] = existing[field];
     }
     if (!hasObjectValues(record.parameters) && hasObjectValues(existing.parameters)) merged.parameters = existing.parameters;
-    this.setSessionState({ generationRecords: { ...current, [record.requestId]: merged } });
+    target.generationRecords = { ...current, [record.requestId]: merged };
     return merged;
+  }
+
+  // 写入指定会话的持久化状态快照（不切换活跃会话）。后台任务完成时
+  // 目标会话可能已不是活跃会话，若只写活跃会话，切回后就会恢复成没有
+  // 终态的空状态（虚空响应），最新预览随之丢失。
+  setSessionStateFor(projectId, sessionId, patch = {}) {
+    if (!projectId || !sessionId) return null;
+    if (!this.sessionStates[projectId]) this.sessionStates[projectId] = {};
+    const stored = this.sessionStates[projectId][sessionId] || sessionStateDefaults();
+    const next = {
+      ...stored,
+      ...patch,
+      revision: (stored.revision || 0) + 1,
+      updatedAt: Date.now(),
+    };
+    if (patch.phase && !patch.state) {
+      const legacyState = {
+        running: 'executing',
+        awaiting_clarification: 'clarifying',
+        awaiting_preview: 'awaiting_confirmation',
+        error: 'failed',
+      }[patch.phase];
+      if (legacyState) next.state = legacyState;
+    }
+    if (patch.state && !patch.phase) {
+      next.phase = {
+        classifying: 'running',
+        clarifying: 'awaiting_clarification',
+        planning: 'running',
+        awaiting_confirmation: 'awaiting_preview',
+        executing: 'running',
+        observing: 'running',
+        retrying: 'running',
+        replanning: 'running',
+        failed: 'error',
+      }[patch.state] || patch.state;
+    }
+    this.sessionStates[projectId][sessionId] = next;
+    void this._queuePersist(() => this._persistConversations());
+    return next;
   }
 
   setSessionState(patch = {}) {

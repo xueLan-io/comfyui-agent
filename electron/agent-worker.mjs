@@ -156,6 +156,12 @@ async function invoke(method, args = []) {
   if (method === 'session.upsertGenerationRecord') {
     return agent.sessionManager.upsertGenerationRecord(args[0] || {});
   }
+  if (method === 'session.upsertGenerationRecordFor') {
+    return agent.sessionManager.upsertGenerationRecordFor(args[0], args[1], args[2] || {});
+  }
+  if (method === 'session.setStateFor') {
+    return agent.sessionManager.setSessionStateFor(args[0], args[1], args[2] || {});
+  }
   if (method === 'session.flush') {
     await agent.sessionManager.flush();
     return true;

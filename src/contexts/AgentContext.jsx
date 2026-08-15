@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+﻿import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { formatAgentError } from '../error-message.mjs';
 import { useComfyUI } from './ComfyUIContext.jsx';
 import { useSession } from './SessionContext.jsx';
@@ -441,9 +441,16 @@ export function AgentProvider({ children }) {
     setActivityEvents([]);
     // `taskStatus` may be the persisted idle default while `state` still
     // describes a live task. Prefer the active state so recovery never hides it.
-    const storedTaskState = storedState.state && storedState.state !== 'idle'
-      ? storedState.state
-      : storedState.taskStatus || storedState.state || '';
+    // 直接生成完成后 state 可能残留 'executing'（旧数据/恢复竞态），此时
+    // taskStatus 的终态才是真相：若 taskStatus 已结束，绝不能把会话恢复成
+    // 一个并不存在的运行中任务（虚空响应），否则最新预览会被当成任务产物而丢失。
+    const storedTaskStatus = storedState.taskStatus || '';
+    const terminalTaskStatus = ['completed', 'failed', 'cancelled', 'abandoned', 'error'].includes(storedTaskStatus);
+    const storedTaskState = terminalTaskStatus
+      ? storedTaskStatus
+      : storedState.state && storedState.state !== 'idle'
+        ? storedState.state
+        : storedTaskStatus || storedState.state || '';
     const taskActive = ['classifying', 'planning', 'queued', 'executing', 'running', 'archiving', 'observing', 'retrying', 'replanning'].includes(storedTaskState);
     setStatus(storedState.preparedPreview ? 'preview' : taskActive ? normalizeUiStatus(storedTaskState) : 'idle');
     setRawStatus(storedState.preparedPreview ? 'prepared' : taskActive ? storedTaskState : 'idle');
@@ -1902,7 +1909,15 @@ export function AgentProvider({ children }) {
     setPromptPreview(null);
     setAutoConfirmPreviewId('');
     setGenerationTurn(previous => previous ? { ...previous, status: 'cancelled' } : previous);
-    if (cancelledRequestId) upsertRecord(cancelledRequestId, { status: 'cancelled', progressStage: 'cancelled', progressMessage: '已取消', error: null });
+    // 终止只应取消尚未结束的记录。已完成/已失败的记录持有会话预览
+    // （media 已归档），覆盖成 cancelled 会让预览从会话里消失——
+    // 图片文件并没有删除，只是卡片不再展示媒体。
+    if (cancelledRequestId) {
+      const record = generationRecordsRef.current[cancelledRequestId];
+      if (!record || !['completed', 'failed', 'error', 'cancelled', 'abandoned'].includes(record.status)) {
+        upsertRecord(cancelledRequestId, { status: 'cancelled', progressStage: 'cancelled', progressMessage: '已取消', error: null });
+      }
+    }
     if (generationSourceRef.current === 'direct' || generationSourceRef.current === 'ai') {
       await discardGenerationTurn();
     }
