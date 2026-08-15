@@ -135,8 +135,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   skillDeleteExternal: (id) => ipcRenderer.invoke('skills:delete-external', { id }),
   memoryGetState: (projectId) => ipcRenderer.invoke('memory:get-state', { projectId }),
   memorySetProfile: (projectId, patch) => ipcRenderer.invoke('memory:set-profile', { projectId, patch }),
-  memoryUpsertCharacterCard: (projectId, card) => ipcRenderer.invoke('memory:upsert-character-card', { projectId, card }),
-  memoryDeleteCharacterCard: (projectId, name) => ipcRenderer.invoke('memory:delete-character-card', { projectId, name }),
   memoryClear: (projectId) => ipcRenderer.invoke('memory:clear', { projectId }),
   memoryExport: () => ipcRenderer.invoke('memory:export'),
   memoryRecall: (projectId, query, limit) => ipcRenderer.invoke('memory:recall', { projectId, query, limit }),

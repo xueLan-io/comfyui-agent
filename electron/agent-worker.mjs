@@ -281,12 +281,10 @@ async function invokePlugins(method, args = []) {
 }
 
 async function invokeMemory(method, args = []) {
-  const [projectId, patch, card, name] = args;
+  const [projectId, patch] = args;
   switch (method) {
     case 'memory.getState': return memory.projectState(projectId || '');
     case 'memory.setProfile': return memory.setProfile(projectId || '', patch || {});
-    case 'memory.upsertCharacterCard': return memory.upsertCharacterCard(projectId || '', card || {});
-    case 'memory.deleteCharacterCard': return memory.deleteCharacterCard(projectId || '', name || '');
     case 'memory.clear': return memory.clear(projectId || '');
     case 'memory.export': return memory.exportJson();
     case 'memory.recall': return memory.recall(projectId || '', patch || {});

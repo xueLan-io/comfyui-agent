@@ -31,7 +31,6 @@ describe('MemorySettings', () => {
     });
     expect(container.textContent).toContain('长期记忆');
     expect(container.textContent).toContain('冷色系');
-    expect(container.textContent).toContain('Alice');
   });
 
   it('clears project memory through the bridge after confirmation', async () => {

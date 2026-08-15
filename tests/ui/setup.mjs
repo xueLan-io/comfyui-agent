@@ -31,13 +31,10 @@ const electronAPI = {
   uiPreferences: async () => ({ language: 'zh-CN' }),
   memoryGetState: async () => ({
     profile: { styles: ['冷色系'], disliked: [], notes: [], workflows: { 'anima.json': 3 } },
-    characterCards: [{ name: 'Alice', description: '蓝发双马尾', appearance: '蓝发', outfit: '校服', pose: '', tags: ['anime'], notes: '', updatedAt: 1 }],
     segments: [{ id: 'm1', createdAt: Date.now(), workflowName: 'anima.json', summary: { objective: '生成夜色车站插画', facts: ['用户偏好冷色系'] } }],
     segmentCount: 1,
   }),
   memorySetProfile: async () => ({ profile: { styles: ['冷色系'], disliked: [], notes: [], workflows: {} } }),
-  memoryUpsertCharacterCard: async () => ({}),
-  memoryDeleteCharacterCard: async () => true,
   memoryClear: async () => null,
   memoryExport: async () => '{}',
   appSaveTextFile: async () => true,

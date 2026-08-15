@@ -138,10 +138,10 @@ ComfyMuse 的**差异化资产是“能力平台”**：agent 规划/执行/治�
 **P1 · 旗舰 A：长期记忆与创作知识系统（第 3–6 周）**
 - 目标：跨会话沉淀“这个用户/这个项目怎么创作”，显著提升助手粘性与成片一致性。
 - 范围：
-  1. 记忆 schema：项目级（风格偏好、常用工作流、常用参数、角色卡、禁用项）+ 用户级（语言、模式偏好）；
+  1. 记忆 schema：项目级（风格偏好、常用工作流、常用参数、禁用项）+ 用户级（语言、模式偏好）；（角色卡：已移除）
   2. 沉淀管线：会话结束/里程碑时把 contextArchive 摘要 → 结构化记忆（复用 `_compactConversationSegment` 设施），去重与版本化；
   3. 检索注入：`buildChatSystemPrompt` 增加 `memory_context` trust 块（复用 chat-prompt.mjs 占位符机制），检索按相关性 Top-K；
-  4. 记忆 UI：设置页“记忆”分区（查看/编辑/删除/清空），角色卡编辑器（复用 PromptPersonalitySettings 交互范式）；
+  4. 记忆 UI：设置页“记忆”分区（查看/编辑/删除/清空）；（角色卡编辑器：已移除）
   5. 隐私与治理：记忆属于用户数据，提供一键清空与导出；沙箱/云策略对记忆内容同样生效（记忆注入云端前过 cloud-policy-router）。
 - 验收：新建会话后能召回旧会话的关键偏好（E2E 场景脚本）；记忆读写有测试覆盖；删除/清空路径可审计。
 
@@ -213,6 +213,7 @@ ComfyMuse 的**差异化资产是“能力平台”**：agent 规划/执行/治�
 | P1 核心（存储+沉淀+注入） | ✅ | `569797a` | `src/agent/memory/long-term.mjs`：项目级记忆（风格偏好/不要清单/常用工作流计数/角色卡/去重记忆段，均带上限），原子 JSON 持久化，`distillProfileSignals` 确定性蒸馏，关键词+时效排序的 recall 格式化；chat-prompt.mjs 新增 `{memoryContext}` 占位符与 `<memory_context>` trust 块（**仅本地模型注入，云端默认不注入**——比"过云策略门再发云端"更保守）；agent.mjs 可选 memory 选项、压缩管线沉淀钩子（尽力而为不阻断）、chat() 召回注入；顺带修复 chat taskId 同毫秒碰撞（`chat_<ts>_<rand>`）。13 个新测试 |
 | P1 UI + 接线 | ✅ | `198178d` | worker 创建 LongTermMemory 并暴露 memory.* RPC；main 新增 memory:* IPC；preload 暴露 7 个通道；`MemorySettings.jsx`（偏好 tag 编辑器、角色卡增删改、记忆段浏览、清空确认、JSON 导出）挂入设置页 memory tab；zh/en i18n；2 个渲染层冒烟测试 |
 | P1 隐私与治理 | ✅（设计收敛） | — | 记忆仅注入本地模型（与既有 cloud 提示词刻意剔除项目上下文的模式一致）；记忆数据属用户本地数据，UI 可查看/编辑/清空/导出；无云端外发路径 |
+| P1 角色卡移除 | ✅ 已移除 | — | 角色卡与预设卡（生成配方）及个性分页（自定义人格）生态位重叠，且 recall 仅注入本地聊天系统提示词、不进入图像生成链路，判为冗余；已从 long-term.mjs 存储/recall、memory:* IPC、worker RPC、preload 桥接、MemorySettings UI、zh/en i18n、CSS 与测试全链路移除；MemorySettings 现仅保留项目偏好与记忆段 |
 
 核心套件基线（P1 后）：**929 tests / 922 pass / 0 fail** + 渲染层 10 个冒烟测试；lint 279 文件；build 通过。
 剩余：P1 可选增强（记忆设置开关、用户级记忆、召回在生成规划中的应用）→ P2 批量流水线 → P3 插件生态。

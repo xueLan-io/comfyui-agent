@@ -26,18 +26,6 @@
 .memory-tag-disliked { border-color: rgba(241, 189, 112, .35); background: var(--amber-bg); color: var(--amber); }
 .memory-workflows { margin-top: 10px; color: var(--text-dim); font-size: 10px; line-height: 1.6; }
 
-.memory-card-list { display: grid; gap: 8px; margin-top: 10px; }
-.memory-card { padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--bg-canvas); }
-.memory-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.memory-card-head strong { color: var(--text-primary); font-size: 11px; }
-.memory-card-head > div { display: flex; gap: 4px; }
-.memory-card-head .btn-icon { width: 26px; height: 26px; }
-.memory-card-line { margin-top: 6px; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
-.memory-card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
-.memory-card-tags span { padding: 1px 7px; border: 1px solid var(--border-subtle); border-radius: 999px; background: var(--bg-surface); color: var(--text-dim); font-size: 9px; }
-.memory-card-form { margin-top: 10px; padding: 12px; border: 1px dashed var(--border-default); border-radius: var(--radius-sm); }
-.memory-card-actions { display: flex; gap: 8px; margin-top: 12px; }
-
 .memory-segment { margin-top: 8px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--bg-canvas); }
 .memory-segment summary { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 8px 10px; color: var(--text-muted); cursor: pointer; font-size: 10px; list-style: none; }
 .memory-segment summary::-webkit-details-marker { display: none; }

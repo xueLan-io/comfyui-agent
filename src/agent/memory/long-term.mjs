@@ -2,8 +2,8 @@
 //
 // Persists project-scoped knowledge distilled from session compactions (facts,
 // decisions, constraints), a lightweight project profile (style hints, disliked
-// terms, frequent workflows), and user-managed character cards. Injected into
-// the LOCAL model system prompt only (cloud prompts stay privacy-trimmed, see
+// terms, frequent workflows). Injected into the LOCAL model system prompt only
+// (cloud prompts stay privacy-trimmed, see
 // chat-prompt.mjs). Storage is one atomic JSON file under agent-data.
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -12,10 +12,8 @@ import { dirname } from 'node:path';
 
 const DEFAULT_LIMITS = {
   segmentsPerProject: 40,
-  cardsPerProject: 100,
   profileNotes: 24,
   recallSegments: 4,
-  recallCards: 8,
 };
 
 // Deterministic hint buckets for profile distillation. Heuristics only: they
@@ -92,7 +90,6 @@ export class LongTermMemory {
     if (!this.data.projects[key]) {
       this.data.projects[key] = {
         profile: { styles: [], disliked: [], notes: [], workflows: {} },
-        characterCards: {},
         segments: [],
       };
     }
@@ -158,41 +155,6 @@ export class LongTermMemory {
     return this.projectState(projectId);
   }
 
-  async upsertCharacterCard(projectId, card = {}) {
-    const project = this._project(projectId);
-    const name = String(card.name || '').trim();
-    if (!name) throw Object.assign(new Error('Character card requires a name'), { code: 'CARD_NAME_REQUIRED' });
-    const next = {
-      name,
-      description: String(card.description || '').trim().slice(0, 1000),
-      appearance: String(card.appearance || '').trim().slice(0, 1000),
-      outfit: String(card.outfit || '').trim().slice(0, 1000),
-      pose: String(card.pose || '').trim().slice(0, 500),
-      tags: Array.isArray(card.tags) ? card.tags.map(String).filter(Boolean).slice(0, 12) : [],
-      notes: String(card.notes || '').trim().slice(0, 1000),
-      updatedAt: Date.now(),
-    };
-    project.characterCards[name] = next;
-    const entries = Object.entries(project.characterCards);
-    if (entries.length > this.limits.cardsPerProject) {
-      entries.sort((a, b) => a[1].updatedAt - b[1].updatedAt);
-      delete project.characterCards[entries[0][0]];
-    }
-    await this._save();
-    return next;
-  }
-
-  async deleteCharacterCard(projectId, name) {
-    const project = this._project(projectId);
-    const key = String(name || '');
-    const existed = Object.prototype.hasOwnProperty.call(project.characterCards, key);
-    if (existed) {
-      delete project.characterCards[key];
-      await this._save();
-    }
-    return existed;
-  }
-
   // Clear memory for one project, or for everything when projectId is omitted.
   async clear(projectId = '') {
     if (projectId) {
@@ -239,14 +201,6 @@ export class LongTermMemory {
     if (workflows.length > 0) {
       lines.push(`常用工作流：${workflows.map(([name, count]) => `${name}（${count} 次）`).join('、')}`);
     }
-    const cards = Object.values(project.characterCards).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, this.limits.recallCards);
-    if (cards.length > 0) {
-      lines.push('角色卡：');
-      for (const card of cards) {
-        const parts = [card.name, card.description, card.appearance, card.outfit].filter(Boolean);
-        lines.push(`- ${parts.join('；')}`);
-      }
-    }
     const ranked = [...project.segments]
       .map(segment => ({ segment, score: scoreSegment(segment, query) }))
       .sort((a, b) => b.score - a.score || b.segment.createdAt - a.segment.createdAt)
@@ -271,7 +225,6 @@ export class LongTermMemory {
 function summaryProject(project) {
   return {
     profile: { ...project.profile },
-    characterCards: Object.values(project.characterCards).map(card => ({ ...card })),
     segments: project.segments.map(segment => ({
       id: segment.id,
       createdAt: segment.createdAt,

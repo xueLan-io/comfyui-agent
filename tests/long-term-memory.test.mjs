@@ -55,7 +55,7 @@ test('segments are capped per project', async () => {
   assert.equal(state.segmentCount, 3);
 });
 
-test('recall returns profile, cards, and ranked segments; empty when nothing stored', () => {
+test('recall returns profile and ranked segments; empty when nothing stored', () => {
   const memory = new LongTermMemory();
   memory.data.projects['p'] = {
     profile: {
@@ -64,7 +64,6 @@ test('recall returns profile, cards, and ranked segments; empty when nothing sto
       notes: [],
       workflows: { 'anima.json': 3 },
     },
-    characterCards: { Alice: { name: 'Alice', description: '蓝发双马尾', appearance: '蓝发', outfit: '校服', pose: '', tags: [], notes: '', updatedAt: 1 } },
     segments: [
       { id: 'm1', hash: 'a', summary: { facts: ['夜景插画偏好高对比'], decisions: [] }, createdAt: 100 },
       { id: 'm2', hash: 'b', summary: { facts: ['用户提到车站'], decisions: [] }, createdAt: 200 },
@@ -75,28 +74,9 @@ test('recall returns profile, cards, and ranked segments; empty when nothing sto
   assert.match(context, /冷色系风格/);
   assert.match(context, /避免过多文字元素/);
   assert.match(context, /anima\.json（3 次）/);
-  assert.match(context, /Alice/);
   // query ranking: '车站' matches m2 only, so m2's fact appears before m1's
   assert.ok(context.indexOf('用户提到车站') < context.indexOf('夜景插画偏好高对比'), 'm2 should be ranked first');
   assert.equal(new LongTermMemory().recall('empty'), '');
-});
-
-test('character cards can be upserted, deleted, and survive persistence', async () => {
-  const { dir, path } = await memoryFile();
-  try {
-    const memory = new LongTermMemory({ filePath: path });
-    await memory.init();
-    await memory.upsertCharacterCard('p', { name: 'Alice', description: '蓝发双马尾' });
-    await memory.upsertCharacterCard('p', { name: 'Alice', description: '蓝发双马尾，冷色瞳孔' });
-    const reloaded = new LongTermMemory({ filePath: path });
-    await reloaded.init();
-    assert.equal(reloaded.projectState('p').characterCards.length, 1);
-    assert.equal(reloaded.projectState('p').characterCards[0].description, '蓝发双马尾，冷色瞳孔');
-    assert.equal(await reloaded.deleteCharacterCard('p', 'Alice'), true);
-    assert.equal(await reloaded.deleteCharacterCard('p', 'Alice'), false);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
 });
 
 test('setProfile replaces lists and adjusts workflow counts', async () => {
