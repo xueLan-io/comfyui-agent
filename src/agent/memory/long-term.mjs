@@ -110,15 +110,19 @@ export class LongTermMemory {
   async captureSession(projectId, { summary = {}, sourceTurnId = '', workflowName = '' } = {}) {
     const project = this._project(projectId);
     const signals = distillProfileSignals(summary, workflowName);
-    project.profile.styles = [...new Set([...project.profile.styles, ...signals.styles])].slice(-40);
-    project.profile.disliked = [...new Set([...project.profile.disliked, ...signals.disliked])].slice(-40);
-    project.profile.notes = [...new Set([...project.profile.notes, ...signals.notes])].slice(-this.limits.profileNotes);
-    this._mergeWorkflows(project.profile.workflows, signals.workflows);
+    // Short-circuit before mutating the project profile: a duplicate or empty
+    // summary must not leave phantom profile/workflow counts in memory that
+    // diverge from the persisted file (the dedup key is the summary hash, so a
+    // re-captured summary contributes nothing new).
     if (signals.notes.length === 0 && signals.styles.length === 0 && signals.disliked.length === 0 && !workflowName) {
       return { captured: false, reason: 'no_signal' };
     }
     const hash = hashText(JSON.stringify(summary));
     if (project.segments.some(segment => segment.hash === hash)) return { captured: false, reason: 'duplicate' };
+    project.profile.styles = [...new Set([...project.profile.styles, ...signals.styles])].slice(-40);
+    project.profile.disliked = [...new Set([...project.profile.disliked, ...signals.disliked])].slice(-40);
+    project.profile.notes = [...new Set([...project.profile.notes, ...signals.notes])].slice(-this.limits.profileNotes);
+    this._mergeWorkflows(project.profile.workflows, signals.workflows);
     project.segments.push({
       id: `memory_${Date.now()}_${randomUUID().slice(0, 6)}`,
       hash,

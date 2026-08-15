@@ -1742,7 +1742,7 @@ function getBatchScheduler() {
   return batchScheduler;
 }
 
-async function batchRunJob(job, { signal, batchId, jobIndex, projectId, sessionId } = {}) {
+async function batchRunJob(job, { signal, batchId, jobIndex, projectId, sessionId, onProgress } = {}) {
   await startAgent(getStoredConfig());
   const comfyState = await comfyManager.ensureStarted();
   if (comfyState.status !== 'ready') throw new Error(comfyState.message || 'ComfyUI is not ready');
@@ -2766,42 +2766,52 @@ ipcMain.handle('image:generate', async (_, { prompt, size = 'auto', count = 1, q
     await agent.project.set('lastGenerationSource', 'openai-image');
     await agent.project.set('assets', [...(agent.project.get('assets') || []), ...assets]);
     const archived = { images: assets, revisedPrompt: result.revisedPrompt, taskId, requestId: normalizedRequestId, source: 'openai-image' };
-    if (agent?.sessionManager.activeProjectId === owner.projectId && agent?.sessionManager.activeSessionId === owner.sessionId) {
-      const current = agent.sessionManager.sessionState?.generationRecords || {};
-      const existing = current[normalizedRequestId] || {};
-      agent.sessionManager.setSessionState({
-        generationRecords: {
-          ...current,
-          [normalizedRequestId]: {
-            ...existing,
-            requestId: normalizedRequestId,
-            turnId: existing.turnId || normalizedRequestId,
-            taskId,
-            projectId: owner.projectId,
-            sessionId: owner.sessionId,
-            source: 'openai-image',
-            status: 'completed',
-            createdAt: existing.createdAt || Date.now(),
-            updatedAt: Date.now(),
-            prompt: result.revisedPrompt || prompt || existing.prompt || '',
-            negative: '',
-            workflowName: 'OpenAI Image',
-            parameters: { size, count, quality, model: model.id },
-            nodeOverrides: existing.nodeOverrides || {},
-            outputNodeIds: existing.outputNodeIds || null,
-            media: assets,
-            durationMs: existing.durationMs || 0,
-            completedAt: Date.now(),
-            progressPercent: 100,
-            progressNodePercent: 100,
-            progressMessage: '生成完成',
-            progressStage: 'completed',
-            error: null,
-          },
-        },
-      });
-      await agent.sessionManager.flush();
-      sendToRenderer('project:state', agent.sessionManager.getState());
+    const existingRecord = agent?.sessionManager?.sessionState?.generationRecords?.[normalizedRequestId] || {};
+    // 终态（taskStatus/state 与生成记录）必须落到目标会话，且不依赖目标会话
+    // 仍是活跃会话：用户在 OpenAI 生图期间切走会话，切回来时同样不能是虚空响应。
+    const openaiRecord = {
+      requestId: normalizedRequestId,
+      turnId: existingRecord?.turnId || normalizedRequestId,
+      taskId,
+      projectId: owner.projectId,
+      sessionId: owner.sessionId,
+      source: 'openai-image',
+      status: 'completed',
+      createdAt: existingRecord?.createdAt || Date.now(),
+      updatedAt: Date.now(),
+      prompt: result.revisedPrompt || prompt || existingRecord?.prompt || '',
+      negative: '',
+      workflowName: 'OpenAI Image',
+      parameters: { size, count, quality, model: model.id },
+      nodeOverrides: existingRecord?.nodeOverrides || {},
+      outputNodeIds: existingRecord?.outputNodeIds || null,
+      media: assets,
+      durationMs: existingRecord?.durationMs || 0,
+      completedAt: Date.now(),
+      progressPercent: 100,
+      progressNodePercent: 100,
+      progressMessage: '生成完成',
+      progressStage: 'completed',
+      error: null,
+    };
+    const openaiTerminalPatch = {
+      lastTaskId: taskId,
+      taskStatus: 'completed',
+      state: 'completed',
+      currentArtifactId: assets[0]?.assetId || '',
+      lastResult: archived,
+    };
+    if (agent?.sessionManager) {
+      if (agent.sessionManager.activeProjectId === owner.projectId && agent.sessionManager.activeSessionId === owner.sessionId) {
+        const current = agent.sessionManager.sessionState?.generationRecords || {};
+        agent.sessionManager.setSessionState({ ...openaiTerminalPatch, generationRecords: { ...current, [normalizedRequestId]: openaiRecord } });
+        await agent.sessionManager.flush();
+        sendToRenderer('project:state', agent.sessionManager.getState());
+      } else {
+        await agent.sessionManager.setStateFor?.(owner.projectId, owner.sessionId, openaiTerminalPatch);
+        await agent.sessionManager.upsertGenerationRecordFor?.(owner.projectId, owner.sessionId, openaiRecord);
+        await agent.sessionManager.flush();
+      }
     }
     await agent?.recordConversationMessage?.('agent', 'OpenAI Image 生成完成。', {
       kind: 'completed',
@@ -3182,8 +3192,12 @@ ipcMain.handle('queue:clear', () => {
 
 ipcMain.handle('queue:start', async () => {
   const owner = executionOwner();
+  const draftCount = queueDraft.length;
   const jobs = expandQueueItems(queueDraft);
-  if (!jobs.length) throw Object.assign(new Error('queue empty'), { code: 'QUEUE_EMPTY' });
+  if (!jobs.length) {
+    const code = draftCount > 0 ? 'QUEUE_NO_JOBS' : 'QUEUE_EMPTY';
+    throw Object.assign(new Error(code === 'QUEUE_NO_JOBS' ? 'queue has no runnable items (missing positive prompt)' : 'queue empty'), { code });
+  }
   const batch = await getBatchScheduler().createBatch({ jobs, title: '', projectId: owner.projectId, sessionId: owner.sessionId });
   queueDraft = [];
   broadcastQueueDraft();

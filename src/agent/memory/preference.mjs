@@ -1,8 +1,22 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
 import { dirname } from 'path';
-import electron from 'electron';
+import { createRequire } from 'node:module';
 
-const { safeStorage } = electron;
+// `electron.safeStorage` only exists in the Electron main process. This module
+// is also loaded transitively by the agent worker (utilityProcess) via
+// agent/index.mjs, and a static `import 'electron'` there crashes module
+// loading (ESM→CJS interop in the forked process). Resolve it lazily through a
+// CommonJS require so non-main contexts degrade to "no secure storage" instead
+// of throwing at import time.
+const nodeRequire = createRequire(import.meta.url);
+
+function getSafeStorage() {
+  try {
+    return nodeRequire('electron')?.safeStorage || null;
+  } catch {
+    return null;
+  }
+}
 
 export const DEFAULTS = {
   llm: {
@@ -44,6 +58,7 @@ export const DEFAULTS = {
 };
 
 function encrypt(text) {
+  const safeStorage = getSafeStorage();
   try {
     if (safeStorage && safeStorage.isEncryptionAvailable()) {
       return safeStorage.encryptString(text).toString('base64');
@@ -56,6 +71,7 @@ function encrypt(text) {
 
 function decrypt(encoded) {
   const encrypted = Buffer.from(encoded, 'base64');
+  const safeStorage = getSafeStorage();
   try {
     if (safeStorage && safeStorage.isEncryptionAvailable()) {
       return { value: safeStorage.decryptString(encrypted), error: '' };

@@ -41,7 +41,8 @@ export function expandBatchJobs(input = {}) {
   const seedValues = seeds.length > 0 ? seeds : [undefined];
   const comboValues = combos.length > 0 ? combos : [{}];
   const jobs = [];
-  for (const combo of comboValues) {
+  for (let comboIndex = 0; comboIndex < comboValues.length; comboIndex++) {
+    const combo = comboValues[comboIndex];
     for (const seed of seedValues) {
       jobs.push({
         index: jobs.length,
@@ -55,7 +56,7 @@ export function expandBatchJobs(input = {}) {
         outputNodeIds: input.outputNodeIds || null,
         media: input.media || {},
         seed: seed === undefined ? undefined : seed,
-        comboIndex: comboValues.indexOf(combo),
+        comboIndex,
         createdAt: 0,
       });
     }

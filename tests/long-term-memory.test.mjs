@@ -45,6 +45,28 @@ test('captureSession stores a deduped segment and persists atomically', async ()
   }
 });
 
+test('duplicate capture does not mutate the in-memory profile', async () => {
+  const { dir, path } = await memoryFile();
+  try {
+    const memory = new LongTermMemory({ filePath: path });
+    await memory.init();
+    await memory.captureSession('p', { summary: SAMPLE_SUMMARY, workflowName: 'anima.json' });
+    // Same summary under a different workflow: dedup must short-circuit before
+    // merging profile signals, so 'other.json' never shows up as a phantom
+    // workflow count (in-memory or persisted).
+    const duplicate = await memory.captureSession('p', { summary: SAMPLE_SUMMARY, workflowName: 'other.json' });
+    assert.deepEqual(duplicate, { captured: false, reason: 'duplicate' });
+    const state = memory.projectState('p');
+    assert.deepEqual(Object.keys(state.profile.workflows).sort(), ['anima.json']);
+    assert.equal(state.profile.workflows['anima.json'], 1);
+    assert.equal(state.segmentCount, 1);
+    const stored = JSON.parse(await readFile(path, 'utf8'));
+    assert.deepEqual(Object.keys(stored.projects.p.profile.workflows).sort(), ['anima.json']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('segments are capped per project', async () => {
   const memory = new LongTermMemory({ limits: { segmentsPerProject: 3 } });
   await memory.init();

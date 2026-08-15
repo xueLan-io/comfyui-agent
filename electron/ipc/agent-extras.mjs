@@ -6,13 +6,11 @@
 export function registerAgentExtrasIpc(ctx) {
   const { ipcMain, getAgent, startAgent, getStoredConfig } = ctx;
 
-  ipcMain.handle('memory:get-state', async (_, { projectId = '' } = {}) => getAgent().call('memory.getState', [projectId]));
-  ipcMain.handle('memory:set-profile', async (_, { projectId = '', patch = {} } = {}) => getAgent().call('memory.setProfile', [projectId, patch]));
-  ipcMain.handle('memory:upsert-character-card', async (_, { projectId = '', card = {} } = {}) => getAgent().call('memory.upsertCharacterCard', [projectId, card]));
-  ipcMain.handle('memory:delete-character-card', async (_, { projectId = '', name = '' } = {}) => getAgent().call('memory.deleteCharacterCard', [projectId, name]));
-  ipcMain.handle('memory:clear', async (_, { projectId = '' } = {}) => getAgent().call('memory.clear', [projectId]));
-  ipcMain.handle('memory:export', async () => getAgent().call('memory.export'));
-  ipcMain.handle('memory:recall', async (_, { projectId = '', query = '', limit } = {}) => getAgent().call('memory.recall', [projectId, { query, limit }]));
+  ipcMain.handle('memory:get-state', async (_, { projectId = '' } = {}) => { await startAgent(getStoredConfig()); return getAgent().call('memory.getState', [projectId]); });
+  ipcMain.handle('memory:set-profile', async (_, { projectId = '', patch = {} } = {}) => { await startAgent(getStoredConfig()); return getAgent().call('memory.setProfile', [projectId, patch]); });
+  ipcMain.handle('memory:clear', async (_, { projectId = '' } = {}) => { await startAgent(getStoredConfig()); return getAgent().call('memory.clear', [projectId]); });
+  ipcMain.handle('memory:export', async () => { await startAgent(getStoredConfig()); return getAgent().call('memory.export'); });
+  ipcMain.handle('memory:recall', async (_, { projectId = '', query = '', limit } = {}) => { await startAgent(getStoredConfig()); return getAgent().call('memory.recall', [projectId, { query, limit }]); });
 
   ipcMain.handle('plugins:list', async () => {
     await startAgent(getStoredConfig());

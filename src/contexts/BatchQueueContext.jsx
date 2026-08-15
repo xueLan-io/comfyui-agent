@@ -22,13 +22,13 @@ export function BatchQueueProvider({ children }) {
   const [feedback, setFeedback] = useState(null);
   const feedbackTimerRef = useRef(0);
 
-  const strategySummary = strategy => {
+  const strategySummary = useCallback(strategy => {
     const mode = strategy?.mode || 'random';
     if (mode === 'fixed') return t('queueStrategyFixed');
     if (mode === 'list') return t('queueStrategyList', { count: (strategy.values || []).length });
     if (mode === 'step') return t('queueStrategyStep', { count: strategy.count || 4 });
     return t('queueStrategyRandom', { count: strategy.count || 4 });
-  };
+  }, [t]);
 
   const showFeedback = useCallback((text, kind = 'info') => {
     setFeedback({ text, kind });
@@ -123,6 +123,7 @@ export function BatchQueueProvider({ children }) {
       return true;
     } catch (error) {
       if (error?.code === 'QUEUE_EMPTY' || /queue empty/i.test(error?.message || '')) showFeedback(t('queueToastEmpty'), 'info');
+      else if (error?.code === 'QUEUE_NO_JOBS' || /no runnable items/i.test(error?.message || '')) showFeedback(t('queueToastNoJobs'), 'info');
       else showFeedback(error?.message || t('operationFailed'), 'error');
       return false;
     }
