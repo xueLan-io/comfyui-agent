@@ -5,7 +5,7 @@
 ## 开发环境
 
 - Windows 10 1803 或更高版本
-- Node.js 20 或更高版本
+- Node.js 20 或更高版本（CI 使用 Node.js 22）
 - `npm install` 已完成
 - 用于本地验证的 ComfyUI 实例或 portable 目录
 
@@ -22,6 +22,8 @@ npm run lint
 npm run build
 ```
 
+界面或渲染逻辑改动请同时运行 `npm run test:ui`（渲染进程冒烟测试）。
+
 5. 在 Pull Request 中说明改动目的、验证命令和已知限制。涉及界面变化时附上截图或录屏。
 
 ## 代码约定
@@ -30,6 +32,7 @@ npm run build
 - 优先使用小而明确的改动，不为尚未存在的外部消费者添加兼容层。
 - 不提交 `node_modules/`、`dist/`、`releases/`、`dist-portable/`、压缩包、可执行文件或 `.env`。
 - 修改 IPC、文件系统、网络请求、任务状态或模型调用时，明确说明权限边界和失败行为。
+- 面向使用者的行为变化请同步更新 [README.md](README.md) 与 [CHANGELOG.md](CHANGELOG.md)；新发布版本在 `docs/` 下补充发布说明。
 
 ## Issue 与 Pull Request
 

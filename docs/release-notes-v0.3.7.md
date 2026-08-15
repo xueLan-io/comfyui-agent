@@ -29,10 +29,10 @@ The portable package is recommended for first installation or upgrades from an o
 
 ```text
 ComfyMuse-portable-v0.3.7.zip
-<build-time checksum>
+a8e3eaf4c99e0df2a401e42f162180a50c2a6f97bc6662b8f8000847dbd7cb50
 
 ComfyMuse-update-v0.3.7.zip
-<build-time checksum>
+7bdf419e0384821e67f9662275d59c434d1d824506247e82c66dfbac29a75c7c
 ```
 
 The signed `manifest-stable.json`, `manifest-stable.json.sig`, and `SHA256SUMS.txt` are attached to the release. The application verifies the Ed25519 manifest signature and update package SHA-256 before installation.

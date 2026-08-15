@@ -5,20 +5,24 @@
 ![React](https://img.shields.io/badge/React-18-61DAFB)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-ComfyUI Agent 是一个面向 Windows 的本地 AI 创作桌面助手，用于连接和操作本机的 [ComfyUI](https://github.com/comfyanonymous/ComfyUI) 工作流。它提供对话式提示词辅助、工作流管理、生成任务跟踪、项目与素材管理，以及 CLI 工具。
+ComfyUI Agent（桌面应用名 **ComfyMuse**）是一个面向 Windows 的本地 AI 创作桌面助手，用于连接和操作本机的 [ComfyUI](https://github.com/comfyanonymous/ComfyUI) 工作流。它提供对话式提示词辅助、工作流管理、生成任务跟踪、项目与素材管理，以及 CLI 和 MCP 接入。
 
 ComfyUI 是外部依赖，不包含在本仓库源代码或发布包的模型目录中。
 
 ## 功能
 
 - 运行本地 ComfyUI 工作流
-- 支持文生图、图生图、局部重绘、放大、视频和批量生成场景
-- 导入、检查、编辑、重命名、删除和收藏工作流
-- 本地提示词库、搜索、解析和提示词优化
-- 支持 Ollama、LM Studio 和其他 OpenAI-compatible 模型服务
-- 管理项目、会话、生成任务、图片、视频和执行追踪记录
-- 提供安全边界明确的文件、系统、网络和 ComfyUI 工具
-- 提供工作流检查、校验、补丁、生成、队列和诊断命令的 CLI
+- 支持文生图、图生图、局部重绘、放大、视频和批量生成场景；内置 txt2img、img2img、character、video、upscale、controlnet、lora、batch 八类技能及局部重绘 / 扩图 / 换背景 / 风格迁移等高频技能
+- 导入、检查、编辑、重命名、删除和收藏工作流；支持工作流读取、校验、补丁与受保护的变异（preview → commit → rollback + 版本存储）
+- 本地提示词库、搜索、解析和提示词优化（多种增强模式）
+- 支持 Ollama、LM Studio 和其他 OpenAI-compatible 模型服务；内置常用提供商模板
+- 管理项目、会话、生成任务、图片、视频和执行追踪记录；媒体密集记录折叠为单条媒体带
+- **长期记忆（预览）**：跨会话项目级记忆（风格偏好 / 不要清单 / 常用工作流计数 / 去重记忆段），原子 JSON 持久化，仅注入本地模型；记忆分区可查看 / 编辑 / 清空 / 导出
+- **批量创作流水线（预览）**：seed 矩阵 × 参数组合展开、生命周期与崩溃恢复、暂停 / 取消 / 单条重试、策展 Top-K
+- **插件生态（预览）**：`userData\plugins` 目录加载、manifest 校验与 Ed25519 验签、启停 / 移除（含工具注册表注销）、外部技能声明式编辑器
+- `/` 斜杠命令、自定义字体（Starry Display / Starry UI）、通知设置与提示音
+- 提供安全边界明确的文件、系统、网络和 ComfyUI 工具；生成执行严格采用 prepare、显式确认、run、status/cancel 流程
+- 提供工作流、文件、批量、图像检查、模型搜索、队列、提示词检查、诊断等命令的 CLI
 - 提供标准 MCP stdio 与受保护的 Streamable HTTP 风格 JSON-RPC 接入
 
 ## 下载使用
@@ -55,7 +59,7 @@ ComfyUI\main.py
 要求：
 
 - Windows 10 1803 或更高版本
-- Node.js 20 或更高版本
+- Node.js 20 或更高版本（CI 使用 Node.js 22）
 - 一个可访问的 ComfyUI 实例，或 ComfyUI portable 目录
 
 ```powershell
@@ -84,12 +88,15 @@ npm run mcp
 }
 ```
 
-MCP 工具包含：
+MCP 工具按模块分组：
 
-- `web_search`、`web_open`、`character_research`
-- `filesystem`、`prompt_library`、`system`
-- `plan_txt2img`、`plan_img2img`、`plan_character`、`plan_video`、`plan_upscale`、`plan_controlnet`、`plan_lora`、`plan_batch`
-- 生成工具由 Electron 嵌入式 MCP 配置显式开启后提供：`generation_prepare`、`generation_run_prepared`、`generation_status`、`generation_cancel`
+- 检索与研究：`web_search`、`web_open`、`character_research`
+- 本地资源：`filesystem`、`prompt_library`、`system`
+- ComfyUI 只读：`inspect_image`、`comfyui_get_queue`、`comfyui_get_status`、`comfyui_get_history`、`comfyui_get_object_info`、`comfyui_get_system_stats`、`comfyui_get_output`、`comfyui_runtime_parameters`
+- 工作流只读：`workflow_list`、`workflow_read`、`workflow_snapshot`、`workflow_list_nodes`、`workflow_get_node`、`workflow_find_nodes`、`workflow_list_outputs`、`workflow_validate`
+- 技能规划：`skills_list`、`skills_match`、`skill_requirements`，以及每个技能的 `plan_*`（如 `plan_txt2img`、`plan_img2img`、`plan_character`、`plan_video`、`plan_upscale`、`plan_controlnet`、`plan_lora`、`plan_batch`）
+- 工作流与队列变更（需显式开启）：`workflow_mutation_preview`、`workflow_mutation_commit`、`workflow_revision_list`、`workflow_rollback`、`comfyui_cancel_prompt`、`comfyui_interrupt`
+- 生成（由 Electron 嵌入式 MCP 配置显式开启后提供）：`generation_prepare`、`generation_run_prepared`、`generation_status`、`generation_cancel`
 
 启用独立 HTTP transport：
 
@@ -108,8 +115,9 @@ npm run mcp
 - **业务运行时**：Node.js ES modules（`.mjs`）
 - **AI 服务接入**：Ollama、本地 OpenAI-compatible 服务、云端 OpenAI-compatible API
 - **图像工作流引擎**：ComfyUI HTTP/WebSocket API
-- **构建与发布**：Windows 便携版打包脚本、GitHub Actions Release
-- **测试**：Node.js built-in test runner
+- **内容渲染**：react-markdown、remark-gfm、remark-math、rehype-katex、mermaid
+- **构建与发布**：Windows 便携版打包脚本、GitHub Actions Release（Node.js 22）
+- **测试**：Node.js built-in test runner + Vitest（渲染进程冒烟测试）
 - **静态检查**：Node.js `--check` 递归语法检查
 
 ## 架构概览
@@ -126,16 +134,18 @@ Electron main process (electron/)
         |     +-- planning, execution, evaluation and retry
         |     +-- ComfyUI, filesystem, prompt and web tools
         |     +-- project, session, memory and task state
+        |     +-- skill registry, plugins and long-term memory
         |
         +-- ComfyUI instance (local HTTP/WebSocket service)
 ```
 
 - `src/`：React 界面、上下文、CLI 和运行时辅助模块
-- `src/agent/`：Agent、模型提供商、工具、任务生命周期和数据结构
-- `electron/`：主进程、预加载脚本、Agent worker 和 IPC
+- `src/agent/`：Agent、模型提供商、工具、技能、任务生命周期和数据结构
+- `electron/`：主进程、预加载脚本、Agent worker、IPC 域模块
 - `tests/`：业务模块和运行时行为测试
 - `scripts/`：检查和打包验证脚本
-- `docs/`：设计审查、验证记录和补充技术文档
+- `docs/`：设计审查、验证记录、发布说明和补充技术文档
+- `workflows/`：示例工作流（img2img、inpaint、upscale、wan_txt2video、minimax_h3_amd_smoke）
 
 ## 开发命令
 
@@ -145,6 +155,9 @@ npm run dev
 
 # 运行测试
 npm test
+
+# 运行渲染进程冒烟测试
+npm run test:ui
 
 # 检查 src/ 下的 JavaScript 模块语法
 npm run lint
@@ -166,10 +179,22 @@ CLI 通过 `npm run agent --` 调用，默认以预览模式运行；需要真�
 npm run agent -- workflow list --workflow-dir <dir>
 npm run agent -- workflow inspect --workflow image.json --workflow-dir <dir>
 npm run agent -- workflow validate --workflow image.json --workflow-dir <dir>
+npm run agent -- workflow patch --workflow image.json --positive "a cat" --steps 30
+npm run agent -- file read --root project --path src/main.mjs
+npm run agent -- file write --root project --path notes.txt --content-file notes.txt
+npm run agent -- file edit --root project --path src/main.mjs --old "old" --new "new"
 npm run agent -- generate --workflow image.json --positive "a red cat"
 npm run agent -- generate --workflow image.json --positive "a red cat" --execute
+npm run agent -- batch --workflow image.json --prompts prompts.txt --execute
+npm run agent -- image inspect --image result.png --image-root <dir>
+npm run agent -- model search --query flux
 npm run agent -- queue monitor --prompt-id <id>
-npm run agent -- status queue
+npm run agent -- queue cancel --prompt-id <id> --execute
+npm run agent -- prompt check --text "a red cat" --intent generate
+npm run agent -- prompt guard --positive "a red cat" --negative "blurry"
+npm run agent -- diagnose --prompt-id <id>
+npm run agent -- doctor
+npm run agent -- status [queue|models|device|log]
 ```
 
 运行 `npm run agent -- --help` 查看完整命令和路径参数。文件相关命令要求显式指定受信任根目录，路径不会默认访问任意位置。
@@ -189,6 +214,15 @@ COMFYUI_BASE_URL=http://127.0.0.1:8188
 - 默认工作流目录为所选 portable 根目录下的 `ComfyUI\user\default\workflows`。
 - 项目图片、视频和 trace 保存在项目目录；ComfyUI 的 `input`、`output` 和 `temp` 目录保持独立。
 - API key 仅用于本地配置或系统用户数据目录。不要将 API key 写入 `dist-portable`、发布包或提交 `.env`。
+
+## 文档
+
+- [CHANGELOG.md](CHANGELOG.md)：版本变更记录
+- [docs/release-notes-v0.3.7.md](docs/release-notes-v0.3.7.md)：v0.3.7 发布说明
+- [docs/research-and-roadmap-2026-08.md](docs/research-and-roadmap-2026-08.md)：体量 / 进度调研与研发计划
+- [docs/stability-test-plan-v0.3.7.md](docs/stability-test-plan-v0.3.7.md)：v0.3.7 稳定性测试计划
+- [docs/batch-queue-redesign.md](docs/batch-queue-redesign.md)：批量生成队列设计
+- [docs/reviews/](docs/reviews/)：安全评审与核心流程复核记录
 
 ## 发布说明
 
@@ -217,6 +251,7 @@ Windows Authenticode 使用代码签名证书导出的 PFX：
 - PFX 私钥必须包含在证书中，且不能提交到仓库
 
 本项目当前未配置 Authenticode PFX 证书，因此 Windows 可执行文件可能显示未知发布者提示。未配置 PFX 不影响 Ed25519 manifest 签名、SHA-256 校验或 Release 发布。
+
 - 发布产物和压缩包不应提交到源代码仓库；相关目录和文件已加入 `.gitignore`。
 - ComfyUI、模型权重及其第三方节点遵循各自项目和模型的许可证。
 
