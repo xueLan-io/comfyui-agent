@@ -13,7 +13,7 @@ export default function TabBar({ tabs, active, onChange }) {
           title={tab.label}
         >
           {tab.icon && <Icon name={tab.icon} size={14} />}
-          <span>{tab.label}</span>
+          <span>{tab.label}{tab.preview && <span className="preview-badge">{tab.previewLabel}</span>}</span>
           {tab.badge != null && tab.badge > 0 && <span className="tab-bar-badge">{tab.badge}</span>}
         </button>
       ))}

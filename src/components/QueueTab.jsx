@@ -171,6 +171,7 @@ export default function QueueTab() {
         </div>
         {badge > 0 && <span className="params-change-badge">{badge}</span>}
       </div>
+      <p className="preview-note"><span className="preview-badge">{t('previewBadge')}</span>{t('previewNote')}</p>
 
       {!hasDraft && activeBatches.length === 0 && completedBatches.length === 0 && (
         <div className="queue-empty">

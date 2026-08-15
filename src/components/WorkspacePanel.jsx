@@ -44,7 +44,7 @@ export default function WorkspacePanel({ onOpenPromptLibrary }) {
     { id: 'workflow', label: t('workflow'), icon: 'workflow' },
     { id: 'prompt', label: t('promptTemplate'), icon: 'spark' },
     { id: 'params', label: t('parameters'), icon: 'sliders', badge: controlChangeCount },
-    { id: 'queue', label: t('queueTabLabel'), icon: 'grid', badge: queueBadge },
+    { id: 'queue', label: t('queueTabLabel'), icon: 'grid', badge: queueBadge, preview: true, previewLabel: t('previewBadge') },
   ];
 
   return (

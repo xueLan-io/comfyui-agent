@@ -82,6 +82,7 @@ export default function MemorySettings() {
 
   return (
     <div className="memory-settings">
+      <p className="preview-note"><span className="preview-badge">{t('previewBadge')}</span>{t('previewNote')}</p>
       <div className="settings-section-heading">
         <div><h3>{t('memorySettings')}</h3><p>{t('memorySettingsNote')}</p></div>
         <div className="memory-actions">

@@ -48,6 +48,7 @@ export default function PluginSettings() {
 
   return (
     <div className="plugin-settings">
+      <p className="preview-note"><span className="preview-badge">{t('previewBadge')}</span>{t('previewNote')}</p>
       <div className="settings-section-heading">
         <div><h3>{t('plugins')}</h3><p>{t('pluginsDescription')}</p></div>
       </div>

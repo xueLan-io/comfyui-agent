@@ -414,8 +414,8 @@ export default function SettingsPanel({ onClose }) {
                ['skills', t('skills'), t('skillsNote'), 'list'],
                ['generation', t('generation'), t('generationNote'), 'sliders'],
                ['personality', t('promptPersonality'), t('promptPersonalityNote'), 'message'],
-               ['memory', t('memorySettings'), t('memorySettingsNote'), 'star'],
-               ['plugins', t('plugins'), t('pluginsNote'), 'grid'],
+               ['memory', t('memorySettings'), t('memorySettingsNote'), 'star', true],
+               ['plugins', t('plugins'), t('pluginsNote'), 'grid', true],
                ['notifications', t('notificationSettings'), t('notificationsNote'), 'circleAlert'],
              ] },
              { key: 'system', label: t('tabGroupSystem'), tabs: [
@@ -425,10 +425,10 @@ export default function SettingsPanel({ onClose }) {
              ] },
            ].map(group => <div className="settings-nav-group" key={group.key}>
              <div className="settings-nav-group-title">{group.label}</div>
-             {group.tabs.map(([id, label, note, icon]) => (
+             {group.tabs.map(([id, label, note, icon, preview]) => (
               <button key={id} className={`settings-tab${tab === id ? ' active' : ''}`} onClick={() => setTab(id)} role="tab" aria-selected={tab === id} title={note}>
                  <Icon name={icon} size={14} />
-                 <span className="settings-tab-label"><strong>{label}</strong><small>{note}</small></span>
+                 <span className="settings-tab-label"><strong>{label}{preview && <span className="preview-badge">{t('previewBadge')}</span>}</strong><small>{note}</small></span>
               </button>
             ))}
           </div>)}
@@ -453,7 +453,7 @@ export default function SettingsPanel({ onClose }) {
              <div className="settings-grid"><div className="settings-field"><label>{t('customId')}</label><input value={custom.id} onChange={event => setCustom({ ...custom, id: event.target.value })} /></div><div className="settings-field"><label>{t('customName')}</label><input value={custom.name} onChange={event => setCustom({ ...custom, name: event.target.value })} /></div><div className="settings-field span-2"><label>{t('customDescription')}</label><input value={custom.description} onChange={event => setCustom({ ...custom, description: event.target.value })} /></div><div className="settings-field"><label>{t('customKeywords')}</label><input value={custom.keywords} onChange={event => setCustom({ ...custom, keywords: event.target.value })} /></div><div className="settings-field"><label>{t('promptMode')}</label><select value={custom.promptMode} onChange={event => setCustom({ ...custom, promptMode: event.target.value })}><option value="raw">{t('rawPromptMode')}</option><option value="cinematic">{t('cinematicPromptMode')}</option><option value="anime">{t('animePromptMode')}</option><option value="photorealistic">{t('photoPromptMode')}</option><option value="concept">{t('conceptPromptMode')}</option></select></div></div>
              <button className="btn btn-primary" onClick={addCustom} disabled={!/^[a-z0-9_-]+$/.test(custom.id) || !custom.name || !custom.keywords.trim()}>{t('addSkill')}</button>
           </section>
-            <section className="custom-skill-form"><h3>{t('externalCreateTitle')}</h3>
+            <section className="custom-skill-form"><h3>{t('externalCreateTitle')} <span className="preview-badge">{t('previewBadge')}</span></h3>
               {externalStatus && <p className="settings-status">{externalStatus}</p>}
               <div className="settings-grid">
                 <div className="settings-field"><label>{t('externalId')} *</label><input value={external.id} onChange={event => setExternal({ ...external, id: event.target.value })} placeholder="comic-panel" /></div>
