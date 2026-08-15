@@ -65,6 +65,9 @@ let pluginRegistry;
 let pluginPrefs;
 let pluginErrors = [];
 let toolRegistry;
+// Tools registered by each enabled plugin, keyed by pluginId, so disable/remove
+// can unregister them from the Agent's live tool surface.
+const pluginTools = new Map();
 
 function send(message) {
   if (parentPort) {
@@ -230,6 +233,9 @@ async function initPlugins(userDataPath) {
   for (const plugin of plugins) {
     if (enabled[plugin.manifest.pluginId] !== false) {
       await pluginRegistry.start(plugin.manifest.pluginId).catch(error => {
+        // A failed start() may have registered some tools before throwing;
+        // unregister them so a later re-enable starts from a clean slate.
+        unregisterPluginTools(plugin.manifest.pluginId);
         pluginErrors.push({ pluginId: plugin.manifest.pluginId, error: error?.message || String(error) });
       });
     }
@@ -239,7 +245,14 @@ async function initPlugins(userDataPath) {
 
 function pluginHost() {
   return {
-    registerTool: tool => toolRegistry.register(tool),
+    registerTool: (tool, pluginId) => {
+      const value = toolRegistry.register(tool);
+      if (pluginId) {
+        if (!pluginTools.has(pluginId)) pluginTools.set(pluginId, new Set());
+        pluginTools.get(pluginId).add(value.name);
+      }
+      return value;
+    },
     // v1: plugin-registered skills are validated but not yet wired into the
     // skill router; only the tools capability is live in the Electron host.
     registerSkill: () => {},
@@ -253,6 +266,14 @@ function pluginEnabled(id) {
   return pluginPrefs ? pluginPrefs.get('enabled')?.[id] !== false : true;
 }
 
+function unregisterPluginTools(pluginId) {
+  if (!toolRegistry) return;
+  const names = pluginTools.get(pluginId);
+  if (!names) return;
+  for (const name of names) toolRegistry.unregister(name);
+  pluginTools.delete(pluginId);
+}
+
 async function invokePlugins(method, args = []) {
   const [id, enabled] = args;
   switch (method) {
@@ -263,7 +284,7 @@ async function invokePlugins(method, args = []) {
     case 'plugins.enable': {
       if (!pluginRegistry?.get(id)) throw Object.assign(new Error(`Plugin not found: ${id}`), { code: 'PLUGIN_NOT_FOUND' });
       if (enabled) await pluginRegistry.start(id);
-      else await pluginRegistry.stop(id);
+      else { await pluginRegistry.stop(id); unregisterPluginTools(id); }
       if (pluginPrefs) {
         const state = pluginPrefs.get('enabled') || {};
         state[id] = Boolean(enabled);
@@ -274,6 +295,7 @@ async function invokePlugins(method, args = []) {
     }
     case 'plugins.remove': {
       const removed = pluginRegistry?.remove(id);
+      unregisterPluginTools(id);
       if (pluginPrefs) {
         const state = pluginPrefs.get('enabled') || {};
         delete state[id];
