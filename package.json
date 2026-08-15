@@ -1,6 +1,6 @@
 {
   "name": "comfy-agent",
-  "version": "0.3.7-rc.1",
+  "version": "0.3.7",
   "type": "module",
   "description": "ComfyMuse - AI Creative Studio powered by ComfyUI",
   "main": "electron/main.mjs",
