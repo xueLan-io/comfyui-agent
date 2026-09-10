@@ -78,15 +78,20 @@ async function ensureRoot(root) {
 }
 async function readStore(root) {
   await ensureRoot(root);
-  try {
-    const value = JSON.parse(await readFile(join(root, 'presets.json'), 'utf8'));
-    return Array.isArray(value) ? value.map(defaultPreset) : Array.isArray(value?.presets) ? value.presets.map(defaultPreset) : [];
-  } catch (error) {
-    if (error.code === 'ENOENT') return [];
+  const loadBackup = async () => {
     try {
       const backup = JSON.parse(await readFile(join(root, 'presets.json.bak'), 'utf8'));
       return Array.isArray(backup) ? backup.map(defaultPreset) : Array.isArray(backup?.presets) ? backup.presets.map(defaultPreset) : [];
     } catch { throw new Error('预设存储文件损坏，未执行保存'); }
+  };
+  try {
+    const value = JSON.parse(await readFile(join(root, 'presets.json'), 'utf8'));
+    return Array.isArray(value) ? value.map(defaultPreset) : Array.isArray(value?.presets) ? value.presets.map(defaultPreset) : [];
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      try { return await loadBackup(); } catch { return []; }
+    }
+    return loadBackup();
   }
 }
 async function writeStore(root, presets) {
@@ -95,8 +100,7 @@ async function writeStore(root, presets) {
   const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(temporary, JSON.stringify(presets, null, 2), 'utf8');
   JSON.parse(await readFile(temporary, 'utf8'));
-  try { await rm(`${target}.bak`, { force: true }); } catch {}
-  try { await rename(target, `${target}.bak`); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  try { await copyFile(target, `${target}.bak`); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   await rename(temporary, target);
   return presets;
 }
@@ -326,7 +330,14 @@ export async function copyPresetCover(root, presetId, sourcePath) {
 }
 async function importGlobalPresetUnlocked(root, sourcePath, extractZip) {
   const extracted = sourcePath.toLowerCase().endsWith('.zip') ? await extractZip(sourcePath) : { files: [sourcePath] };
-  const files = extracted.files || extracted;
+  try {
+    return await importExtractedPreset(root, extracted.files || extracted, sourcePath);
+  } finally {
+    await extracted.cleanup?.();
+  }
+}
+
+async function importExtractedPreset(root, files, sourcePath) {
   const presetFile = files.find(file => basename(file).toLowerCase() === 'preset.json');
   if (!presetFile || files.filter(file => basename(file).toLowerCase() === 'preset.json').length !== 1) throw new Error('压缩包必须包含唯一的 preset.json');
   let data;
@@ -355,8 +366,6 @@ async function importGlobalPresetUnlocked(root, sourcePath, extractZip) {
   } catch (error) {
     await removePresetResources(root, preset).catch(() => {});
     throw error;
-  } finally {
-    await extracted.cleanup?.();
   }
 }
 export async function importGlobalPreset(root, sourcePath, extractZip) {

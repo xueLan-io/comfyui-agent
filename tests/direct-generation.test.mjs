@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import test from 'node:test';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { directGenerationRequest } from '../src/runtime/generation-contract.mjs';
+import { directGenerationRequest } from '../src/runtime/generation-contract.ts';
 import { DirectService } from '../src/runtime/direct/direct-service.mjs';
 import { validateDirectRequest } from '../src/runtime/direct/direct-validator.mjs';
 import { ComfyExecutor } from '../src/runtime/executor/comfy-executor.mjs';

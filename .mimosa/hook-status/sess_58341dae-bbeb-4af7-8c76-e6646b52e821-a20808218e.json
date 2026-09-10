@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-09-06T05:53:03.036Z",
+  "sessionId": "sess_58341dae-bbeb-4af7-8c76-e6646b52e821",
+  "event": "PostToolUse",
+  "toolName": "Edit",
+  "file": "C:/Users/Administrator/.zcode/cli/memories/projects/comfyui-agent-b723bdb47acf6269/memory/bug-audit-2026-09-05.md",
+  "outcome": "clear",
+  "coverage": "complete",
+  "findingCount": 0,
+  "durationMs": 3,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

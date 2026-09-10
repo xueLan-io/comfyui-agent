@@ -2,7 +2,7 @@
 // Functions operate on the agent (runtime) and are behavior-preserving moves:
 // the Agent methods delegate here one line each.
 
-import { initSession } from '../events/agent-events.mjs';
+import { initSession } from '../events/agent-events.ts';
 
 export async function useSession(agent, projectId, sessionId) {
   if (projectId === agent.sessionManager.activeProjectId && sessionId === agent.sessionManager.activeSessionId) {

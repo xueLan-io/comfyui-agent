@@ -1,8 +1,8 @@
-import { assertDirectExecutionPolicy, directGenerationRequest, normalizeGenerationResult } from '../generation-contract.mjs';
+import { assertDirectExecutionPolicy, directGenerationRequest, normalizeGenerationResult } from '../generation-contract.ts';
 import { validateDirectRequest } from './direct-validator.mjs';
 import { classifyFailure } from '../../agent/optimizer/retry-policy.mjs';
 import { checkEditedPrompt } from '../../agent/optimizer/prompt-guard.mjs';
-import { evaluateTechnical } from '../../agent/schemas/evaluation-schema.mjs';
+import { evaluateTechnical } from '../../agent/schemas/evaluation-schema.ts';
 import { assertSandboxMedia } from '../../agent/security/sandbox.mjs';
 import { freezeRuntimeRequest, runtimeRequestDigest } from '../runtime-parameters-contract.mjs';
 import { estimateGenerationTime } from '../generation-time-estimate.mjs';

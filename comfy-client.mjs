@@ -34,6 +34,7 @@ export class ComfyClient {
 
   async waitForCompletion(promptId, pollMs = 1000, timeoutMs = 600000) {
     const start = Date.now();
+    let missingSince = 0;
     for (;;) {
       const queue = await this.getQueue();
       const running = queue.queue_running || [];
@@ -42,9 +43,14 @@ export class ComfyClient {
       if (!isStillQueued) {
         const history = await this.getHistory(promptId);
         if (history[promptId]) return history[promptId];
+        // A prompt can leave the queue without ever reaching history (deleted
+        // via /queue, or ComfyUI restarted): bail out instead of polling forever.
+        if (!missingSince) missingSince = Date.now();
+        if (Date.now() - missingSince > 15000) throw new Error(`Prompt ${promptId} vanished from queue and history`);
         await new Promise(r => setTimeout(r, 2000));
         continue;
       }
+      missingSince = 0;
       if (Date.now() - start > timeoutMs) throw new Error('Timeout waiting for completion');
       await new Promise(r => setTimeout(r, pollMs));
     }

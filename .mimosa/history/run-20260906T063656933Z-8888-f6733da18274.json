@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "mimosa-finding-history/v1",
+  "runId": "20260906T063656933Z-8888-f6733da18274",
+  "runStatus": "inconclusive",
+  "errors": [
+    "candidate-select:scratch-ts-spike/package.json: changed_file_unreadable: observed changed file no longer exists or cannot be read",
+    "candidate-select:scratch-ts-spike/mod.ts: changed_file_unreadable: observed changed file no longer exists or cannot be read",
+    "candidate-select:scratch-ts-spike/worker.ts: changed_file_unreadable: observed changed file no longer exists or cannot be read",
+    "candidate-select:package-lock.json: candidate_limit_exceeded: 5 changed reviewable file(s) were not scanned because the limit is 20",
+    "agent-check:.: spawnSync C:\\Program Files\\nodejs\\node.exe ETIMEDOUT"
+  ],
+  "target": ".",
+  "revision": "2a021b064cbd5b92217efce6cb0f235be0e76609",
+  "diffHash": "71f696a14909a1f6c0b03b9eb128f11b266ad933cff8fedfcd81935c29ad4e2c",
+  "rulesVersion": "unavailable",
+  "recordedAt": "2026-09-06T06:36:56.933Z",
+  "timing": {
+    "startedAt": "2026-09-06T06:36:54.396Z",
+    "completedAt": "2026-09-06T06:36:56.933Z",
+    "durationMs": 2537
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "modelCalls": 0,
+    "measurement": "known-zero"
+  },
+  "findings": {
+    "total": 3,
+    "bySeverity": {
+      "low": 3
+    },
+    "byStatus": {
+      "candidate": 3
+    }
+  },
+  "coverage": {
+    "status": "partial",
+    "reasonCounts": {
+      "changed_file_unreadable": 3,
+      "candidate_limit_exceeded": 1,
+      "project_check_failed": 5
+    }
+  },
+  "evidenceBoundary": "static_only",
+  "immutableReport": ".mimosa/reports/task-review-sess_ff154d8a-620c-4f51-9f8f-6baf0285ad55-20260906T063656933Z-8888-f6733da18274.json"
+}

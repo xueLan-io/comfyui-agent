@@ -5,10 +5,10 @@
 // overrides keep working.
 
 import { randomUUID } from 'node:crypto';
-import { emit, AgentEventTypes, initTurn, nextTraceId } from '../events/agent-events.mjs';
-import { buildAgentContext } from '../schemas/context-schema.mjs';
-import { validatePlan } from '../schemas/plan-schema.mjs';
-import { confirmationForPlan } from '../schemas/confirmation-schema.mjs';
+import { emit, AgentEventTypes, initTurn, nextTraceId } from '../events/agent-events.ts';
+import { buildAgentContext } from '../schemas/context-schema.ts';
+import { validatePlan } from '../schemas/plan-schema.ts';
+import { confirmationForPlan } from '../schemas/confirmation-schema.ts';
 import { PromptEnhanceTool } from '../tools/prompt/enhance.mjs';
 import { checkEditedPrompt } from '../optimizer/prompt-guard.mjs';
 import { assertConfirmationBinding } from '../../runtime/governance/operation-gateway.mjs';
@@ -16,7 +16,7 @@ import { WorkflowMutationPreviewTool, WorkflowMutationCommitTool } from '../tool
 import { ComfyUITool } from '../tools/comfyui/index.mjs';
 import { promptProfileLabel } from '../tools/comfyui/prompt-profile.mjs';
 import { normalizeRuntimeParameters, freezeRuntimeRequest, runtimeRequestDigest } from '../../runtime/runtime-parameters-contract.mjs';
-import { attachMediaToPlan } from './planner.mjs';
+import { attachMediaToPlan } from './planner.ts';
 import { assessPromptReadiness } from '../tools/prompt/readiness.mjs';
 import { researchCharacterIfPlanned, shouldResearchCharacter } from './research-ops.mjs';
 import { APPEARANCE_FIELDS } from '../research/appearance.mjs';
@@ -98,8 +98,9 @@ export async function prepareFileMutation(agent, userMessage, options = {}) {
   const queued = agent._enqueue(() => prepareFileMutation(agent, userMessage, options));
   if (queued) return queued;
   if (agent._state === 'awaiting_confirmation') throw new Error('A file change preview is awaiting confirmation');
+  const runEpoch = (agent._runEpoch = (Number(agent._runEpoch) || 0) + 1);
   agent._running = true;
-  agent._taskId = `task_${Date.now()}`;
+  agent._taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   agent._traceId = nextTraceId();
   agent.taskManager?.create?.({ id: agent._taskId, kind: 'file_mutation', message: options.effectiveRequest || userMessage, traceId: agent._traceId, intent: 'file_edit', projectId: agent.sessionManager.activeProjectId });
   if (agent._state !== 'classifying') agent._transitionState('classifying', { message: 'Classifying file change...' });
@@ -126,6 +127,7 @@ export async function prepareFileMutation(agent, userMessage, options = {}) {
     ctx.filesystemRoots = agent._filesystemRoots();
     ctx.comfyRoot = agent.comfyRoot;
     const plan = options.plan || await agent.planner.createPlan(request, ctx);
+    if (runEpoch !== agent._runEpoch) throw Object.assign(new Error('cancelled'), { name: 'AbortError' });
     const validation = validatePlan(plan, { tools: agent.tools, context: ctx, maxSteps: agent.planner.maxSteps });
     if (!validation.valid) throw new Error(`Plan validation failed: ${validation.errors.join('; ')}`);
     if (!plan.steps.some(step => step.tool === 'filesystem_mutate')) throw new Error('The file change plan has no filesystem_mutate step');
@@ -138,6 +140,10 @@ export async function prepareFileMutation(agent, userMessage, options = {}) {
       const previewStep = structuredClone(step);
       if (previewStep.tool === 'filesystem_mutate') previewStep.input.execute = false;
       const output = await agent.executor.executeStep(previewStep, ctx);
+      // 取消时 executeStep 返回 skipped 而非 error；把残缺预览当成功会
+      // 生成缺失步骤结果的确认卡片。
+      if (output.skipped) throw Object.assign(new Error('File change preview cancelled'), { name: 'AbortError' });
+      if (runEpoch !== agent._runEpoch) throw Object.assign(new Error('cancelled'), { name: 'AbortError' });
       if (output.error) throw new Error(output.error);
       previews.push({ stepId: step.id, result: output.result });
     }
@@ -164,11 +170,16 @@ export async function prepareFileMutation(agent, userMessage, options = {}) {
     });
     return preview;
   } catch (error) {
-    agent.taskManager?.complete?.(agent._taskId, { error: { message: error.message, stage: 'prepare' } });
-    if (agent._state !== 'cancelled' && agent._state !== 'failed') agent._transitionState('failed', { lastError: error.message, message: error.message });
+    // 取消/被新运行取代时，任务结局已由 cancel() 或新运行书写，
+    // 这里不得再覆写共享状态。
+    const cancelled = agent._cancelRequested || agent._state === 'cancelled' || isCancellationError(error);
+    if (!cancelled && runEpoch === agent._runEpoch) {
+      agent.taskManager?.complete?.(agent._taskId, { error: { message: error.message, stage: 'prepare' } });
+      if (agent._state !== 'cancelled' && agent._state !== 'failed') agent._transitionState('failed', { lastError: error.message, message: error.message });
+    }
     throw error;
   } finally {
-    agent._running = false;
+    if (agent._runEpoch === runEpoch) agent._running = false;
     await agent._drainQueue();
   }
 }
@@ -177,6 +188,7 @@ export async function prepareWorkflowMutation(agent, input, options = {}) {
   const queued = agent._enqueue(() => prepareWorkflowMutation(agent, input, options));
   if (queued) return queued;
   if (agent._state === 'awaiting_confirmation') throw new Error('A workflow mutation preview is awaiting confirmation');
+  const runEpoch = (agent._runEpoch = (Number(agent._runEpoch) || 0) + 1);
   agent._running = true;
   try {
     const request = { ...input, workflowDir: input.workflowDir || agent.workflowDir };
@@ -190,7 +202,7 @@ export async function prepareWorkflowMutation(agent, input, options = {}) {
     agent.sessionManager.setSessionState?.({ preparedPreview: preview, pending: { kind: 'workflow_mutation', previewId, request, turnId: options.turnId || '' }, taskStatus: 'awaiting_confirmation', needsConfirmation: true });
     return preview;
   } finally {
-    agent._running = false;
+    if (agent._runEpoch === runEpoch) agent._running = false;
     await agent._drainQueue();
   }
 }
@@ -291,6 +303,21 @@ export async function runPrepared(agent, previewId, edits = {}) {
       const known = new Set((compiledPrompt.issues || []).map(issue => issue.detail));
       compiledPrompt.issues = [...(compiledPrompt.issues || []), ...editIssues.filter(issue => !known.has(issue.detail))];
     }
+    // The executor prefers each step's frozen runtime snapshot, so re-freeze
+    // it with the confirmed edits — without this the user's preview edits
+    // (prompt text / appearance facts) are silently ignored at execution.
+    for (const step of prepared.plan?.steps || []) {
+      if (step.tool !== 'comfyui' || !step.input?.frozenRuntimeRequest) continue;
+      const frozen = structuredClone(step.input.frozenRuntimeRequest);
+      frozen.prompt = {
+        ...(frozen.prompt || {}),
+        positive: compiledPrompt.positive,
+        positivePrompts: compiledPrompt.positivePrompts || (compiledPrompt.positive ? [compiledPrompt.positive] : (frozen.prompt?.positivePrompts || [])),
+        negative: typeof compiledPrompt.negative === 'string' ? compiledPrompt.negative : (frozen.prompt?.negative || ''),
+      };
+      step.input.compiledPrompt = compiledPrompt;
+      step.input.frozenRuntimeRequest = frozen;
+    }
     const result = await agent.run(prepared.userMessage, {
       ...prepared.options,
       workflowManifest: prepared.workflowManifest,
@@ -299,6 +326,9 @@ export async function runPrepared(agent, previewId, edits = {}) {
       effectiveRequest: prepared.effectiveRequest || prepared.userMessage,
       requestId: prepared.requestId,
       intent: prepared.intent || 'generate',
+      // prepareGeneration already ran forced research for this request; the
+      // confirm→execute hop must not repeat it.
+      researchDone: true,
     });
     agent._preparedRuns.delete(previewId);
     return result;
@@ -319,16 +349,23 @@ export async function prepareGeneration(agent, userMessage, options = {}) {
   if (agent._state === 'awaiting_confirmation') {
     throw new Error('有待确认的生成预览，请先确认或取消当前预览。');
   }
+  const runEpoch = (agent._runEpoch = (Number(agent._runEpoch) || 0) + 1);
   agent._running = true;
   agent._cancelRequested = false;
   if (options.projectId) agent.projectId = options.projectId;
   if (options.sessionId) agent.sessionId = options.sessionId;
   agent._taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  // 本运行自己的任务 id：被取代后 agent._taskId 已易主，返回值必须仍指旧任务。
+  const runTaskId = agent._taskId;
   agent._requestId = options.requestId || newRequestId();
   agent._traceId = nextTraceId();
   agent.taskManager?.create?.({ id: agent._taskId, requestId: agent._requestId, kind: 'run', message: options.effectiveRequest || userMessage, traceId: agent._traceId, intent: options.intent || 'generate', projectId: agent.sessionManager.activeProjectId, sessionId: agent.sessionManager.activeSessionId });
-  if (agent._state !== 'classifying') agent._transitionState('classifying', { message: 'Classifying request...' });
-  try {
+    if (agent._state !== 'classifying') agent._transitionState('classifying', { message: 'Classifying request...' });
+    // 提升到 try 之外：两次 race 之间或 race 挂接前抛错时，外层 finally
+    // 也要能清理定时器，否则它会带着对 agent._promptCompileController 的
+    // 引用存活到 150 秒后，误伤下一次 prepare 的编译。
+    let deadlineTimer = null;
+    try {
     const request = options.effectiveRequest || userMessage;
     const intent = options.intent || (/(图生图|img2img|局部重绘|inpaint|换背景|参考图)/i.test(request) ? 'edit' : 'generate');
     if (!agent.llm?.isConfigured) {
@@ -398,6 +435,7 @@ export async function prepareGeneration(agent, userMessage, options = {}) {
       error.retryable = true;
       throw error;
     }
+    if (runEpoch !== agent._runEpoch) return { cancelled: true, superseded: true, taskId: runTaskId };
     if (workflowManifest.modelReady === false) {
       const missing = (workflowManifest.missingModels || workflowManifest.modelRequirements || [])
         .filter(item => item.available === false)
@@ -427,13 +465,18 @@ export async function prepareGeneration(agent, userMessage, options = {}) {
     const prepareDeadlineError = new Error('生成准备超时（150 秒）：语言模型服务长时间无响应，请检查模型配置或网络后重试。');
     prepareDeadlineError.code = 'LLM_TIMEOUT';
     const deadlineController = new AbortController();
-    let deadlineTimer;
     const prepareDeadlinePromise = new Promise((_, reject) => {
       deadlineTimer = setTimeout(() => {
-        deadlineController.abort(prepareDeadlineError);
+        // 先结算超时错误再中断底层调用：若 AbortError 先赢得 race，
+        // 超时会被 isCancellationError 误判为用户取消。
         reject(prepareDeadlineError);
+        deadlineController.abort(prepareDeadlineError);
+        agent._promptCompileController?.abort(prepareDeadlineError);
       }, PREPARE_DEADLINE_MS);
     });
+    // race 挂接前流程可能提前抛错，此 promise 再无人接手；空 catch 防止
+    // 150 秒后的延迟 rejection 升级为 unhandled rejection。
+    prepareDeadlinePromise.catch(() => {});
     agent._transitionState('planning', { message: 'Planning task...' });
     const ctx = buildAgentContext(request, {
       conversation: agent._conversationForLLM(6),
@@ -478,6 +521,9 @@ export async function prepareGeneration(agent, userMessage, options = {}) {
     } catch (error) {
       planOutcome = timingOutcome(error);
       clearTimeout(deadlineTimer);
+      // 代际检查在前：被取代的运行最常见的错误就是 research 信号 abort 的
+      // AbortError，取消检查会先命中并把返回值挂到新任务的 taskId 上。
+      if (runEpoch !== agent._runEpoch) return { cancelled: true, superseded: true, taskId: runTaskId };
       if (agent._cancelRequested || agent._state === 'cancelled' || isCancellationError(error)) {
         return { cancelled: true, taskId: agent._taskId };
       }
@@ -503,6 +549,7 @@ export async function prepareGeneration(agent, userMessage, options = {}) {
     // 角色外观请求，也强制调研——恢复 v0.3.6「出图路径保证调研」的语义。
     const researchForced = options.execution?.needsResearch === true || shouldResearchCharacter(request, intent);
     await researchCharacterIfPlanned(agent, plan, ctx, request, { force: researchForced });
+    if (runEpoch !== agent._runEpoch) return { cancelled: true, superseded: true, taskId: runTaskId };
     agent._transitionState('planning', {
       message: intent === 'refine'
         ? '正在根据修改要求编译提示词...'
@@ -558,6 +605,7 @@ export async function prepareGeneration(agent, userMessage, options = {}) {
     let compiledPrompt;
     try {
       compiledPrompt = await Promise.race([PromptEnhanceTool.execute(compileInput), prepareDeadlinePromise]);
+      if (runEpoch !== agent._runEpoch) return { cancelled: true, superseded: true, taskId: runTaskId };
       if (compiledPrompt?.aiFailure) enhanceOutcome = 'error';
     } catch (error) {
       enhanceOutcome = timingOutcome(error);
@@ -734,6 +782,9 @@ export async function prepareGeneration(agent, userMessage, options = {}) {
     });
     return preview;
   } catch (error) {
+    // 代际检查在前：被取代的运行最常见的错误就是 research 信号 abort 的
+    // AbortError，取消检查会先命中并把返回值挂到新任务的 taskId 上。
+    if (runEpoch !== agent._runEpoch) return { cancelled: true, superseded: true, taskId: runTaskId };
     if (agent._cancelRequested || agent._state === 'cancelled' || isCancellationError(error)) {
       return { cancelled: true, taskId: agent._taskId };
     }
@@ -748,7 +799,8 @@ export async function prepareGeneration(agent, userMessage, options = {}) {
     });
     throw error;
   } finally {
-    agent._running = false;
+    clearTimeout(deadlineTimer);
+    if (agent._runEpoch === runEpoch) agent._running = false;
     await agent._drainQueue();
   }
 }

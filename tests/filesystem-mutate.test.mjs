@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { FilesystemMutateTool } from '../src/agent/tools/filesystem/mutate.mjs';
-import { Agent } from '../src/agent/index.mjs';
+import { Agent } from '../src/agent/index.ts';
 import { runCli, EXIT } from '../src/cli/agent-cli.mjs';
 
 function fixture() {

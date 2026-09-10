@@ -1,0 +1,648 @@
+/* ============================================================
+   Theme atmosphere — each theme gets one signature layer, the
+   same way Starry Night got its starfield. All decoration is
+   pointer-events:none and honors prefers-reduced-motion.
+   Loaded last so component polish can safely override tokens.
+   ============================================================ */
+
+/* ---- shared display typography ---- */
+:root[data-theme] .floating-preset-card-title h2,
+:root[data-theme] .settings-section-heading h3,
+:root[data-theme] .workspace-section-heading h3,
+:root[data-theme] .sidebar-title-block strong,
+:root[data-theme] .preset-detail-heading h3,
+:root[data-theme] h1,
+:root[data-theme] h2 {
+  font-family: var(--font-display);
+  letter-spacing: .01em;
+}
+
+/* ============================================================
+   Theme surfaces — generic components must follow tokens so
+   every theme (esp. the light palettes) inherits the same surfaces.
+   (This block was carved out of the old presets theme section.)
+   ============================================================ */
+.btn-primary,
+.btn-primary:hover,
+.quick-generate-action,
+.quick-generate-action:hover { color: var(--text-on-accent); }
+.quick-generate-action small { color: color-mix(in srgb, var(--text-on-accent) 72%, transparent); }
+
+.connection-state,
+.quick-generate-status,
+.quick-prompt-card,
+.quick-prompt-card textarea,
+.context-ring,
+.context-ring-popover { background: var(--bg-elevated); }
+.quick-generate-panel { background: var(--bg-floating); border-color: var(--border-tinted); box-shadow: 0 14px 34px var(--shadow-color), inset 0 1px var(--surface-highlight); }
+.quick-generate-orb { background: var(--bg-floating); border-color: var(--border-tinted); }
+.floating-drag-target-hint,
+.quick-generate-confirm { background: var(--bg-overlay); }
+.floating-drag-receive-layer { background: color-mix(in srgb, var(--bg-canvas) 28%, transparent); }
+.sidebar-quick-generate { border-color: var(--accent-border); background: linear-gradient(105deg, var(--accent-bg), transparent); }
+
+.panel-left-content { background: linear-gradient(180deg, var(--surface-highlight), transparent 26%); }
+.msg.user .msg-bubble,
+.msg.user .msg-bubble:hover { background: var(--accent-bg); }
+.thread-section { border-color: var(--border-tinted); background: var(--bg-tinted-surface); box-shadow: 0 14px 30px var(--shadow-color), inset 0 1px var(--surface-highlight); }
+.chat-input-area { border-top-color: var(--border-tinted); background: var(--bg-composer); box-shadow: 0 -16px 38px var(--shadow-color), inset 0 1px var(--surface-highlight); }
+.chat-input-area::before { background: linear-gradient(90deg, transparent, var(--border-tinted), transparent); }
+.composer-intent,
+.model-mode,
+.attachment-chip { border-color: var(--border-tinted); background: var(--bg-elevated); box-shadow: inset 0 1px var(--surface-highlight); }
+.chat-input-row { border-color: var(--border-tinted); background: var(--bg-input); box-shadow: 0 12px 28px var(--shadow-color), inset 0 1px var(--surface-highlight); }
+.chat-input-row:focus-within { border-color: var(--accent); box-shadow: 0 14px 32px var(--shadow-color), 0 0 0 3px var(--accent-bg), inset 0 1px var(--surface-highlight); }
+.chat-input { color: var(--text-primary); }
+.generation-progress-chat .generation-progress-track { background: var(--border-subtle); }
+.h3-video-panel { border-color: var(--accent-border); background: var(--accent-bg); }
+.h3-video-specs span { background: var(--bg-elevated); }
+
+.msg-text pre code { font-size: var(--ui-code-size, 12px); }
+.markdown-diagram { color: var(--text-primary); }
+
+/* ===================== starry — deep night sky ===================== */
+:root[data-theme="starry"] body {
+  background-color: var(--bg-canvas);
+  background-image:
+    radial-gradient(1px 1px at 12% 18%, rgba(255, 255, 255, .6) 50%, transparent 51%),
+    radial-gradient(1px 1px at 22% 60%, rgba(255, 255, 255, .4) 50%, transparent 51%),
+    radial-gradient(2px 2px at 34% 30%, rgba(200, 225, 255, .75) 50%, transparent 51%),
+    radial-gradient(1px 1px at 45% 72%, rgba(255, 255, 255, .35) 50%, transparent 51%),
+    radial-gradient(2px 2px at 58% 22%, rgba(255, 255, 255, .85) 50%, transparent 51%),
+    radial-gradient(1px 1px at 66% 52%, rgba(255, 255, 255, .45) 50%, transparent 51%),
+    radial-gradient(3px 3px at 78% 68%, rgba(170, 210, 255, .9) 50%, transparent 51%),
+    radial-gradient(1px 1px at 88% 30%, rgba(255, 255, 255, .5) 50%, transparent 51%),
+    radial-gradient(2px 2px at 94% 84%, rgba(200, 230, 255, .7) 50%, transparent 51%),
+    radial-gradient(70% 50% at 82% -12%, var(--halo-a), transparent 62%),
+    radial-gradient(55% 45% at -8% 96%, var(--halo-b), transparent 62%);
+  background-repeat: repeat, repeat, repeat, repeat, repeat, repeat, repeat, repeat, repeat, no-repeat, no-repeat;
+}
+
+:root[data-theme="starry"] ::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #2c4068, #1d2d4d);
+  background-clip: padding-box;
+}
+
+:root[data-theme="starry"] ::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #3c5380, #263a60);
+  background-clip: padding-box;
+}
+
+:root[data-theme="starry"] ::selection {
+  background: rgba(110, 160, 255, .55);
+}
+
+:root[data-theme="starry"] .generation-rendering-placeholder {
+  border-color: rgba(120, 160, 240, .30);
+  background: #0d1830;
+}
+:root[data-theme="starry"] .generation-rendering-frame {
+  background: radial-gradient(circle at 30% 35%, rgba(96, 140, 255, .22), transparent 30%), radial-gradient(circle at 72% 65%, rgba(160, 110, 255, .18), transparent 34%);
+}
+:root[data-theme="starry"] .generation-rendering-orb {
+  border-color: rgba(120, 170, 255, .40);
+  animation: starry-orb-pulse 2.8s ease-in-out infinite;
+}
+:root[data-theme="starry"] .generation-rendering-meta {
+  color: rgba(200, 220, 250, .80);
+  text-shadow: 0 1px 10px rgba(60, 90, 180, .45);
+}
+:root[data-theme="starry"] .generation-rendering-meta strong {
+  color: #dbe6ff;
+}
+
+@keyframes starry-orb-pulse {
+  0%, 100% {
+    transform: translate(-50%, -50%) scale(.88);
+    opacity: .5;
+    box-shadow: 0 0 24px rgba(96, 140, 255, .25), inset 0 0 16px rgba(180, 140, 255, .16);
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.1);
+    opacity: 1;
+    box-shadow: 0 0 44px rgba(130, 170, 255, .48), inset 0 0 28px rgba(190, 150, 255, .30);
+  }
+}
+
+:root[data-theme="starry"] .panel-left {
+  background-color: var(--bg-canvas);
+  background-image:
+    radial-gradient(1px 1px at 8% 12%, rgba(255, 255, 255, .5) 50%, transparent 51%),
+    radial-gradient(1px 1px at 18% 44%, rgba(255, 255, 255, .35) 50%, transparent 51%),
+    radial-gradient(2px 2px at 31% 26%, rgba(190, 215, 255, .75) 50%, transparent 51%),
+    radial-gradient(1px 1px at 42% 66%, rgba(255, 255, 255, .4) 50%, transparent 51%),
+    radial-gradient(2px 2px at 55% 38%, rgba(255, 255, 255, .8) 50%, transparent 51%),
+    radial-gradient(1px 1px at 63% 78%, rgba(255, 255, 255, .45) 50%, transparent 51%),
+    radial-gradient(2px 2px at 74% 14%, rgba(170, 205, 255, .85) 50%, transparent 51%),
+    radial-gradient(1px 1px at 84% 48%, rgba(255, 255, 255, .55) 50%, transparent 51%),
+    radial-gradient(2px 2px at 92% 74%, rgba(190, 220, 255, .7) 50%, transparent 51%),
+    radial-gradient(1px 1px at 26% 88%, rgba(255, 255, 255, .5) 50%, transparent 51%),
+    radial-gradient(60% 40% at 88% -8%, rgba(64, 112, 255, .14), transparent 62%),
+    var(--content-gradient);
+  background-repeat: repeat, repeat, repeat, repeat, repeat, repeat, repeat, repeat, repeat, repeat, no-repeat, no-repeat;
+}
+
+:root[data-theme="starry"] .panel-left::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  opacity: .35;
+  pointer-events: none;
+  background-image:
+    radial-gradient(3px 3px at 24% 32%, rgba(255, 255, 255, .95) 40%, transparent 60%),
+    radial-gradient(2px 2px at 58% 12%, rgba(225, 240, 255, .9) 40%, transparent 60%),
+    radial-gradient(2px 2px at 82% 60%, rgba(255, 255, 255, .85) 40%, transparent 60%),
+    radial-gradient(2px 2px at 12% 76%, rgba(255, 255, 255, .8) 40%, transparent 60%);
+  animation: starry-twinkle 5s ease-in-out infinite;
+}
+
+@keyframes starry-twinkle {
+  0%, 44%, 100% { opacity: .35; }
+  8%, 60% { opacity: 1; }
+  24% { opacity: .55; }
+  74% { opacity: .2; }
+}
+
+:root[data-theme="starry"] .project-sidebar,
+:root[data-theme="starry"] .workspace-sidebar {
+  background-image: linear-gradient(180deg, rgba(96, 140, 235, .055), transparent 30%), linear-gradient(180deg, transparent 60%, rgba(46, 66, 124, .12));
+}
+
+:root[data-theme="starry"] .floating-preset-view { background: var(--bg-floating); }
+:root[data-theme="starry"] .floating-preset-detail { background: #0e182c; }
+:root[data-theme="starry"] .chat-input { background: var(--bg-input); }
+
+:root[data-theme="starry"] .empty-state-icon {
+  border-color: rgba(120, 160, 240, .4);
+  background: rgba(16, 26, 44, .6);
+  color: var(--accent);
+  box-shadow: 0 0 18px rgba(96, 140, 255, .22), inset 0 0 12px rgba(96, 140, 255, .12);
+}
+
+:root[data-theme="starry"] body::before {
+  content: '';
+  position: fixed;
+  z-index: 3;
+  top: 0;
+  left: 0;
+  width: 140px;
+  height: 2px;
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(70, 120, 220, .25) 45%, rgba(220, 235, 255, .95) 100%);
+  filter: blur(.4px);
+  animation: starry-meteor 12s linear infinite;
+}
+
+@keyframes starry-meteor {
+  0%, 82% { transform: translate3d(-18vw, -14vh, 0) rotate(38deg); opacity: 0; }
+  87% { opacity: 1; }
+  96% { transform: translate3d(70vw, 106vh, 0) rotate(38deg); opacity: 0; }
+  100% { transform: translate3d(70vw, 106vh, 0) rotate(38deg); opacity: 0; }
+}
+
+:root[data-theme="starry"] .quick-generate-orb {
+  border-color: rgba(140, 180, 255, .45);
+  background-color: rgba(13, 20, 36, .97);
+  background-image:
+    radial-gradient(120% 120% at 32% 24%, rgba(88, 132, 224, .55), transparent 64%),
+    radial-gradient(1px 1px at 30% 34%, rgba(255, 255, 255, .85) 50%, transparent 51%),
+    radial-gradient(1px 1px at 58% 22%, rgba(255, 255, 255, .6) 50%, transparent 51%),
+    radial-gradient(2px 2px at 74% 52%, rgba(200, 225, 255, .9) 50%, transparent 51%),
+    radial-gradient(1px 1px at 44% 66%, rgba(255, 255, 255, .5) 50%, transparent 51%);
+  box-shadow: 0 0 26px rgba(96, 140, 255, .35), inset 0 0 14px rgba(130, 170, 255, .22);
+}
+:root[data-theme="starry"] .quick-generate-orb:hover {
+  box-shadow: 0 0 0 5px var(--accent-bg), 0 0 36px rgba(110, 160, 255, .5), inset 0 0 14px rgba(130, 170, 255, .26);
+}
+:root[data-theme="starry"] .quick-generate-float {
+  filter: drop-shadow(0 14px 30px rgba(2, 6, 18, .55)) drop-shadow(0 0 24px rgba(80, 120, 230, .18));
+}
+:root[data-theme="starry"] .quick-generate-panel {
+  background-color: var(--bg-floating);
+  background-image:
+    radial-gradient(90% 70% at 85% -10%, rgba(64, 112, 255, .16), transparent 60%),
+    radial-gradient(1px 1px at 14% 18%, rgba(255, 255, 255, .4) 50%, transparent 51%),
+    radial-gradient(1px 1px at 42% 30%, rgba(255, 255, 255, .3) 50%, transparent 51%),
+    radial-gradient(2px 2px at 64% 12%, rgba(190, 215, 255, .7) 50%, transparent 51%),
+    radial-gradient(1px 1px at 82% 38%, rgba(255, 255, 255, .35) 50%, transparent 51%),
+    radial-gradient(1px 1px at 28% 70%, rgba(255, 255, 255, .3) 50%, transparent 51%),
+    radial-gradient(2px 2px at 90% 74%, rgba(190, 215, 255, .6) 50%, transparent 51%),
+    radial-gradient(1px 1px at 58% 86%, rgba(255, 255, 255, .35) 50%, transparent 51%);
+  box-shadow: 0 14px 38px var(--shadow-color), 0 0 30px rgba(96, 140, 255, .12), inset 0 1px var(--surface-highlight);
+}
+:root[data-theme="starry"] .floating-drag-receive-orb,
+:root[data-theme="starry"] .floating-card-drag-ghost {
+  background: radial-gradient(circle at 35% 30%, rgba(88, 132, 224, .85), rgba(13, 20, 36, .96) 70%), radial-gradient(1px 1px at 26% 38%, rgba(255, 255, 255, .9) 50%, transparent 51%), radial-gradient(2px 2px at 60% 30%, rgba(200, 225, 255, .8) 50%, transparent 51%), radial-gradient(1px 1px at 72% 62%, rgba(255, 255, 255, .6) 50%, transparent 51%), radial-gradient(1px 1px at 40% 70%, rgba(255, 255, 255, .5) 50%, transparent 51%);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .4), 0 0 0 7px var(--accent-bg), 0 0 38px rgba(110, 160, 255, .42);
+}
+:root[data-theme="starry"] .floating-preset-view {
+  border-color: rgba(150, 190, 240, .34);
+  box-shadow: 0 0 26px rgba(96, 140, 255, .14), inset 0 1px rgba(255, 255, 255, .03);
+}
+
+/* ===================== light — frost sheen ===================== */
+:root[data-theme="light"] body,
+:root[data-theme="paper"] body,
+:root[data-theme="mist"] body,
+:root[data-theme="warm"] body {
+  background-color: var(--bg-canvas);
+  background-image:
+    radial-gradient(120% 60% at 50% -10%, var(--halo-a), transparent 55%),
+    radial-gradient(90% 45% at 105% 105%, var(--halo-b), transparent 60%);
+  background-repeat: no-repeat;
+}
+
+:root[data-theme="light"] body::before {
+  content: '';
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  opacity: calc(var(--atmosphere-opacity) * .5);
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .55), transparent 12%);
+}
+
+/* ===================== dark — graphite top light ===================== */
+:root[data-theme="dark"] body {
+  background-color: var(--bg-canvas);
+  background-image:
+    radial-gradient(110% 50% at 50% -10%, rgba(130, 160, 195, .08), transparent 58%),
+    radial-gradient(80% 40% at 105% 108%, rgba(70, 95, 130, .10), transparent 60%);
+  background-repeat: no-repeat;
+}
+
+:root[data-theme="dark"] body::before {
+  content: '';
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  opacity: calc(var(--atmosphere-opacity) * .8);
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(235, 247, 255, .05), transparent 8%);
+}
+
+/* ===================== paper — paper grain ===================== */
+:root[data-theme="paper"] body::before {
+  content: '';
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  opacity: calc(var(--atmosphere-opacity) * .5);
+  pointer-events: none;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(98, 78, 50, .028) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgba(98, 78, 50, .022) 0 1px, transparent 1px 3px);
+}
+
+:root[data-theme="paper"] .panel-left::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  opacity: .35;
+  pointer-events: none;
+  background: radial-gradient(70% 45% at 15% -8%, rgba(156, 128, 82, .10), transparent 60%);
+}
+
+/* ===================== mist — drifting fog bands ===================== */
+:root[data-theme="mist"] body::before {
+  content: '';
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  opacity: calc(var(--atmosphere-opacity) * .8);
+  pointer-events: none;
+  background:
+    radial-gradient(52% 22% at 22% 22%, rgba(184, 202, 214, .34), transparent 70%),
+    radial-gradient(60% 26% at 76% 62%, rgba(170, 192, 208, .30), transparent 70%);
+  animation: mist-drift 18s ease-in-out infinite alternate;
+}
+
+@keyframes mist-drift {
+  from { transform: translate3d(-1.2%, 0, 0); }
+  to { transform: translate3d(1.4%, -.8%, 0); }
+}
+
+/* ===================== warm — golden hour glow ===================== */
+:root[data-theme="warm"] body::before {
+  content: '';
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  opacity: calc(var(--atmosphere-opacity) * .9);
+  pointer-events: none;
+  background:
+    radial-gradient(58% 40% at 12% -4%, rgba(220, 150, 58, .16), transparent 62%),
+    radial-gradient(48% 34% at 100% 104%, rgba(190, 104, 38, .10), transparent 62%);
+}
+
+:root[data-theme="warm"] .panel-left::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  opacity: .5;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 238, 204, .34), transparent 24%);
+}
+
+/* ===================== navy — aurora bands ===================== */
+:root[data-theme="navy"] body {
+  background-color: var(--bg-canvas);
+  background-image:
+    radial-gradient(90% 55% at 85% -8%, var(--halo-a), transparent 62%),
+    radial-gradient(70% 45% at -6% 100%, var(--halo-b), transparent 64%);
+  background-repeat: no-repeat;
+}
+
+:root[data-theme="navy"] body::before {
+  content: '';
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  opacity: calc(var(--atmosphere-opacity) * .75);
+  pointer-events: none;
+  background:
+    linear-gradient(115deg, transparent 18%, rgba(74, 163, 255, .10) 34%, transparent 48%),
+    linear-gradient(295deg, transparent 58%, rgba(107, 220, 255, .07) 72%, transparent 86%);
+  animation: navy-aurora 16s ease-in-out infinite alternate;
+}
+
+@keyframes navy-aurora {
+  from { transform: translate3d(-.8%, .4%, 0); }
+  to { transform: translate3d(.9%, -.5%, 0); }
+}
+
+:root[data-theme="navy"] .project-sidebar,
+:root[data-theme="navy"] .workspace-sidebar {
+  background-image: linear-gradient(180deg, rgba(74, 163, 255, .06), transparent 30%), linear-gradient(180deg, transparent 64%, rgba(107, 220, 255, .08));
+}
+
+/* ===================== generation rendering atmosphere ===================== */
+:root[data-theme="light"] .generation-rendering-placeholder,
+:root[data-theme="paper"] .generation-rendering-placeholder,
+:root[data-theme="mist"] .generation-rendering-placeholder,
+:root[data-theme="warm"] .generation-rendering-placeholder {
+  border-color: rgba(80, 130, 170, .25);
+  background: #eef4fb;
+}
+:root[data-theme="light"] .generation-rendering-frame,
+:root[data-theme="paper"] .generation-rendering-frame,
+:root[data-theme="mist"] .generation-rendering-frame,
+:root[data-theme="warm"] .generation-rendering-frame {
+  background: radial-gradient(circle at 30% 35%, rgba(51, 156, 255, .18), transparent 30%), radial-gradient(circle at 72% 65%, rgba(161, 112, 255, .14), transparent 34%);
+}
+:root[data-theme="light"] .generation-rendering-orb,
+:root[data-theme="paper"] .generation-rendering-orb,
+:root[data-theme="mist"] .generation-rendering-orb,
+:root[data-theme="warm"] .generation-rendering-orb {
+  border-color: rgba(51, 156, 255, .32);
+  box-shadow: 0 0 30px rgba(51, 156, 255, .22), inset 0 0 20px rgba(154, 107, 255, .14);
+}
+:root[data-theme="light"] .generation-rendering-meta,
+:root[data-theme="paper"] .generation-rendering-meta,
+:root[data-theme="mist"] .generation-rendering-meta,
+:root[data-theme="warm"] .generation-rendering-meta {
+  color: rgba(30, 45, 60, .78);
+  text-shadow: 0 1px 8px rgba(255, 255, 255, .5);
+}
+:root[data-theme="light"] .generation-rendering-meta strong,
+:root[data-theme="paper"] .generation-rendering-meta strong,
+:root[data-theme="mist"] .generation-rendering-meta strong,
+:root[data-theme="warm"] .generation-rendering-meta strong {
+  color: #22354a;
+}
+
+:root[data-theme="navy"] .generation-rendering-placeholder {
+  border-color: rgba(110, 155, 220, .3);
+  background: #0e1a2c;
+}
+:root[data-theme="navy"] .generation-rendering-frame {
+  background: radial-gradient(circle at 30% 35%, rgba(77, 163, 255, .2), transparent 30%), radial-gradient(circle at 72% 65%, rgba(107, 220, 255, .14), transparent 34%);
+}
+:root[data-theme="navy"] .generation-rendering-orb {
+  border-color: rgba(110, 170, 255, .36);
+  box-shadow: 0 0 26px rgba(77, 163, 255, .24), inset 0 0 18px rgba(107, 220, 255, .14);
+}
+:root[data-theme="navy"] .generation-rendering-meta {
+  color: rgba(190, 214, 244, .8);
+  text-shadow: 0 1px 10px rgba(30, 60, 120, .4);
+}
+:root[data-theme="navy"] .generation-rendering-meta strong {
+  color: #dbe6ff;
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] body {
+    background-color: var(--bg-canvas);
+    background-image:
+      radial-gradient(120% 60% at 50% -10%, var(--halo-a), transparent 55%),
+      radial-gradient(90% 45% at 105% 105%, var(--halo-b), transparent 60%);
+    background-repeat: no-repeat;
+  }
+  :root[data-theme="system"] .generation-rendering-placeholder {
+    border-color: rgba(80, 130, 170, .25);
+    background: #eef4fb;
+  }
+  :root[data-theme="system"] .generation-rendering-frame {
+    background: radial-gradient(circle at 30% 35%, rgba(51, 156, 255, .18), transparent 30%), radial-gradient(circle at 72% 65%, rgba(161, 112, 255, .14), transparent 34%);
+  }
+  :root[data-theme="system"] .generation-rendering-orb {
+    border-color: rgba(51, 156, 255, .32);
+    box-shadow: 0 0 30px rgba(51, 156, 255, .22), inset 0 0 20px rgba(154, 107, 255, .14);
+  }
+  :root[data-theme="system"] .generation-rendering-meta {
+    color: rgba(30, 45, 60, .78);
+    text-shadow: 0 1px 8px rgba(255, 255, 255, .5);
+  }
+  :root[data-theme="system"] .generation-rendering-meta strong {
+    color: #22354a;
+  }
+}
+
+/* ---- reduced motion: CSS-level fallback (JS data attr also exists) ---- */
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme] body::before,
+  :root[data-theme] .panel-left::before,
+  :root[data-theme] .generation-rendering-orb,
+  :root[data-theme] .quick-generate-orb {
+    animation: none !important;
+  }
+}
+
+
+/* ===================== material language =====================
+   Theme identity needs to survive opaque work surfaces. These rules carry
+   the material treatment into the shell, panels, composer and floating UI. */
+
+/* Frost: cool white layers with a crisp lit edge. */
+:root[data-theme="light"] .header,
+:root[data-theme="light"] .project-sidebar,
+:root[data-theme="light"] .workspace-sidebar,
+:root[data-theme="light"] .panel-left {
+  background-color: var(--bg-sidebar);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, .92), rgba(218, 229, 240, .20) 42%, transparent);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .95), inset -1px 0 rgba(111, 145, 178, .10);
+}
+:root[data-theme="light"] .thread-section,
+:root[data-theme="light"] .quick-generate-panel,
+:root[data-theme="light"] .modal-panel,
+:root[data-theme="light"] .settings-panel,
+:root[data-theme="light"] .floating-preset-view {
+  background-color: rgba(255, 255, 255, .86);
+  background-image: linear-gradient(135deg, rgba(255, 255, 255, .82), transparent 44%);
+  backdrop-filter: blur(14px) saturate(1.05);
+  -webkit-backdrop-filter: blur(14px) saturate(1.05);
+}
+
+/* Graphite: dry, machined surfaces and restrained metallic seams. */
+:root[data-theme="dark"] .header,
+:root[data-theme="dark"] .project-sidebar,
+:root[data-theme="dark"] .workspace-sidebar,
+:root[data-theme="dark"] .panel-left {
+  background-color: var(--bg-sidebar);
+  background-image: repeating-linear-gradient(135deg, rgba(193, 214, 232, .026) 0 1px, transparent 1px 6px), linear-gradient(180deg, rgba(223, 238, 250, .055), transparent 22%);
+  box-shadow: inset 0 1px rgba(235, 246, 255, .06), inset -1px 0 rgba(181, 207, 228, .05);
+}
+:root[data-theme="dark"] .thread-section,
+:root[data-theme="dark"] .quick-generate-panel,
+:root[data-theme="dark"] .modal-panel,
+:root[data-theme="dark"] .settings-panel,
+:root[data-theme="dark"] .floating-preset-view {
+  background-image: repeating-linear-gradient(135deg, rgba(193, 214, 232, .018) 0 1px, transparent 1px 7px), linear-gradient(180deg, rgba(230, 242, 252, .035), transparent 28%);
+  box-shadow: 0 14px 30px var(--shadow-color), inset 0 1px rgba(238, 247, 255, .055);
+}
+
+/* Paper: visible fibers, ink-weight borders, and almost no glossy depth. */
+:root[data-theme="paper"] .header,
+:root[data-theme="paper"] .project-sidebar,
+:root[data-theme="paper"] .workspace-sidebar,
+:root[data-theme="paper"] .panel-left,
+:root[data-theme="paper"] .chat-input-area {
+  background-color: var(--bg-sidebar);
+  background-image: repeating-linear-gradient(0deg, rgba(104, 79, 43, .038) 0 1px, transparent 1px 4px), repeating-linear-gradient(90deg, rgba(151, 120, 76, .022) 0 1px, transparent 1px 7px), linear-gradient(135deg, rgba(255, 255, 255, .58), transparent 48%);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .72);
+}
+:root[data-theme="paper"] .thread-section,
+:root[data-theme="paper"] .quick-generate-panel,
+:root[data-theme="paper"] .modal-panel,
+:root[data-theme="paper"] .settings-panel,
+:root[data-theme="paper"] .floating-preset-view,
+:root[data-theme="paper"] .chat-input-row {
+  background-color: var(--bg-tinted-surface);
+  background-image: repeating-linear-gradient(0deg, rgba(104, 79, 43, .026) 0 1px, transparent 1px 4px), repeating-linear-gradient(90deg, rgba(151, 120, 76, .016) 0 1px, transparent 1px 7px);
+  box-shadow: 0 5px 14px rgba(78, 59, 35, .08), inset 0 1px rgba(255, 255, 255, .72);
+}
+:root[data-theme="paper"] .btn:not(.btn-primary),
+:root[data-theme="paper"] .model-mode,
+:root[data-theme="paper"] .composer-intent {
+  box-shadow: inset 0 1px rgba(255, 255, 255, .68);
+}
+
+/* Mist: desaturated translucent glass lets the fog live inside the workspace. */
+:root[data-theme="mist"] .header,
+:root[data-theme="mist"] .project-sidebar,
+:root[data-theme="mist"] .workspace-sidebar,
+:root[data-theme="mist"] .panel-left,
+:root[data-theme="mist"] .chat-input-area {
+  background-color: color-mix(in srgb, var(--bg-sidebar) 78%, transparent);
+  background-image: linear-gradient(125deg, rgba(255, 255, 255, .62), rgba(214, 230, 233, .18) 48%, transparent 72%);
+  border-color: rgba(102, 135, 145, .22);
+  backdrop-filter: blur(20px) saturate(.82);
+  -webkit-backdrop-filter: blur(20px) saturate(.82);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .66), inset -1px 0 rgba(255, 255, 255, .28);
+}
+:root[data-theme="mist"] .thread-section,
+:root[data-theme="mist"] .quick-generate-panel,
+:root[data-theme="mist"] .modal-panel,
+:root[data-theme="mist"] .settings-panel,
+:root[data-theme="mist"] .floating-preset-view,
+:root[data-theme="mist"] .chat-input-row {
+  background-color: rgba(249, 252, 252, .72);
+  background-image: linear-gradient(135deg, rgba(255, 255, 255, .70), rgba(205, 225, 228, .12) 52%, transparent);
+  border-color: rgba(101, 135, 145, .22);
+  backdrop-filter: blur(18px) saturate(.84);
+  -webkit-backdrop-filter: blur(18px) saturate(.84);
+  box-shadow: 0 12px 28px rgba(67, 94, 105, .10), inset 0 1px rgba(255, 255, 255, .78);
+}
+
+/* Golden hour: warm paper, low-angle light, and amber depth. */
+:root[data-theme="warm"] .header,
+:root[data-theme="warm"] .project-sidebar,
+:root[data-theme="warm"] .workspace-sidebar,
+:root[data-theme="warm"] .panel-left,
+:root[data-theme="warm"] .chat-input-area {
+  background-color: var(--bg-sidebar);
+  background-image: radial-gradient(90% 80% at 0% 0%, rgba(255, 210, 142, .34), transparent 64%), linear-gradient(135deg, rgba(255, 255, 255, .54), transparent 52%);
+  box-shadow: inset 0 1px rgba(255, 248, 232, .88), inset -1px 0 rgba(157, 104, 46, .10);
+}
+:root[data-theme="warm"] .thread-section,
+:root[data-theme="warm"] .quick-generate-panel,
+:root[data-theme="warm"] .modal-panel,
+:root[data-theme="warm"] .settings-panel,
+:root[data-theme="warm"] .floating-preset-view,
+:root[data-theme="warm"] .chat-input-row {
+  background-color: var(--bg-tinted-surface);
+  background-image: linear-gradient(145deg, rgba(255, 246, 224, .78), transparent 48%), radial-gradient(70% 45% at 100% 100%, rgba(197, 113, 39, .10), transparent 68%);
+  box-shadow: 0 11px 26px rgba(108, 68, 30, .11), inset 0 1px rgba(255, 249, 237, .88);
+}
+:root[data-theme="warm"] .quick-generate-orb {
+  background: radial-gradient(circle at 30% 24%, rgba(255, 221, 152, .82), rgba(161, 91, 28, .16) 44%, var(--bg-floating) 72%);
+  border-color: rgba(150, 96, 31, .38);
+  box-shadow: 0 0 0 5px rgba(150, 96, 31, .07), 0 14px 30px rgba(108, 68, 30, .16);
+}
+
+/* Night watch: deep water, teal horizon, and a cold luminous rim. */
+:root[data-theme="navy"] .header,
+:root[data-theme="navy"] .project-sidebar,
+:root[data-theme="navy"] .workspace-sidebar,
+:root[data-theme="navy"] .panel-left {
+  background-color: var(--bg-sidebar);
+  background-image: linear-gradient(154deg, rgba(57, 213, 197, .09), transparent 32%), linear-gradient(180deg, rgba(117, 177, 255, .10), transparent 34%), linear-gradient(90deg, transparent 72%, rgba(4, 12, 24, .18));
+  box-shadow: inset 0 1px rgba(157, 220, 255, .10), inset -1px 0 rgba(100, 198, 221, .10);
+}
+:root[data-theme="navy"] .thread-section,
+:root[data-theme="navy"] .quick-generate-panel,
+:root[data-theme="navy"] .modal-panel,
+:root[data-theme="navy"] .settings-panel,
+:root[data-theme="navy"] .floating-preset-view,
+:root[data-theme="navy"] .chat-input-row {
+  background-color: rgba(17, 39, 60, .88);
+  background-image: linear-gradient(145deg, rgba(82, 183, 255, .10), transparent 44%), linear-gradient(18deg, transparent 64%, rgba(56, 209, 194, .065));
+  border-color: rgba(105, 174, 213, .28);
+  box-shadow: 0 14px 34px rgba(2, 10, 22, .28), inset 0 1px rgba(160, 223, 255, .08);
+}
+:root[data-theme="navy"] .quick-generate-orb {
+  background: radial-gradient(circle at 32% 28%, rgba(92, 194, 255, .56), rgba(34, 101, 142, .24) 42%, #102139 74%);
+  border-color: rgba(103, 209, 230, .48);
+  box-shadow: 0 0 0 5px rgba(77, 163, 255, .09), 0 0 30px rgba(58, 204, 190, .18);
+}
+
+
+/* The application canvas is opaque, so place each signature atmosphere here
+   rather than only on body where work surfaces would hide it. */
+:root[data-theme="light"] .app {
+  background-image: radial-gradient(96% 48% at 50% -12%, rgba(105, 173, 242, .13), transparent 64%), linear-gradient(180deg, rgba(255, 255, 255, .48), transparent 24%);
+}
+:root[data-theme="dark"] .app {
+  background-image: radial-gradient(90% 44% at 50% -14%, rgba(142, 180, 211, .075), transparent 64%), repeating-linear-gradient(135deg, rgba(185, 206, 225, .014) 0 1px, transparent 1px 8px);
+}
+:root[data-theme="paper"] .app {
+  background-image: repeating-linear-gradient(0deg, rgba(104, 79, 43, .028) 0 1px, transparent 1px 4px), repeating-linear-gradient(90deg, rgba(151, 120, 76, .015) 0 1px, transparent 1px 8px), radial-gradient(78% 42% at 10% -8%, rgba(179, 137, 77, .10), transparent 68%);
+}
+:root[data-theme="mist"] .app {
+  background-color: rgba(241, 244, 246, .78);
+  background-image: radial-gradient(60% 28% at 8% 22%, rgba(145, 177, 183, .32), transparent 72%), radial-gradient(72% 32% at 86% 66%, rgba(178, 198, 210, .40), transparent 74%), linear-gradient(145deg, rgba(255, 255, 255, .38), transparent 42%);
+}
+:root[data-theme="warm"] .app {
+  background-image: radial-gradient(72% 50% at 2% -12%, rgba(223, 143, 45, .20), transparent 64%), radial-gradient(55% 34% at 100% 100%, rgba(190, 104, 38, .09), transparent 70%), linear-gradient(135deg, rgba(255, 250, 240, .40), transparent 46%);
+}
+:root[data-theme="navy"] .app {
+  background-image: radial-gradient(80% 50% at 92% -10%, rgba(62, 184, 244, .16), transparent 62%), linear-gradient(153deg, transparent 32%, rgba(57, 213, 197, .08) 46%, transparent 59%), radial-gradient(74% 40% at -6% 108%, rgba(38, 107, 180, .18), transparent 68%);
+}

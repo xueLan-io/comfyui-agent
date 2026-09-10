@@ -61,7 +61,7 @@ export function registerPresetsIpc(ctx) {
     const dialogMethod = properties.includes('showSaveDialog') ? 'showSaveDialog' : 'showOpenDialog';
     const normalizedProperties = properties.filter(value => value !== 'showSaveDialog');
     const result = await dialog[dialogMethod](getMainWindow(), { properties: normalizedProperties, title, filters });
-    return result.canceled ? '' : result.filePaths[0] || '';
+    return result.canceled ? '' : (result.filePath || result.filePaths?.[0] || '');
   }
 
   function resolvePresetInput(input = {}) {
@@ -203,6 +203,9 @@ export function registerPresetsIpc(ctx) {
         }
         await walk(temp);
         return { files: found, cleanup: () => rm(temp, { recursive: true, force: true }) };
+      } catch (error) {
+        await rm(temp, { recursive: true, force: true }).catch(() => {});
+        throw error;
       } finally {
         // importGlobalPreset owns cleanup after it has copied the resources.
       }

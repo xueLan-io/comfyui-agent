@@ -223,6 +223,13 @@ export class BatchScheduler {
       batch.progress = progressOf(batch.jobs);
       await this._persist();
       this.emit('batch:status', { batchId, status: batch.status, progress: batch.progress });
+      // A retryJob() issued while this run was draining re-queued a job the
+      // workers' snapshot queue can never see; resume it now that the run has
+      // released its controller.
+      if (batch._retryPending && batch.status === 'interrupted' && !controller.signal.aborted && !batch._pauseRequested) {
+        batch._retryPending = false;
+        void this.start(batchId).catch(error => console.error('[batch] retry resume failed:', error));
+      }
     }
     return this.publicBatch(batchId);
   }
@@ -314,7 +321,12 @@ export class BatchScheduler {
     await this._persist();
     // Restart the run (idempotent: start() is a no-op while already running).
     if (batch.status !== 'running' && !this._controllers.has(batchId)) {
-      void this.start(batchId);
+      void this.start(batchId).catch(error => console.error('[batch] restart failed:', error));
+    } else {
+      // Workers iterate the queue snapshot captured at start(): a job re-queued
+      // mid-run would be stranded as 'pending' forever. Ask the draining run
+      // to resume it (see start()'s finally block).
+      batch._retryPending = true;
     }
     return this.publicBatch(batchId);
   }

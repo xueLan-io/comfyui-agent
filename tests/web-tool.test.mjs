@@ -490,3 +490,84 @@ test('clearSystemProxyCache resets the cached system proxy', () => {
   clearSystemProxyCache();
   clearSystemProxyCache();
 });
+
+// --- 搜索精准度与 Bing 强化 ---
+
+test('bing search url picks market by query language', async () => {
+  const urls = [];
+  const fetchImpl = async url => {
+    urls.push(String(url));
+    return response('<li class="b_algo"><h2><a href="https://93.184.216.34/a">A</a></h2></li>');
+  };
+  const tool = createWebTool(fetchImpl, async () => [{ address: '93.184.216.34' }], { resolveProxy: () => null, failureCooldownMs: 0 });
+  await tool.execute({ action: 'search', query: '原神 角色', providers: ['bing'], cacheTtlMs: 0 });
+  await tool.execute({ action: 'search', query: 'Hero appearance', providers: ['bing'], cacheTtlMs: 0 });
+  const cnUrl = urls[0];
+  const enUrl = urls[1];
+  assert.match(cnUrl, /cn\.bing\.com\/search/);
+  assert.match(cnUrl, /mkt=zh-CN/);
+  assert.match(cnUrl, /setlang=zh-hans/);
+  assert.match(enUrl, /mkt=en-US/);
+  assert.match(enUrl, /setlang=en-us/);
+  assert.match(enUrl, /count=20/);
+});
+
+test('parseBingResults decodes versioned (a1-prefixed) redirect urls', () => {
+  // u=a1aHR0cHM6... : 新版跳转带 a1 版本前缀，剥离后才是 base64 目标链接
+  const html = '<li class="b_algo"><h2><a href="https://www.bing.com/ck/a?!&&p=abc&u=a1aHR0cHM6Ly93aWtpLmV4YW1wbGUuY29tL2hlcm8%3d&ntb=1">Hero</a></h2><div class="b_caption"><p class="b_lineclamp4">Blue eyes</p></div></li>';
+  const results = parseBingResults(html, 10);
+  assert.equal(results[0].url, 'https://wiki.example.com/hero');
+  assert.equal(results[0].title, 'Hero');
+  assert.equal(results[0].snippet, 'Blue eyes');
+});
+
+test('parseBingResults takes whole h2 titles and new slug snippets', () => {
+  // </a> 后带标注元素的标题 + b_algoSlug 摘要形态
+  const html = '<li class="b_algo"><h2><a href="https://93.184.216.34/x">Hero</a> <span class="b_badge">Official</span></h2><p class="b_algoSlug">Silver hair and red coat.</p></li>';
+  const results = parseBingResults(html, 10);
+  assert.equal(results[0].title, 'Hero Official');
+  assert.equal(results[0].snippet, 'Silver hair and red coat.');
+});
+
+test('parseBingResults drops undecodable bing self redirects', () => {
+  const html = '<li class="b_algo"><h2><a href="https://www.bing.com/ck/a?!&&p=x&ntb=1">Broken</a></h2></li>';
+  assert.deepEqual(parseBingResults(html, 10), []);
+});
+
+test('merged results cap per-host entries but exempt search redirect links', async () => {
+  const bingHtml = [
+    '<li class="b_algo"><h2><a href="https://wiki.example.com/a">A</a></h2></li>',
+    '<li class="b_algo"><h2><a href="https://wiki.example.com/b">B</a></h2></li>',
+    '<li class="b_algo"><h2><a href="https://wiki.example.com/c">C</a></h2></li>',
+    '<li class="b_algo"><h2><a href="https://fan.example.org/d">D</a></h2></li>',
+  ].join('');
+  // 百度结果的 /link 跳转 URL 与真实目标域名无关，不占域名配额
+  const baiduHtml = [
+    '<h3 class="t"><a href="http://www.baidu.com/link?url=1">E</a></h3>',
+    '<h3 class="t"><a href="http://www.baidu.com/link?url=2">F</a></h3>',
+    '<h3 class="t"><a href="http://www.baidu.com/link?url=3">G</a></h3>',
+  ].join('');
+  const fetchImpl = async url => {
+    if (String(url).includes('bing.com')) return response(bingHtml);
+    if (String(url).includes('duckduckgo.com')) return response('');
+    return response(baiduHtml);
+  };
+  const tool = createWebTool(fetchImpl, async () => [{ address: '93.184.216.34' }], { resolveProxy: () => null });
+  const result = await tool.execute({ action: 'search', query: 'Hero appearance' });
+  assert.equal(result.error, undefined);
+  assert.deepEqual(result.results.map(item => item.title), ['A', 'B', 'D', 'E', 'F', 'G']);
+});
+
+test('merged results rank trusted sources ahead of unknown providers', async () => {
+  const policy = { officialDomains: ['wiki.example.com'] };
+  const fetchImpl = async url => {
+    if (String(url).includes('bing.com')) return response('<li class="b_algo"><h2><a href="https://forum.example.org/x">Forum</a></h2></li>');
+    if (String(url).includes('duckduckgo.com')) return response('');
+    return response('<h3 class="t"><a href="https://wiki.example.com/official">Official wiki</a></h3>');
+  };
+  const tool = createWebTool(fetchImpl, async () => [{ address: '93.184.216.34' }], { resolveProxy: () => null });
+  const result = await tool.execute({ action: 'search', query: 'Hero appearance', sourcePolicy: policy });
+  assert.equal(result.results[0].title, 'Official wiki');
+  assert.equal(result.results[0].trustLevel, 'official');
+  assert.equal(result.results[1].title, 'Forum');
+});

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CloudPolicyBlockedError, CloudPolicyRouter, reviewCloudMessages } from '../src/agent/llm/cloud-policy-router.mjs';
-import { LLMProvider } from '../src/agent/llm/provider.mjs';
+import { LLMProvider } from '../src/agent/llm/provider.ts';
 
 const LOCAL_AND_CLOUD = [
   { id: 'local', type: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', models: [{ id: 'local-model' }] },

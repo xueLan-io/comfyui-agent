@@ -38,12 +38,12 @@ class Program
             Directory.Move(stagingApp, appDir);
             Directory.Delete(staging, true);
             File.Delete(packagePath);
-            Process process = Process.Start(new ProcessStartInfo(launcher) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(launcher) });
+            Process process = Process.Start(new ProcessStartInfo(launcher) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(launcher) });
             if (process != null && process.WaitForExit(10000))
             {
                 if (Directory.Exists(appDir)) Directory.Delete(appDir, true);
                 if (Directory.Exists(backup)) Directory.Move(backup, appDir);
-                Process.Start(new ProcessStartInfo(launcher) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(launcher) });
+                Process.Start(new ProcessStartInfo(launcher) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(launcher) });
                 File.WriteAllText(log, "Updated application exited during health check; restored the previous version.");
             }
             else if (Directory.Exists(backup)) Directory.Delete(backup, true);
@@ -56,7 +56,7 @@ class Program
                 if (Directory.Exists(backup)) Directory.Move(backup, appDir);
                 if (Directory.Exists(staging)) Directory.Delete(staging, true);
                 File.WriteAllText(log, error.ToString());
-                if (File.Exists(launcher)) Process.Start(new ProcessStartInfo(launcher) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(launcher) });
+                if (File.Exists(launcher)) Process.Start(new ProcessStartInfo(launcher) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(launcher) });
             }
             catch (Exception recoveryError) { File.WriteAllText(log, error + Environment.NewLine + recoveryError); }
         }

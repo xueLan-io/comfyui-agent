@@ -8,6 +8,9 @@ export function registerAgentExtrasIpc(ctx) {
 
   ipcMain.handle('memory:get-state', async (_, { projectId = '' } = {}) => { await startAgent(getStoredConfig()); return getAgent().call('memory.getState', [projectId]); });
   ipcMain.handle('memory:set-profile', async (_, { projectId = '', patch = {} } = {}) => { await startAgent(getStoredConfig()); return getAgent().call('memory.setProfile', [projectId, patch]); });
+  ipcMain.handle('memory:set-settings', async (_, { settings = {} } = {}) => { await startAgent(getStoredConfig()); return getAgent().call('memory.setSettings', [settings]); });
+  ipcMain.handle('memory:set-user-notes', async (_, { notes = [] } = {}) => { await startAgent(getStoredConfig()); return getAgent().call('memory.setUserNotes', [notes]); });
+  ipcMain.handle('memory:delete-segment', async (_, { projectId = '', segmentId = '' } = {}) => { await startAgent(getStoredConfig()); return getAgent().call('memory.deleteSegment', [projectId, segmentId]); });
   ipcMain.handle('memory:clear', async (_, { projectId = '' } = {}) => { await startAgent(getStoredConfig()); return getAgent().call('memory.clear', [projectId]); });
   ipcMain.handle('memory:export', async () => { await startAgent(getStoredConfig()); return getAgent().call('memory.export'); });
   ipcMain.handle('memory:recall', async (_, { projectId = '', query = '', limit } = {}) => { await startAgent(getStoredConfig()); return getAgent().call('memory.recall', [projectId, { query, limit }]); });

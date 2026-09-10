@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { normalizeSkill } from '../src/agent/skills/skill-contract.mjs';
 import { createSkillRegistry } from '../src/agent/skills/registry.mjs';
 import { matchSkills } from '../src/agent/skills/matcher.mjs';
-import { validatePlan } from '../src/agent/schemas/plan-schema.mjs';
+import { validatePlan } from '../src/agent/schemas/plan-schema.ts';
 
 test('legacy steps are adapted while explicit plan takes precedence', () => {
   const legacy = normalizeSkill({ name: 'Legacy', description: 'legacy', keywords: ['legacy'], steps: () => [{ tool: 'comfyui', expected_output: 'images' }] }, 'legacy');

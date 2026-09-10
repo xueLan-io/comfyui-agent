@@ -118,10 +118,95 @@ test('clear removes one project or everything', async () => {
   await memory.captureSession('p1', { summary: { facts: ['a'] } });
   await memory.captureSession('p2', { summary: { facts: ['b'] } });
   await memory.clear('p1');
-  assert.equal(memory.projectState('p1'), null);
+  // Cleared projects report an empty state (single shape) rather than null.
+  assert.equal(memory.projectState('p1').segmentCount, 0);
+  assert.equal(memory.projectState('p1').segments.length, 0);
   assert.ok(memory.projectState('p2'));
   await memory.clear();
   assert.equal(Object.keys(memory.data.projects).length, 0);
+});
+
+test('settings toggle gates capture and recall and persists', async () => {
+  const { dir, path } = await memoryFile();
+  try {
+    const memory = new LongTermMemory({ filePath: path });
+    await memory.init();
+    assert.deepEqual(memory.getSettings(), { enabled: true });
+    await memory.setSettings({ enabled: false });
+    const gated = await memory.captureSession('p', { summary: SAMPLE_SUMMARY, workflowName: 'a.json' });
+    assert.deepEqual(gated, { captured: false, reason: 'disabled' });
+    assert.equal(memory.projectState('p').segmentCount, 0);
+    // Reload from disk: the flag survives restarts.
+    const reloaded = new LongTermMemory({ filePath: path });
+    await reloaded.init();
+    assert.equal(reloaded.getSettings().enabled, false);
+    assert.equal(reloaded.recall('p', { query: '夜色' }), '');
+    await reloaded.setUserNotes(['始终用中文回复']);
+    // Disabled gates user-level recall too.
+    assert.equal(reloaded.recall('p'), '');
+    await reloaded.setSettings({ enabled: true });
+    assert.match(reloaded.recall('p'), /始终用中文回复/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('user notes persist, dedupe, cap, and recall across projects', async () => {
+  const memory = new LongTermMemory({ limits: { userNotes: 3 } });
+  await memory.init();
+  await memory.setUserNotes(['中文回复', '中文回复', '', '偏好动漫风格', '夜间任务', '第四条被挤出']);
+  assert.deepEqual(memory.data.user.notes, ['偏好动漫风格', '夜间任务', '第四条被挤出']);
+  // User notes recall even when the project itself has nothing stored.
+  const context = memory.recall('fresh-project', { query: '风格' });
+  assert.match(context, /用户全局备忘/);
+  assert.match(context, /偏好动漫风格/);
+  // And they come first, before project profile lines.
+  await memory.captureSession('p', { summary: { facts: ['用户喜欢冷色系风格'] } });
+  const mixed = memory.recall('p');
+  assert.ok(mixed.indexOf('用户全局备忘') < mixed.indexOf('风格偏好与约定'), 'user notes should come first');
+});
+
+test('deleteSegment removes exactly one segment', async () => {
+  const memory = new LongTermMemory();
+  await memory.init();
+  await memory.captureSession('p', { summary: { facts: ['第一条'] } });
+  await memory.captureSession('p', { summary: { facts: ['第二条'] } });
+  const [first] = memory.projectState('p').segments;
+  const result = await memory.deleteSegment('p', first.id);
+  assert.deepEqual(result, { removed: true, segments: 1 });
+  const remaining = memory.projectState('p').segments;
+  assert.equal(remaining.length, 1);
+  assert.ok(!remaining.some(segment => segment.id === first.id));
+  assert.deepEqual(await memory.deleteSegment('p', 'missing-id'), { removed: false });
+  assert.deepEqual(await memory.deleteSegment('other-project', first.id), { removed: false });
+});
+
+test('recall ranks CJK queries via bigram overlap', () => {
+  const memory = new LongTermMemory();
+  memory.data.projects['p'] = {
+    profile: { styles: [], disliked: [], notes: [], workflows: {} },
+    segments: [
+      { id: 'm1', hash: 'a', summary: { facts: ['夜色下的车站构图'] }, createdAt: 100 },
+      { id: 'm2', hash: 'b', summary: { facts: ['白天海滩场景'] }, createdAt: 200 },
+    ],
+  };
+  // Whole-run token cannot substring-match, bigrams ('夜色','色车','车站') can.
+  const context = memory.recall('p', { query: '夜色车站', limit: 1 });
+  assert.match(context, /夜色下的车站构图/);
+  assert.ok(!context.includes('白天海滩'), 'non-matching segment should be excluded at limit 1');
+});
+
+test('projectState carries global settings and user notes', async () => {
+  const memory = new LongTermMemory();
+  await memory.init();
+  await memory.setUserNotes(['全局备忘']);
+  await memory.setSettings({ enabled: false });
+  const state = memory.projectState('p');
+  assert.deepEqual(state.settings, { enabled: false });
+  assert.deepEqual(state.user, { notes: ['全局备忘'] });
+  const global = memory.projectState('');
+  assert.deepEqual(global.settings, { enabled: false });
+  assert.deepEqual(global.user, { notes: ['全局备忘'] });
 });
 
 test('hashText is stable and scoped', () => {

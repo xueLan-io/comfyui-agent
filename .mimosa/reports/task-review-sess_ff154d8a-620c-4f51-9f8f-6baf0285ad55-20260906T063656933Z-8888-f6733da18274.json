@@ -1,0 +1,584 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20260906T063656933Z-8888-f6733da18274",
+  "run_status": "inconclusive",
+  "errors": [
+    {
+      "stage": "candidate-select",
+      "target": "scratch-ts-spike/package.json",
+      "reason": "changed_file_unreadable: observed changed file no longer exists or cannot be read"
+    },
+    {
+      "stage": "candidate-select",
+      "target": "scratch-ts-spike/mod.ts",
+      "reason": "changed_file_unreadable: observed changed file no longer exists or cannot be read"
+    },
+    {
+      "stage": "candidate-select",
+      "target": "scratch-ts-spike/worker.ts",
+      "reason": "changed_file_unreadable: observed changed file no longer exists or cannot be read"
+    },
+    {
+      "stage": "candidate-select",
+      "target": "package-lock.json",
+      "reason": "candidate_limit_exceeded: 5 changed reviewable file(s) were not scanned because the limit is 20"
+    },
+    {
+      "stage": "agent-check",
+      "target": ".",
+      "reason": "spawnSync C:\\Program Files\\nodejs\\node.exe ETIMEDOUT"
+    }
+  ],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "partial",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": true,
+      "captured_files": 153,
+      "candidate_limit": 5000,
+      "truncated": false,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 25
+    },
+    "change_tracking": {
+      "touched_observed": 23,
+      "touched_retained": 23,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 25,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": false
+    },
+    "candidates": {
+      "eligible_files": 25,
+      "selected_files": 20,
+      "limit": 20,
+      "truncated": true
+    },
+    "scanning": {
+      "required_files": 18,
+      "scanned_files": 18,
+      "skipped_files": 0,
+      "failed_files": 0,
+      "project_checks_required": 2,
+      "project_checks_completed": 1
+    },
+    "notification": {
+      "eligible_findings": 3,
+      "detailed_findings": 0,
+      "detail_limit": 3,
+      "truncated": true
+    },
+    "reason_counts": {
+      "changed_file_unreadable": 3,
+      "candidate_limit_exceeded": 1,
+      "project_check_failed": 5
+    },
+    "reasons": [
+      {
+        "code": "changed_file_unreadable",
+        "stage": "candidate-select",
+        "target": "scratch-ts-spike/package.json",
+        "detail": "observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "changed_file_unreadable",
+        "stage": "candidate-select",
+        "target": "scratch-ts-spike/mod.ts",
+        "detail": "observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "changed_file_unreadable",
+        "stage": "candidate-select",
+        "target": "scratch-ts-spike/worker.ts",
+        "detail": "observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "candidate_limit_exceeded",
+        "stage": "candidate-select",
+        "target": "package-lock.json",
+        "detail": "5 changed reviewable file(s) were not scanned because the limit is 20",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "scratch-ts-spike/package.json",
+        "detail": "changed_file_unreadable: observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "scratch-ts-spike/mod.ts",
+        "detail": "changed_file_unreadable: observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "scratch-ts-spike/worker.ts",
+        "detail": "changed_file_unreadable: observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "package-lock.json",
+        "detail": "candidate_limit_exceeded: 5 changed reviewable file(s) were not scanned because the limit is 20",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "agent-check",
+        "target": ".",
+        "detail": "spawnSync C:\\Program Files\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      }
+    ],
+    "reasons_truncated": false
+  },
+  "generated_at": "2026-09-06T06:36:56.933Z",
+  "session_id": "sess_ff154d8a-620c-4f51-9f8f-6baf0285ad55",
+  "target": ".",
+  "revision": "2a021b064cbd5b92217efce6cb0f235be0e76609",
+  "rules_version": "unavailable",
+  "diff_hash": "71f696a14909a1f6c0b03b9eb128f11b266ad933cff8fedfcd81935c29ad4e2c",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 20,
+    "changed_files": [
+      {
+        "file": ".github/workflows/release.yml",
+        "ranges": [
+          {
+            "start": 20,
+            "end": 20
+          }
+        ],
+        "before_hash": "bc43ae339df901f780374dc4a00895f6727557d66dd2436b0d1e24470adb9fc7",
+        "after_hash": "a264f88250b10e0520937e4da58a63dbf49dbd541f6a777c54878a1e318d0123"
+      },
+      {
+        "file": "package.json",
+        "ranges": [
+          {
+            "start": 12,
+            "end": 12
+          },
+          {
+            "start": 18,
+            "end": 19
+          },
+          {
+            "start": 38,
+            "end": 38
+          },
+          {
+            "start": 41,
+            "end": 41
+          },
+          {
+            "start": 44,
+            "end": 44
+          }
+        ],
+        "before_hash": "e01e744644b5898d4f118714b77a79b7326e371f14d85995ceb18debf489758f",
+        "after_hash": "1f64a5e52c0acaa68d68e67d79fd7fecfd355fd6f94c27934d9111acdfe405f6"
+      },
+      {
+        "file": "src/agent/events/agent-events.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 89
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "e0c2e3868015df95b53b1c75f928d520c807056bffaf16d392b3984a4c43f776"
+      },
+      {
+        "file": "src/agent/index.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 137
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "d388f77ec9af0d319797051c046d180685c73c1bf59aaf3fc1d3b29a8380a447"
+      },
+      {
+        "file": "src/agent/llm/openai-compatible.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 385
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "bc166e8d241c11b5a279dbefbbb4ec38cf2bbca9850d7ed00bfdf985bfb6d768"
+      },
+      {
+        "file": "src/agent/llm/provider.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 711
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "6bfb24682faebd7176fcd7533906674a468f38e86731977edcb115dd4737585d"
+      },
+      {
+        "file": "src/agent/schemas/artifact-schema.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 161
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "c6af4b5e83724d6b907ac8cace99e15494579e2f070f3d8b90839b0eea3362d5"
+      },
+      {
+        "file": "src/agent/schemas/confirmation-schema.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 98
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "bd57868993ad72f04140a0900d73646ad626c5f726f8e0780c18a3ad75221175"
+      },
+      {
+        "file": "src/agent/schemas/context-sanitizer.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 88
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "c66a5263f49790f9763d334b19b574f8b51de495d98d47abfcf0f3089b1bd540"
+      },
+      {
+        "file": "src/agent/schemas/context-schema.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 233
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "5697a97c70d0906bf6b1379ad8e5380019b00bb4036500a40c8d3513fd426334"
+      },
+      {
+        "file": "src/agent/schemas/evaluation-schema.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 193
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "7949a3412bae91e5354a383b8c6cd0795387d048459669a3684dc878b79db204"
+      },
+      {
+        "file": "src/agent/schemas/event-schema.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 204
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "49728c62331275727e189d2bcb6d96de7da142f05bc996e055835e945fb51a39"
+      },
+      {
+        "file": "src/agent/schemas/execution-context.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 97
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "e341e4e8979db3c94be754a92ecc6ca5883b9da693b27c01fe0f29ccdf637d11"
+      },
+      {
+        "file": "src/agent/schemas/index.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 46
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "9b8ef458ad1bca823dcd8320f2d730479fa7287a58f5f9dd4261ed603590106e"
+      },
+      {
+        "file": "src/agent/schemas/intent-schema.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 107
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "7e4c339d795bc9bb2ae0420da9eaed99a2d004058eb91fbb6304b512466405ad"
+      },
+      {
+        "file": "src/agent/schemas/plan-schema.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 392
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "c6344468a0d90b3af07e09fc8e4a2b6d3cc1c785681725904b2210cd10f22641"
+      },
+      {
+        "file": "src/agent/schemas/skill-schema.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 55
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "c6fad43f72784c4da4634aa8eb159fb7a8a7940bbc17ac4867acdf6786f93a0b"
+      },
+      {
+        "file": "src/agent/schemas/tool-schema.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 218
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "2d264b287df4f38c4d6873a769ad28d5e9ef50d3016d4212d013093b7ac79a97"
+      },
+      {
+        "file": "src/agent/types/llm.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 39
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "1ea5ab798f912a844d77bc9474ac685c1880e55c73dde392a07164cbd1068744"
+      },
+      {
+        "file": "src/runtime/generation-contract.ts",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 144
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "8a2c6fdec840f3dfd086e66e5728a6acb2caa3e9069d2b5a9fa1993672d790a0"
+      }
+    ]
+  },
+  "timing": {
+    "started_at": "2026-09-06T06:36:54.396Z",
+    "completed_at": "2026-09-06T06:36:56.933Z",
+    "duration_ms": 2537,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "partial/INCONCLUSIVE",
+    "latencyMs": 2537,
+    "peakMemoryBytes": 141701120,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 18,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 3,
+  "rewake_finding_count": 0,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [
+    {
+      "finding_id": "mimosa-0207580a7661d298eeafd9dd",
+      "file": "package.json",
+      "line": 38,
+      "rule_id": "mimosa.supply.version-range",
+      "severity": "low",
+      "category": "manifest",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-09-06T06:36:56.933Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "955146508d3ec249ddf70a0a5500cdddb33bd91678e8054e0e6253bc5e521040",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-9d8d308a61e066a247382b72",
+      "file": "package.json",
+      "line": 41,
+      "rule_id": "mimosa.supply.version-range",
+      "severity": "low",
+      "category": "manifest",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-09-06T06:36:56.933Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "428e91c026ce7fcf36049967d88faf6e07f607ea2035b23585ce4c89570c3c85",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-d705e16b0786c737adabd4bc",
+      "file": "package.json",
+      "line": 44,
+      "rule_id": "mimosa.supply.version-range",
+      "severity": "low",
+      "category": "manifest",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-09-06T06:36:56.933Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "701edfd6d1e5dbc65fea0859d954fe967c6a6193f8523628a4aca696712f00d9",
+        "runtime_oracle": false
+      }
+    }
+  ],
+  "findings": [
+    {
+      "finding_id": "mimosa-0207580a7661d298eeafd9dd",
+      "file": "package.json",
+      "line": 38,
+      "end_line": 38,
+      "rule_id": "mimosa.supply.version-range",
+      "severity": "low",
+      "category": "manifest",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "package.json",
+          "line": 38,
+          "evidence_hash": "955146508d3ec249ddf70a0a5500cdddb33bd91678e8054e0e6253bc5e521040",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-9d8d308a61e066a247382b72",
+      "file": "package.json",
+      "line": 41,
+      "end_line": 41,
+      "rule_id": "mimosa.supply.version-range",
+      "severity": "low",
+      "category": "manifest",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "package.json",
+          "line": 41,
+          "evidence_hash": "428e91c026ce7fcf36049967d88faf6e07f607ea2035b23585ce4c89570c3c85",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-d705e16b0786c737adabd4bc",
+      "file": "package.json",
+      "line": 44,
+      "end_line": 44,
+      "rule_id": "mimosa.supply.version-range",
+      "severity": "low",
+      "category": "manifest",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "package.json",
+          "line": 44,
+          "evidence_hash": "701edfd6d1e5dbc65fea0859d954fe967c6a6193f8523628a4aca696712f00d9",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    }
+  ],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-sess_ff154d8a-620c-4f51-9f8f-6baf0285ad55-20260906T063656933Z-8888-f6733da18274.json",
+    "latest_report": ".mimosa/reports/task-review-sess_ff154d8a-620c-4f51-9f8f-6baf0285ad55.json",
+    "history_summary": ".mimosa/history/run-20260906T063656933Z-8888-f6733da18274.json"
+  }
+}

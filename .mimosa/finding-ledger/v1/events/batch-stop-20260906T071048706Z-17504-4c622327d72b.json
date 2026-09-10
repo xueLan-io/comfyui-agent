@@ -1,0 +1,184 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260906T071048706Z-17504-4c622327d72b",
+  "runId": "20260906T071048706Z-17504-4c622327d72b",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "2a021b064cbd5b92217efce6cb0f235be0e76609",
+  "diffHash": "89cf27935ad6663a5ae62b547f2012d3042e23a08da062c37b17a114f5b48bbd",
+  "rulesVersion": "unavailable",
+  "sessionHash": "3bfd49dc0ae63dd82f5e08f6c54699fcd4d0541c1b8dc75b3d5e6ebe0f1fc48d",
+  "reportRef": ".mimosa/reports/task-review-sess_ff154d8a-620c-4f51-9f8f-6baf0285ad55-20260906T071048706Z-17504-4c622327d72b.json",
+  "events": [
+    {
+      "eventId": "hook-5cbbe8f96db0ee6d2c842bd763b46bc1",
+      "findingId": "mimosa-d87139e90f86a5a94184327c",
+      "type": "finding_blocked",
+      "at": "2026-09-06T06:53:24.898Z",
+      "identity": {
+        "projectRelativeFile": "src/agent/runtime/execution-ops.ts",
+        "ruleId": "security",
+        "codeEvidenceHash": "f3f058afd48ca0edcc1de7fac4980a32f18cf7581d53a5f4e3708ba4b0697e1a",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 29,
+      "endLine": 29,
+      "reasonCode": "deny",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "f3f058afd48ca0edcc1de7fac4980a32f18cf7581d53a5f4e3708ba4b0697e1a"
+      },
+      "sequence": 0
+    },
+    {
+      "eventId": "hook-16a97cf818b656f2b7b8ea04ff09f027",
+      "findingId": "mimosa-4cb0353937730499897a6f16",
+      "type": "finding_blocked",
+      "at": "2026-09-06T06:53:24.898Z",
+      "identity": {
+        "projectRelativeFile": "src/agent/runtime/execution-ops.ts",
+        "ruleId": "security",
+        "codeEvidenceHash": "1a8a1f2f7e4e8b76766b68ebb14ef10914d5438b935a411e9fe6210a3d7580fc",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 347,
+      "endLine": 347,
+      "reasonCode": "deny",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "1a8a1f2f7e4e8b76766b68ebb14ef10914d5438b935a411e9fe6210a3d7580fc"
+      },
+      "sequence": 1
+    },
+    {
+      "eventId": "hook-157855ad01a95468ea28dc63a972db6b",
+      "findingId": "mimosa-33e26b528675f11205b31969",
+      "type": "finding_blocked",
+      "at": "2026-09-06T06:53:24.898Z",
+      "identity": {
+        "projectRelativeFile": "src/agent/runtime/execution-ops.ts",
+        "ruleId": "security",
+        "codeEvidenceHash": "073c8cbce096cd14c79d1217470aae27c44c2d1e79265516748cf2228dda38a6",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 386,
+      "endLine": 386,
+      "reasonCode": "deny",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "073c8cbce096cd14c79d1217470aae27c44c2d1e79265516748cf2228dda38a6"
+      },
+      "sequence": 2
+    },
+    {
+      "eventId": "hook-4d6115d6b2bf3419158c57fbac9fda0a",
+      "findingId": "mimosa-33e26b528675f11205b31969",
+      "type": "finding_blocked",
+      "at": "2026-09-06T06:55:26.304Z",
+      "identity": {
+        "projectRelativeFile": "src/agent/runtime/execution-ops.ts",
+        "ruleId": "security",
+        "codeEvidenceHash": "073c8cbce096cd14c79d1217470aae27c44c2d1e79265516748cf2228dda38a6",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 389,
+      "endLine": 389,
+      "reasonCode": "deny",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "073c8cbce096cd14c79d1217470aae27c44c2d1e79265516748cf2228dda38a6"
+      },
+      "sequence": 3
+    },
+    {
+      "eventId": "hook-78a057b4fb9c51161f0670216ea994f0",
+      "findingId": "mimosa-33e26b528675f11205b31969",
+      "type": "finding_blocked",
+      "at": "2026-09-06T06:57:15.310Z",
+      "identity": {
+        "projectRelativeFile": "src/agent/runtime/execution-ops.ts",
+        "ruleId": "security",
+        "codeEvidenceHash": "073c8cbce096cd14c79d1217470aae27c44c2d1e79265516748cf2228dda38a6",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 394,
+      "endLine": 394,
+      "reasonCode": "deny",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "073c8cbce096cd14c79d1217470aae27c44c2d1e79265516748cf2228dda38a6"
+      },
+      "sequence": 4
+    },
+    {
+      "eventId": "hook-3f5a8709b927997207639643e5521684",
+      "findingId": "mimosa-33e26b528675f11205b31969",
+      "type": "finding_blocked",
+      "at": "2026-09-06T06:59:58.202Z",
+      "identity": {
+        "projectRelativeFile": "src/agent/runtime/execution-ops.ts",
+        "ruleId": "security",
+        "codeEvidenceHash": "073c8cbce096cd14c79d1217470aae27c44c2d1e79265516748cf2228dda38a6",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 397,
+      "endLine": 397,
+      "reasonCode": "deny",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "073c8cbce096cd14c79d1217470aae27c44c2d1e79265516748cf2228dda38a6"
+      },
+      "sequence": 5
+    }
+  ],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "src/agent/runtime/planner.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/runtime/executor.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/runtime/chat-request.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-06T07:10:49.183Z"
+}

@@ -135,7 +135,7 @@ export function registerWorkflowsIpc(ctx) {
   });
 
   ipcMain.handle('clipboard:save-paste', async (_, { buffer, name } = {}) => {
-    if (!buffer || !buffer.length) throw new Error('剪贴板没有图片数据');
+    if (!buffer || !(buffer.byteLength ?? buffer.length ?? 0)) throw new Error('剪贴板没有图片数据');
     const dir = app.getPath('temp');
     const fileName = `comfy-agent-paste-${Date.now()}-${Math.round(Math.random() * 0xffffff).toString(16)}.png`;
     const target = join(dir, fileName);

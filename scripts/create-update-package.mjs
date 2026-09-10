@@ -10,7 +10,7 @@ const staging = join(root, '.release-update-staging');
 const app = join(staging, 'resources', 'app');
 const output = join(root, `ComfyMuse-update-v${packageJson.version}.zip`);
 
-for (const required of ['dist/index.html', 'electron/main.mjs', 'src/agent/index.mjs', 'comfy-client.mjs']) {
+for (const required of ['dist/index.html', 'electron/main.mjs', 'src/agent/index.ts', 'comfy-client.mjs']) {
   if (!existsSync(join(root, required))) {
     throw new Error(`Missing build artifact: ${required} — run "npm run build" (or pack-update.bat) first`);
   }
@@ -28,6 +28,8 @@ try {
   cpSync(join(root, 'scripts', 'verify-comfyui-recovery.mjs'), join(app, 'scripts', 'verify-comfyui-recovery.mjs'));
   cpSync(join(root, 'package.json'), join(app, 'package.json'));
   cpSync(join(root, 'comfy-client.mjs'), join(app, 'comfy-client.mjs'));
+  cpSync(join(root, 'LICENSE'), join(app, 'LICENSE'));
+  cpSync(join(root, 'THIRD-PARTY-NOTICES.md'), join(app, 'THIRD-PARTY-NOTICES.md'));
   writeFileSync(join(app, 'comfyui-root.txt'), '..\\..\\..\\..');
 
   // Validate the staged app the same way the full portable pack does.

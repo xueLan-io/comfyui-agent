@@ -2,8 +2,8 @@
 // extracted from agent.mjs. Functions operate on the agent and are
 // behavior-preserving moves; the Agent methods delegate here one line each.
 
-import { emit, AgentEventTypes } from '../events/agent-events.mjs';
-import { resolveLLMStrategy } from '../llm/provider.mjs';
+import { emit, AgentEventTypes } from '../events/agent-events.ts';
+import { resolveLLMStrategy } from '../llm/provider.ts';
 import { extractAppearanceFacts } from '../research/appearance.mjs';
 import { normalizeResearchSettings } from '../research/settings.mjs';
 import { WebTool, openResultPages } from '../tools/web/index.mjs';
@@ -12,7 +12,10 @@ const SPOKEN_PREFIX = /^(?:联网|在线|帮我|给我|请|帮忙|使用搜索|�
 const URL_PATTERN = /https?:\/\/[^\s，。；、""''<>]+/gi;
 
 const GENERATION_HINTS = /(?:生成|画|绘制|立绘|出图|生图|prompt|generate|draw|render|create|make)/i;
-const CHARACTER_RESEARCH_HINTS = /(?:角色|人物|立绘|人设|外观|服装|发型|发色|眼睛|还原|原作|设定|官方设定|搜索|查找|查一下|资料|网上|character|appearance|outfit|costume|hair|eyes|canon|reference|search|research|look up)/i;
+// 角色语义词：单独命中即可触发兜底调研（v0.3.6「出图路径保证调研」的核心场景）。
+// 纯"搜索/资料/网上/search"等泛搜索词不再单独触发——误触发会让无关生成
+// 请求也进入分钟级调研；需要外部资料的判断交给规划器的 web 步骤输出。
+const CHARACTER_RESEARCH_HINTS = /(?:角色|人物|立绘|人设|外观|服装|发型|发色|眼睛|还原|原作|设定|官方设定|character|appearance|outfit|costume|hair|eyes|canon|reference)/i;
 const CHARACTER_SOURCE_HINTS = /(?:原神|崩坏|明日方舟|碧蓝航线|绝区零|鸣潮|fate|blue archive|genshin|honkai|arknights|character)/i;
 
 // 出图请求的外观调研触发启发式（v0.3.6 曾无条件保证该链路），
@@ -25,6 +28,13 @@ export function shouldResearchCharacter(request, intent) {
 export async function researchCharacter(agent, request, inputSettings = {}, stepDescription = '', preferredQuery = '') {
   const query = await researchQueryOf(agent, request, preferredQuery);
   const webTool = agent.tools?.web || WebTool;
+  // 事件归属用入口快照：调研可能被取消/超时后在后台跑完，恢复时
+  // agent._taskId 可能已易主，直接读会把终态事件写到新任务上。
+  const taskId = agent._taskId;
+  const traceId = agent._traceId;
+  // 调研专用取消信号：agent.cancel()/abandon() 会 abort 它，让挂起的
+  // 搜索/开页请求立即中止，而不是等各层超时自然到期。
+  const signal = agent._beginResearchSignal?.();
   const settings = normalizeResearchSettings({
     ...inputSettings,
     baiduApiKey: inputSettings.baiduApiKey || agent.researchConfig?.baiduApiKey,
@@ -40,8 +50,8 @@ export async function researchCharacter(agent, request, inputSettings = {}, step
     tool: 'web',
     status: 'running',
     description,
-    taskId: agent._taskId,
-    traceId: agent._traceId,
+    taskId,
+    traceId,
   });
   emit(AgentEventTypes.TOOL_CALL, {
     stepId,
@@ -54,8 +64,8 @@ export async function researchCharacter(agent, request, inputSettings = {}, step
       allowNetwork: settings.allowNetwork,
       allowedDomains: settings.allowedDomains,
     },
-    taskId: agent._taskId,
-    traceId: agent._traceId,
+    taskId,
+    traceId,
   });
 
   const search = await webTool.execute({
@@ -72,20 +82,21 @@ export async function researchCharacter(agent, request, inputSettings = {}, step
     searchApiKey: settings.searchApiKey,
     searchApiBaseUrl: settings.searchApiBaseUrl,
     sourcePolicy: settings,
+    signal,
   });
   if (search.error) {
     const attempted = Array.isArray(search.attempted) ? search.attempted : [];
     emit(AgentEventTypes.TOOL_RESULT, {
       stepId, tool: 'web', success: false, error: search.error,
       result: { query, attempted, provider: '', sources: [] },
-      taskId: agent._taskId, traceId: agent._traceId,
+      taskId, traceId,
     });
     const researchStatus = search.researchStatus || (settings.allowNetwork ? 'search_failed' : 'disabled');
-    emit(AgentEventTypes.STEP, { stepId, tool: 'web', status: 'warning', description: 'Character reference research unavailable', error: search.error, researchStatus, taskId: agent._taskId, traceId: agent._traceId });
+    emit(AgentEventTypes.STEP, { stepId, tool: 'web', status: 'warning', description: 'Character reference research unavailable', error: search.error, researchStatus, taskId, traceId });
     return { query, attempted, provider: '', ...emptyAppearanceFacts(), sources: [], researchStatus, researchMessage: settings.allowNetwork ? `未使用在线资料：${search.error}` : search.error };
   }
 
-  const pages = await openResultPages(webTool, search.results, settings);
+  const pages = await openResultPages(webTool, search.results, { ...settings, signal });
   const rawContext = researchContextOf(agent, search, pages);
   let appearanceFacts;
   let researchStatus = rawContext.sources.length > 0 ? 'complete' : 'no_sources';
@@ -120,16 +131,16 @@ export async function researchCharacter(agent, request, inputSettings = {}, step
       },
       researchStatus: context.researchStatus,
     },
-    taskId: agent._taskId,
-    traceId: agent._traceId,
+    taskId,
+    traceId,
   });
   emit(AgentEventTypes.STEP, {
     stepId,
     tool: 'web',
     status: 'completed',
     description: stepDescription || `Collected ${context.sources.length} character references and extracted appearance facts`,
-    taskId: agent._taskId,
-    traceId: agent._traceId,
+    taskId,
+    traceId,
   });
   return context;
 }
@@ -214,11 +225,15 @@ export async function chatResearch(agent, message, settings) {
   settings.allowNetwork = settings.allowNetwork && agent.sandbox?.networkEnabled !== false;
   const webTool = agent.tools?.web || WebTool;
   const stepId = 'chat_research';
+  // 与 researchCharacter 相同的归属快照 + 取消信号（后台完成时不得写新任务）。
+  const taskId = agent._taskId;
+  const traceId = agent._traceId;
+  const signal = agent._beginResearchSignal?.();
   const trimmed = String(message || '').trim();
   const urls = [...new Set(trimmed.match(URL_PATTERN) || [])].slice(0, Math.max(settings.maxOpenPages || 2, 1));
   const query = await agent._buildSearchQuery(trimmed.replace(URL_PATTERN, ' ').replace(/\s+/g, ' ').trim());
   if (!query && urls.length === 0) return { query: trimmed, sources: [], status: 'empty', message: '空的研究请求' };
-  emit(AgentEventTypes.STEP, { stepId, tool: 'web', status: 'running', description: '正在联网检索公开资料', taskId: agent._taskId, traceId: agent._traceId });
+  emit(AgentEventTypes.STEP, { stepId, tool: 'web', status: 'running', description: '正在联网检索公开资料', taskId, traceId });
   const sources = [];
   const seen = new Set();
   const failures = [];
@@ -226,7 +241,7 @@ export async function chatResearch(agent, message, settings) {
   let provider = '';
   let attempted = [];
   const openPage = async (url) => {
-    const result = await webTool.execute({ action: 'open', url, timeoutMs: settings.timeoutMs, allowNetwork: settings.allowNetwork, cacheTtlMs: settings.cacheTtlMs, proxyUrl: settings.proxyUrl, sourcePolicy: settings });
+    const result = await webTool.execute({ action: 'open', url, timeoutMs: settings.timeoutMs, allowNetwork: settings.allowNetwork, cacheTtlMs: settings.cacheTtlMs, proxyUrl: settings.proxyUrl, sourcePolicy: settings, signal });
     if (result.error) { failures.push(`open ${url}: ${result.error}`); return null; }
     return result.page;
   };
@@ -239,14 +254,14 @@ export async function chatResearch(agent, message, settings) {
   };
   let pageBudget = Math.max(settings.maxOpenPages || 3, 0);
   for (const url of urls) {
-    emit(AgentEventTypes.TOOL_CALL, { stepId, tool: 'web', input: { action: 'open', url }, taskId: agent._taskId, traceId: agent._traceId });
+    emit(AgentEventTypes.TOOL_CALL, { stepId, tool: 'web', input: { action: 'open', url }, taskId, traceId });
     const page = await openPage(url);
     if (page) addSource({ title: page.title, url: page.url, snippet: page.description, trustLevel: page.trustLevel, content: page.content });
   }
   pageBudget -= urls.length;
   if (query) {
-    emit(AgentEventTypes.TOOL_CALL, { stepId, tool: 'web', input: { action: 'search', query }, taskId: agent._taskId, traceId: agent._traceId });
-    const search = await webTool.execute({ action: 'search', query, maxResults: settings.maxResults, timeoutMs: settings.timeoutMs, allowNetwork: settings.allowNetwork, cacheTtlMs: settings.cacheTtlMs, proxyUrl: settings.proxyUrl, baiduApiKey: settings.baiduApiKey, searchApi: settings.searchApi, searchApiKey: settings.searchApiKey, searchApiBaseUrl: settings.searchApiBaseUrl, sourcePolicy: settings, providers: settings.providers });
+    emit(AgentEventTypes.TOOL_CALL, { stepId, tool: 'web', input: { action: 'search', query }, taskId, traceId });
+    const search = await webTool.execute({ action: 'search', query, maxResults: settings.maxResults, timeoutMs: settings.timeoutMs, allowNetwork: settings.allowNetwork, cacheTtlMs: settings.cacheTtlMs, proxyUrl: settings.proxyUrl, baiduApiKey: settings.baiduApiKey, searchApi: settings.searchApi, searchApiKey: settings.searchApiKey, searchApiBaseUrl: settings.searchApiBaseUrl, sourcePolicy: settings, providers: settings.providers, signal });
     answer = search.answer || '';
     provider = search.provider || '';
     attempted = Array.isArray(search.attempted) ? search.attempted : [];
@@ -266,17 +281,39 @@ export async function chatResearch(agent, message, settings) {
     stepId, tool: 'web', success: list.length > 0,
     result: { query: query || urls[0] || '', provider, attempted, sources: list, status },
     error: list.length > 0 ? undefined : failures.join('; ') || undefined,
-    taskId: agent._taskId, traceId: agent._traceId,
+    taskId, traceId,
   });
   emit(AgentEventTypes.STEP, {
     stepId, tool: 'web', status: status === 'complete' ? 'completed' : 'error',
     description: status === 'complete' ? `已收集 ${list.length} 条公开资料` : '在线检索未返回可用资料',
-    taskId: agent._taskId, traceId: agent._traceId,
+    taskId, traceId,
   });
   return { query: query || urls[0] || '', provider, attempted, sources: list, answer, message: failures.join('; '), status };
 }
 
 // --- local helpers referenced by the extracted methods (moved verbatim) ---
+
+// 调研整体预算：各层超时（DNS 5s、provider 4s、每页 12s、提取 LLM 30s）
+// 串行叠加时最坏可达分钟级，超预算直接降级继续，不让调研阶段
+// 无限占住「规划 → 预览/执行」的链路（worker RPC 队列是串行的）。
+const RESEARCH_DEADLINE_MS = 60000;
+const CHAT_RESEARCH_DEADLINE_MS = 30000;
+
+function withResearchDeadline(promise, ms, fallback) {
+  let timer;
+  const timeout = new Promise(resolve => { timer = setTimeout(() => resolve(fallback()), ms); });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+// 聊天路径的调研入口：带总预算，超时降级为「无资料」继续回答，
+// 而不是让整轮 chat 卡死在检索上。
+export async function chatResearchWithDeadline(agent, message, settings) {
+  return withResearchDeadline(
+    agent._chatResearch(message, settings),
+    CHAT_RESEARCH_DEADLINE_MS,
+    () => ({ query: String(message || '').trim().slice(0, 100), sources: [], answer: '', message: '联网检索超时，已跳过', status: 'no_sources' }),
+  );
+}
 
 async function researchQueryOf(agent, request, preferredQuery = '') {
   const trimmed = String(request).trim().slice(0, 240);
@@ -285,7 +322,12 @@ async function researchQueryOf(agent, request, preferredQuery = '') {
   const base = String(preferredQuery || '').trim()
     || (await buildSearchQuery(agent, trimmed))
     || trimmed;
-  return `${base} character appearance hair eyes outfit accessories official design reference`;
+  // 补充词按查询语言选择：把英文标签堆到中文查询后会让 bing/百度
+  // 的分词与召回明显劣化；中文查询配短中文补充词。
+  const suffix = /[\u4e00-\u9fff]/.test(base)
+    ? '角色 外观 服装 发型 设定'
+    : 'character appearance hair eyes outfit accessories official design reference';
+  return `${base} ${suffix}`;
 }
 
 function researchContextOf(agent, result, pages) {
@@ -332,7 +374,11 @@ export async function researchCharacterIfPlanned(agent, plan, ctx, request, opti
     ctx.characterResearch = emptyResult('disabled', 'Online research is disabled');
   } else {
     try {
-      ctx.characterResearch = await researchCharacter(agent, request, agent.project?.get?.('researchSettings') || {}, researchStep?.description || '', researchStep?.input?.query || '');
+      ctx.characterResearch = await withResearchDeadline(
+        researchCharacter(agent, request, agent.project?.get?.('researchSettings') || {}, researchStep?.description || '', researchStep?.input?.query || ''),
+        RESEARCH_DEADLINE_MS,
+        () => emptyResult('search_failed', 'Character research timed out'),
+      );
     } catch {
       ctx.characterResearch = emptyResult('search_failed', 'Character research failed');
     }

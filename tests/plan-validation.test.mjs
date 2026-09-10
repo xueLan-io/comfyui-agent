@@ -8,8 +8,8 @@ import { SystemTool } from '../src/agent/tools/system/index.mjs';
 import { WorkflowInspectTool } from '../src/agent/tools/comfyui/workflow-inspect.mjs';
 import { InspectImageTool } from '../src/agent/tools/comfyui/image-inspect.mjs';
 import { WorkflowPatchTool } from '../src/agent/tools/comfyui/workflow-patch.mjs';
-import { validatePlan } from '../src/agent/schemas/plan-schema.mjs';
-import { confirmationForPlan } from '../src/agent/schemas/confirmation-schema.mjs';
+import { validatePlan } from '../src/agent/schemas/plan-schema.ts';
+import { confirmationForPlan } from '../src/agent/schemas/confirmation-schema.ts';
 
 const tools = {
   comfyui: ComfyUITool,

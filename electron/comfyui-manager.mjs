@@ -319,7 +319,14 @@ export class ComfyUIManager {
     } catch (error) {
       if (error.code !== 'EEXIST') return { acquired: false };
       let record;
-      try { record = JSON.parse(readFileSync(this.startupLockPath, 'utf8')); } catch { return { acquired: false }; }
+      try { record = JSON.parse(readFileSync(this.startupLockPath, 'utf8')); } catch { record = null; }
+      if (!record || !Number.isFinite(Number(record.pid))) {
+        // Corrupt/empty lock file (crash between create and write): the holder
+        // can never be probed, so it would block startup forever — treat it
+        // as stale and take over.
+        try { unlinkSync(this.startupLockPath); } catch {}
+        return this._acquireStartupLock();
+      }
       try {
         process.kill(Number(record.pid), 0);
         return { acquired: false };

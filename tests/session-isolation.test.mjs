@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Agent } from '../src/agent/runtime/agent.mjs';
-import { AgentEventTypes, emit, on } from '../src/agent/events/agent-events.mjs';
+import { AgentEventTypes, emit, on } from '../src/agent/events/agent-events.ts';
 
 async function createAgent() {
   const agent = new Agent({ llmConfig: { provider: 'openai-compatible', model: '' } });

@@ -17,7 +17,7 @@ const requiredFiles = [
   'package.json',
   'comfy-client.mjs',
   'dist/index.html',
-  'src/agent/index.mjs',
+  'src/agent/index.ts',
   'src/runtime/direct/direct-service.mjs',
   'src/config/modelProfiles.json',
   'src/ui-preferences.mjs',

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { OpenAICompatibleProvider } from '../src/agent/llm/openai-compatible.mjs';
-import { LLMProvider, fitMessagesToContext } from '../src/agent/llm/provider.mjs';
+import { OpenAICompatibleProvider } from '../src/agent/llm/openai-compatible.ts';
+import { LLMProvider, fitMessagesToContext } from '../src/agent/llm/provider.ts';
 
 const LOCAL = { id: 'local', type: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', models: [{ id: 'local-model' }] };
 const CLOUD = { id: 'cloud', type: 'openai-compatible', baseUrl: 'https://api.example.com/v1', apiKey: 'key', models: [{ id: 'cloud-model' }] };

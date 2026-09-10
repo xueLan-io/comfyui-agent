@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeExecutionContext, assertExecutionContext } from '../src/agent/schemas/execution-context.mjs';
+import { normalizeExecutionContext, assertExecutionContext } from '../src/agent/schemas/execution-context.ts';
 
 test('new generation context never inherits a media target', () => {
   const context = normalizeExecutionContext({

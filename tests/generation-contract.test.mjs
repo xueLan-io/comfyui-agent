@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeGenerationResult } from '../src/runtime/generation-contract.mjs';
+import { normalizeGenerationResult } from '../src/runtime/generation-contract.ts';
 
 test('normalizeGenerationResult exposes unified media without dropping legacy fields', () => {
   const result = normalizeGenerationResult({ images: [{ filename: 'a.png' }], videos: [{ filename: 'b.mp4' }] });

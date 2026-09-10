@@ -1,4 +1,4 @@
-import { validateToolDefinition, toolContract } from '../schemas/tool-schema.mjs';
+import { validateToolDefinition, toolContract } from '../schemas/tool-schema.ts';
 
 const DEFAULT_CATEGORIES = ['generation', 'enhancement', 'filesystem', 'management', 'web', 'workflow', 'runtime', 'queue', 'model', 'media', 'service'];
 

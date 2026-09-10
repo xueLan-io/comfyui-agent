@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(node *)",
+      "Bash(npm run *)",
+      "Bash(npm test *)",
+      "Bash(python *)",
+      "Bash(tr '\\\\\\\\' '/')",
+      "Bash(netstat -ano)",
+      "Bash(findstr \":5173 :9333\")",
+      "Bash(tasklist)",
+      "Bash(findstr /I \"electron.exe node.exe\")",
+      "Bash(curl *)",
+      "Bash(powershell *)",
+      "Bash(unzip -l \"D:/ComfyUI_windows_portable/ComfyUI-Agent/ComfyMuse-portable-v0.3.7-rc.1.zip\")"
+    ]
+  }
+}

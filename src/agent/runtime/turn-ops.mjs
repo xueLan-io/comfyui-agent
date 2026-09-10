@@ -1,7 +1,7 @@
 // Unified user-turn orchestration helpers, extracted from turn-flow.mjs
 // (P0-5 slice 9). handleTurn() delegates here; calls stay on the Agent
 // instance so overrides and lifecycle behavior persist. Behavior-preserving.
-import { initTurn } from '../events/agent-events.mjs';
+import { initTurn } from '../events/agent-events.ts';
 import { isConfirmTurn, messageAttachments } from './chat-intents.mjs';
 import { emitTiming, timingOutcome } from './prepare-ops.mjs';
 
@@ -82,7 +82,11 @@ export async function confirmTurn(agent, { input, text, turnId, sessionState, mo
       decision: { intent: 'generate', action: 'clarify', target: 'new', missing: ['prepared_plan'] },
     };
   }
-  const result = await agent.runPrepared(previewId, { ...(input.confirmation || {}), ...(input.previewEdits || {}), turnId });
+  // Pass the confirmation through as its own field so runPrepared can verify
+  // the digest binding (the flattened spread alone leaves edits.confirmation
+  // undefined and silently disables the check).
+  const confirmation = input.confirmation?.digest ? input.confirmation : undefined;
+  const result = await agent.runPrepared(previewId, { ...(input.confirmation || {}), ...(input.previewEdits || {}), turnId, confirmation });
   return { turnId, action: 'execute', decision: { intent: 'generate', action: 'execute', requiresConfirmation: false, sourceTurnId: turnId }, result };
 }
 

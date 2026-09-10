@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { SKILLS, configureSkills, matchSkill } from '../src/agent/skills/index.mjs';
-import { Planner } from '../src/agent/runtime/planner.mjs';
-import { PlanTemplates, normalizePlan, validatePlan } from '../src/agent/schemas/plan-schema.mjs';
-import { AgentEventTypes, on } from '../src/agent/events/agent-events.mjs';
+import { Planner } from '../src/agent/runtime/planner.ts';
+import { PlanTemplates, normalizePlan, validatePlan } from '../src/agent/schemas/plan-schema.ts';
+import { AgentEventTypes, on } from '../src/agent/events/agent-events.ts';
 
 test('SKILLS registry contains all system skills', () => {
   assert.deepEqual(Object.keys(SKILLS).sort(), ['batch', 'character', 'controlnet', 'img2img', 'lora', 'txt2img', 'upscale', 'video']);

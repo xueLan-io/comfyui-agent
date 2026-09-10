@@ -71,6 +71,7 @@ export default function WorkflowSection({ dragOver, setDragOver, importFeedback,
   useEffect(() => {
     const switchWorkflow = event => {
       if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (!/^[0-9]$/.test(event.key)) return;
       const index = Number(event.key) - 1;
       const candidates = [...favoriteWorkflows, ...recentWorkflows.filter(file => !favoriteWorkflows.includes(file))].filter(file => workflowFiles.includes(file));
       if (index < 0 || index >= candidates.length) return;

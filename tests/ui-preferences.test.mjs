@@ -38,3 +38,9 @@ test('prompt strategies include anime-specific workflows', () => {
   assert.ok(ids.includes('anime-scene'));
   assert.ok(ids.includes('anime-polish'));
 });
+
+test('UI preferences normalize ComfyUI auto-start toggle', () => {
+  assert.equal(normalizeUIPreferences({}).startComfyOnLaunch, true);
+  assert.equal(normalizeUIPreferences({ startComfyOnLaunch: false }).startComfyOnLaunch, false);
+  assert.equal(normalizeUIPreferences({ startComfyOnLaunch: 0 }).startComfyOnLaunch, false);
+});

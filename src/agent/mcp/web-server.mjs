@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { extractAppearanceFacts } from '../research/appearance.mjs';
 import { normalizeResearchSettings } from '../research/settings.mjs';
 import { matchSkill, SKILLS, skillManifest, SKILL_CONTRACT_VERSION } from '../skills/index.mjs';
-import { validateToolInput } from '../schemas/tool-schema.mjs';
+import { validateToolInput } from '../schemas/tool-schema.ts';
 import { ComfyUITool } from '../tools/comfyui/index.mjs';
 import { FilesystemTool } from '../tools/filesystem/index.mjs';
 import { PromptLibraryTool } from '../tools/prompt-library/index.mjs';
@@ -18,7 +18,7 @@ import { createServiceTools } from '../../runtime/service-tools.mjs';
 import { createMediaTools } from '../../runtime/media/media-tools.mjs';
 import { createConfiguredSkillRegistry } from '../skills/index.mjs';
 import { createSandboxPolicy } from '../security/sandbox.mjs';
-import { normalizePlan, validatePlan } from '../schemas/plan-schema.mjs';
+import { normalizePlan, validatePlan } from '../schemas/plan-schema.ts';
 
 export const MCP_PROTOCOL_VERSION = '2025-11-25';
 const SERVER_VERSION = '0.2.1';
@@ -257,36 +257,60 @@ function parseRpcLine(line) {
 }
 
 export async function runMcpStdio(server, input = process.stdin, output = process.stdout) {
-  let buffer = '';
+  // A client that hangs up mid-response must not crash the server with an
+  // unhandled EPIPE — there is simply nobody left to answer.
+  output.on?.('error', error => {
+    if (error?.code === 'EPIPE') process.exit(0);
+    throw error;
+  });
+  const writeLine = payload => {
+    try { output.write(payload); } catch (error) { if (error?.code !== 'EPIPE') throw error; }
+  };
+  // Handle requests concurrently: a minutes-long tools/call must not block
+  // ping/tools/list on the same pipe. Responses are written as they settle.
+  const inflight = new Set();
+  const handleLine = line => {
+    if (!line.trim()) return;
+    let request;
+    try { request = parseRpcLine(line); } catch (error) {
+      writeLine(`${JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: null, error: rpcError(error.code || -32700, error.message) })}\n`);
+      return;
+    }
+    if (request.id === undefined) {
+      void server.handle(request).catch(() => {});
+      return;
+    }
+    const settled = server.handle(request).then(
+      result => writeLine(`${JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: request.id, result })}\n`),
+      error => writeLine(`${JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: request.id, error: rpcError(error.code || -32603, error.message, error.data) })}\n`),
+    ).finally(() => inflight.delete(settled));
+    inflight.add(settled);
+  };
+  // Buffer raw bytes and decode whole lines only: a multi-byte UTF-8 character
+  // split across pipe chunks would otherwise be corrupted into U+FFFD.
+  let pending = Buffer.alloc(0);
+  const consumeLine = lineBuffer => {
+    handleLine(lineBuffer.toString('utf8').replace(/\r$/, ''));
+  };
   for await (const chunk of input) {
-    buffer += chunk.toString();
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() || '';
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      let request;
-      try { request = parseRpcLine(line); } catch (error) {
-        output.write(`${JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: null, error: rpcError(error.code || -32700, error.message) })}\n`);
-        continue;
-      }
-      if (request.id === undefined) {
-        await server.handle(request).catch(() => {});
-        continue;
-      }
-      try {
-        const result = await server.handle(request);
-        output.write(`${JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: request.id, result })}\n`);
-      } catch (error) {
-        output.write(`${JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: request.id, error: rpcError(error.code || -32603, error.message, error.data) })}\n`);
-      }
+    pending = Buffer.concat([pending, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+    let newlineIndex;
+    while ((newlineIndex = pending.indexOf(0x0A)) !== -1) {
+      const lineBuffer = pending.subarray(0, newlineIndex);
+      pending = pending.subarray(newlineIndex + 1);
+      consumeLine(lineBuffer);
     }
   }
+  if (pending.length) consumeLine(pending);
+  await Promise.allSettled([...inflight]);
 }
 
 export function createMcpHttpServer(server, { host = '127.0.0.1', port = 0, authToken = '', requireAuth = true, sessionRegistry = null, principalResolver = null } = {}) {
   const sessions = new Map();
+  const MAX_SESSIONS = 1000;
   server.enableMultiSession?.();
   const httpServer = createServer(async (request, response) => {
+    try {
     response.setHeader('Access-Control-Allow-Origin', 'null');
     response.setHeader('Access-Control-Allow-Headers', 'content-type, accept, authorization, mcp-session-id');
     response.setHeader('Access-Control-Expose-Headers', 'mcp-session-id');
@@ -295,8 +319,22 @@ export function createMcpHttpServer(server, { host = '127.0.0.1', port = 0, auth
     if (requireAuth && (!authToken || request.headers.authorization !== `Bearer ${authToken}`)) { response.writeHead(401); response.end('Unauthorized'); return; }
     const accepts = String(request.headers.accept || 'application/json');
     if (!accepts.includes('application/json') && !accepts.includes('text/event-stream')) { response.writeHead(406); response.end('Unsupported Accept'); return; }
-    let body = '';
-    for await (const chunk of request) { body += chunk; if (Buffer.byteLength(body) > 1024 * 1024) { response.writeHead(413); response.end('Payload too large'); return; } }
+    // Buffer raw bytes and decode once: decoding per TCP chunk corrupts
+    // multi-byte UTF-8 characters split across segment boundaries.
+    const bodyChunks = [];
+    let bodySize = 0;
+    try {
+      for await (const chunk of request) {
+        const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        bodySize += data.length;
+        if (bodySize > 1024 * 1024) { response.writeHead(413); response.end('Payload too large'); return; }
+        bodyChunks.push(data);
+      }
+    } catch {
+      // Client aborted mid-body (timeout, navigation) — nothing to answer.
+      return;
+    }
+    const body = Buffer.concat(bodyChunks).toString('utf8');
     let rpc;
     try { rpc = parseRpcLine(body.trim()); } catch (error) { response.writeHead(400, { 'content-type': 'application/json' }); response.end(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: null, error: rpcError(error.code || -32700, error.message) })); return; }
     const requestedSession = String(request.headers['mcp-session-id'] || '');
@@ -319,6 +357,10 @@ export function createMcpHttpServer(server, { host = '127.0.0.1', port = 0, auth
       if (rpc.id === undefined) { response.writeHead(202); response.end(); return; }
       const headers = { 'content-type': accepts.includes('text/event-stream') ? 'text/event-stream' : 'application/json' };
       if (rpc.method === 'initialize') {
+        if (sessions.size >= MAX_SESSIONS) {
+          const oldest = sessions.keys().next().value;
+          if (oldest !== undefined) sessions.delete(oldest);
+        }
         const sessionId = `mcp_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
         sessions.set(sessionId, { createdAt: Date.now(), principal: principalResolver?.(request) || null });
         if (sessionRegistry) {
@@ -335,8 +377,27 @@ export function createMcpHttpServer(server, { host = '127.0.0.1', port = 0, auth
     } catch (error) {
       response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: rpc.id ?? null, error: rpcError(error.code || -32603, error.message, error.data) }));
     }
+    } catch (error) {
+      // Last-resort guard: any unexpected per-request failure (client socket
+      // reset, decode error) must not take down the whole server process.
+      try {
+        if (!response.headersSent) response.writeHead(500, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: null, error: rpcError(-32603, 'Internal server error') }));
+      } catch {}
+    }
   });
-  return { server: httpServer, listen: () => new Promise(resolve => httpServer.listen(port, host, () => resolve(httpServer.address()))), close: () => new Promise(resolve => httpServer.close(resolve)) };
+  httpServer.on('error', () => {});
+  return {
+    server: httpServer,
+    listen: () => new Promise((resolve, reject) => {
+      const onListening = () => { httpServer.off('error', onError); resolve(httpServer.address()); };
+      const onError = error => { httpServer.off('listening', onListening); reject(error); };
+      httpServer.once('listening', onListening);
+      httpServer.once('error', onError);
+      httpServer.listen(port, host);
+    }),
+    close: () => new Promise(resolve => httpServer.close(resolve)),
+  };
 }
 
 export { mcpResult };

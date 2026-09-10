@@ -1,0 +1,46 @@
+{
+  "name": "comfy-agent",
+  "version": "0.3.7",
+  "type": "module",
+  "license": "MIT",
+  "description": "ComfyMuse - AI Creative Studio powered by ComfyUI",
+  "main": "electron/main.mjs",
+  "bin": {
+    "comfy-agent": "src/cli.mjs"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && .\\node_modules\\electron\\dist\\electron.exe .\"",
+    "build": "vite build",
+    "pack": "vite build",
+    "icons": "node scripts/generate-icons.mjs",
+    "test": "node scripts/run-tests.mjs",
+    "test:ui": "vitest run",
+    "lint": "node scripts/lint.mjs && node scripts/lint-theme.mjs",
+    "agent": "node src/cli.mjs",
+    "mcp": "node src/mcp-server.mjs",
+    "mcp:http": "set COMFY_AGENT_MCP_TRANSPORT=http&&node src/mcp-server.mjs",
+    "release:manifest": "node scripts/create-release-manifest.mjs",
+    "test:update-signature": "node --test tests/update-signature.test.mjs"
+  },
+  "dependencies": {
+    "katex": "^0.16.47",
+    "mermaid": "^11.16.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "jsdom": "^30.0.1",
+    "vite": "^5.4.11",
+    "vitest": "^4.1.10",
+    "wait-on": "^8.0.1"
+  }
+}

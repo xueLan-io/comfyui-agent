@@ -78,6 +78,16 @@ if errorlevel 1 (
     echo ComfyUI client packaging failed
     exit /b 1
 )
+copy /y "LICENSE" "%APPDIR%\" >nul
+if errorlevel 1 (
+    echo License packaging failed
+    exit /b 1
+)
+copy /y "THIRD-PARTY-NOTICES.md" "%APPDIR%\" >nul
+if errorlevel 1 (
+    echo Third-party notices packaging failed
+    exit /b 1
+)
 rem Copy the complete Electron runtime. Keeping a hand-maintained file list here
 rem causes new imports to be omitted from portable builds.
 xcopy /e /i /q "electron" "%APPDIR%\electron" >nul

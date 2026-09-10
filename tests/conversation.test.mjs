@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ConversationMemory } from '../src/agent/memory/conversation.mjs';
-import { fitMessagesToContext } from '../src/agent/llm/provider.mjs';
+import { fitMessagesToContext } from '../src/agent/llm/provider.ts';
 
 test('add message', () => {
   const convo = new ConversationMemory();

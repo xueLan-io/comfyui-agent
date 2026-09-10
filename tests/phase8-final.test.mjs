@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LLMProvider } from '../src/agent/llm/provider.mjs';
+import { LLMProvider } from '../src/agent/llm/provider.ts';
 import { TaskManager } from '../src/agent/runtime/task-manager.mjs';
 
 test('task trace persists schema and recovery metadata', () => {

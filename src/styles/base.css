@@ -1,16 +1,8 @@
 @font-face {
-  font-family: "starry-ui";
-  src: url("./fonts/starry-ui.ttf") format("truetype");
+  font-family: "nowar-ui";
+  src: url("../fonts/nowar-sans-ui.ttf") format("truetype");
   font-style: normal;
-  font-weight: 400 700;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "starry-display";
-  src: url("./fonts/starry-display.ttf") format("truetype");
-  font-style: normal;
-  font-weight: 400 700;
+  font-weight: 400;
   font-display: swap;
 }
 
@@ -25,7 +17,7 @@
   --text-primary: #f1f6fb;
   --text-secondary: #b7c5d3;
   --text-muted: #7f91a3;
-  --text-dim: #5c6c7c;
+  --text-dim: #6e7f92;
   --border-subtle: #1e2a36;
   --border-default: #2b3b4c;
   --border-strong: #3d5267;
@@ -53,8 +45,27 @@
   --transition-fast: 120ms ease;
   --transition-base: 180ms ease;
   --transition-slow: 280ms ease-out;
-  --font-ui: Inter, "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  --font-ui: "nowar-ui", Inter, "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  --font-display: "nowar-ui", Inter, "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
   --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  --bg-input: #0d141c;
+  --bg-composer: #0b1016;
+  --bg-floating: #101821;
+  --bg-overlay: rgba(10, 15, 21, .94);
+  --bg-tinted-surface: rgba(21, 29, 39, .72);
+  --border-tinted: rgba(170, 190, 210, .22);
+  --surface-highlight: rgba(255, 255, 255, .035);
+  --shadow-color: rgba(0, 0, 0, .24);
+  --text-on-accent: #07121e;
+  --content-gradient: linear-gradient(180deg, rgba(23, 31, 41, .98) 0%, rgba(12, 17, 24, .99) 100%);
+  --panel-edge-gradient: linear-gradient(180deg, rgba(150, 190, 225, .28), rgba(255, 255, 255, .04) 34%, rgba(0, 0, 0, .18));
+  --bg-sunken: rgba(5, 10, 15, .32);
+  --bg-sunken-strong: rgba(21, 29, 39, .94);
+  --bg-code-block: rgba(0, 0, 0, .18);
+  --bg-media: #080c11;
+  --halo-a: rgba(96, 140, 255, .16);
+  --halo-b: rgba(126, 96, 255, .12);
+  --atmosphere-opacity: 1;
 }
 
 * {
@@ -145,4 +156,3 @@ a:focus-visible {
   flex-direction: column;
   overflow: hidden;
 }
-

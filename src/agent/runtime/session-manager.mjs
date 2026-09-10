@@ -445,6 +445,11 @@ export class SessionManager {
   // 会恢复成没有终态的空状态（虚空响应），最新预览也随之丢失。
   upsertGenerationRecordFor(projectId, sessionId, record = {}) {
     if (!projectId || !sessionId || !record?.requestId) return null;
+    // 目标恰为活跃会话时必须走活跃路径：只写快照会在下一次 setSessionState
+    // 用内存里的旧 sessionState 整体覆盖时被抹掉。
+    if (projectId === this.activeProjectId && sessionId === this.activeSessionId) {
+      return this.upsertGenerationRecord(record);
+    }
     if (!this.sessionStates[projectId]) this.sessionStates[projectId] = {};
     const stored = this.sessionStates[projectId][sessionId] || sessionStateDefaults();
     const merged = this._upsertGenerationRecordInto(projectId, sessionId, record, stored);
@@ -480,6 +485,11 @@ export class SessionManager {
   // 终态的空状态（虚空响应），最新预览随之丢失。
   setSessionStateFor(projectId, sessionId, patch = {}) {
     if (!projectId || !sessionId) return null;
+    // 目标恰为活跃会话时必须走活跃路径，否则写入只落到持久化快照，
+    // 下一次 setSessionState 会用内存里的旧 sessionState 把它整个抹掉。
+    if (projectId === this.activeProjectId && sessionId === this.activeSessionId) {
+      return this.setSessionState(patch);
+    }
     if (!this.sessionStates[projectId]) this.sessionStates[projectId] = {};
     const stored = this.sessionStates[projectId][sessionId] || sessionStateDefaults();
     const next = {

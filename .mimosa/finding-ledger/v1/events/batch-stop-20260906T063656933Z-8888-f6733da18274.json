@@ -1,0 +1,251 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260906T063656933Z-8888-f6733da18274",
+  "runId": "20260906T063656933Z-8888-f6733da18274",
+  "runStatus": "inconclusive",
+  "coverage": {
+    "status": "partial",
+    "reasons": [
+      {
+        "code": "changed_file_unreadable",
+        "stage": "candidate-select",
+        "target": "scratch-ts-spike/package.json",
+        "detail": "observed changed file no longer exists or cannot be read",
+        "affectsCompletion": true
+      },
+      {
+        "code": "changed_file_unreadable",
+        "stage": "candidate-select",
+        "target": "scratch-ts-spike/mod.ts",
+        "detail": "observed changed file no longer exists or cannot be read",
+        "affectsCompletion": true
+      },
+      {
+        "code": "changed_file_unreadable",
+        "stage": "candidate-select",
+        "target": "scratch-ts-spike/worker.ts",
+        "detail": "observed changed file no longer exists or cannot be read",
+        "affectsCompletion": true
+      },
+      {
+        "code": "candidate_limit_exceeded",
+        "stage": "candidate-select",
+        "target": "package-lock.json",
+        "detail": "5 changed reviewable file(s) were not scanned because the limit is 20",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "scratch-ts-spike/package.json",
+        "detail": "changed_file_unreadable: observed changed file no longer exists or cannot be read",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "scratch-ts-spike/mod.ts",
+        "detail": "changed_file_unreadable: observed changed file no longer exists or cannot be read",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "scratch-ts-spike/worker.ts",
+        "detail": "changed_file_unreadable: observed changed file no longer exists or cannot be read",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "package-lock.json",
+        "detail": "candidate_limit_exceeded: 5 changed reviewable file(s) were not scanned because the limit is 20",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "agent-check",
+        "target": ".",
+        "detail": "spawnSync C:\\Program Files\\nodejs\\node.exe ETIMEDOUT",
+        "affectsCompletion": true
+      }
+    ]
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "2a021b064cbd5b92217efce6cb0f235be0e76609",
+  "diffHash": "71f696a14909a1f6c0b03b9eb128f11b266ad933cff8fedfcd81935c29ad4e2c",
+  "rulesVersion": "unavailable",
+  "sessionHash": "3bfd49dc0ae63dd82f5e08f6c54699fcd4d0541c1b8dc75b3d5e6ebe0f1fc48d",
+  "reportRef": ".mimosa/reports/task-review-sess_ff154d8a-620c-4f51-9f8f-6baf0285ad55-20260906T063656933Z-8888-f6733da18274.json",
+  "events": [
+    {
+      "eventId": "hook-b318bd92b9002ff307872b0997457a89",
+      "findingId": "mimosa-0207580a7661d298eeafd9dd",
+      "type": "finding_observed",
+      "at": "2026-09-06T06:36:56.933Z",
+      "identity": {
+        "projectRelativeFile": "package.json",
+        "ruleId": "mimosa.supply.version-range",
+        "codeEvidenceHash": "955146508d3ec249ddf70a0a5500cdddb33bd91678e8054e0e6253bc5e521040",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 38,
+      "endLine": 38,
+      "reasonCode": "observe",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "955146508d3ec249ddf70a0a5500cdddb33bd91678e8054e0e6253bc5e521040"
+      },
+      "sequence": 0
+    },
+    {
+      "eventId": "hook-5649529c8a7f4a281969fc77f5dc0d0f",
+      "findingId": "mimosa-9d8d308a61e066a247382b72",
+      "type": "finding_observed",
+      "at": "2026-09-06T06:36:56.933Z",
+      "identity": {
+        "projectRelativeFile": "package.json",
+        "ruleId": "mimosa.supply.version-range",
+        "codeEvidenceHash": "428e91c026ce7fcf36049967d88faf6e07f607ea2035b23585ce4c89570c3c85",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 41,
+      "endLine": 41,
+      "reasonCode": "observe",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "428e91c026ce7fcf36049967d88faf6e07f607ea2035b23585ce4c89570c3c85"
+      },
+      "sequence": 1
+    },
+    {
+      "eventId": "hook-be7b10ea02c63332e4a540c7a070ee2f",
+      "findingId": "mimosa-d705e16b0786c737adabd4bc",
+      "type": "finding_observed",
+      "at": "2026-09-06T06:36:56.933Z",
+      "identity": {
+        "projectRelativeFile": "package.json",
+        "ruleId": "mimosa.supply.version-range",
+        "codeEvidenceHash": "701edfd6d1e5dbc65fea0859d954fe967c6a6193f8523628a4aca696712f00d9",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 44,
+      "endLine": 44,
+      "reasonCode": "observe",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "701edfd6d1e5dbc65fea0859d954fe967c6a6193f8523628a4aca696712f00d9"
+      },
+      "sequence": 2
+    }
+  ],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "src/agent/types/llm.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/schemas/skill-schema.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/schemas/intent-schema.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/schemas/execution-context.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/schemas/context-sanitizer.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/schemas/tool-schema.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/schemas/event-schema.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/events/agent-events.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/schemas/confirmation-schema.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/schemas/index.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/schemas/artifact-schema.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/schemas/evaluation-schema.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/schemas/plan-schema.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/schemas/context-schema.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/runtime/generation-contract.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/index.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/llm/openai-compatible.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/agent/llm/provider.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-06T06:36:57.383Z"
+}

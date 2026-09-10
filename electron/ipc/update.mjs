@@ -107,6 +107,11 @@ export function createUpdateService(ctx) {
         manifest = await fetchSignedManifest(asset.browser_download_url);
       }
       verifiedManifest = manifest;
+      // A package downloaded for an older verified manifest must not survive a
+      // new check: installing it would silently deploy a stale version.
+      if (downloadedUpdate && String(downloadedUpdate.manifest?.version || '') !== String(manifest.version || '')) {
+        downloadedUpdate = null;
+      }
       const available = compareVersions(manifest.version, app.getVersion()) > 0;
       const runtimeCompatible = manifest.runtimeVersion === 'electron-33';
       updateState = { status: available ? (runtimeCompatible ? 'available' : 'full-required') : 'latest', progress: 0, version: manifest.version || '', error: '', manifest, runtimeCompatible };
@@ -141,7 +146,12 @@ export function createUpdateService(ctx) {
         break;
       } catch (error) { lastError = error; }
     }
-    if (lastError) throw lastError;
+    if (lastError) {
+      // Without recording the failure the UI would poll a download that is
+      // stuck at 'downloading' forever.
+      updateState = { ...updateState, status: 'error', error: lastError.message };
+      throw lastError;
+    }
     const digest = createHash('sha256').update(readFileSync(target)).digest('hex');
     if (digest.toLowerCase() !== String(manifest.updatePackage.sha256).toLowerCase()) {
       await unlink(target).catch(() => {});

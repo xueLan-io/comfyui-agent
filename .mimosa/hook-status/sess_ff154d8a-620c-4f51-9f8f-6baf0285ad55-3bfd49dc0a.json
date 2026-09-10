@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-09-06T08:57:01.258Z",
+  "sessionId": "sess_ff154d8a-620c-4f51-9f8f-6baf0285ad55",
+  "event": "PostToolUse",
+  "toolName": "Edit",
+  "file": "C:/Users/Administrator/.zcode/cli/memories/projects/comfyui-agent-b723bdb47acf6269/memory/ts-migration-state.md",
+  "outcome": "clear",
+  "coverage": "complete",
+  "findingCount": 0,
+  "durationMs": 3,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

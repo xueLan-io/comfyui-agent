@@ -26,7 +26,10 @@ function splitSegments(text) {
 }
 
 function trimByTokens(text, budget) {
-  const parts = String(text).match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]|[^\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+/g) || [];
+  // Split CJK per character but keep Latin text word-granular (whitespace is
+  // its own zero-cost token), so an over-budget English prompt keeps whole
+  // words instead of collapsing to an empty string.
+  const parts = String(text).match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]|[^\s\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+|\s+/g) || [];
   let out = '';
   let tokens = 0;
   for (const part of parts) {
@@ -36,7 +39,7 @@ function trimByTokens(text, budget) {
     out += part;
     tokens += partTokens;
   }
-  return out;
+  return out.trim();
 }
 
 export function dedupeTerms(text) {

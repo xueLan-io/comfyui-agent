@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attachVisionImages, collectChatImages } from '../src/agent/runtime/chat-vision.mjs';
-import { sanitizeMessages } from '../src/agent/schemas/context-sanitizer.mjs';
+import { sanitizeMessages } from '../src/agent/schemas/context-sanitizer.ts';
 
 test('collectChatImages accepts selected media and an authorized pasted local path', () => {
   const dir = mkdtempSync(join(tmpdir(), 'comfy-agent-vision-'));

@@ -1,4 +1,4 @@
-import { sanitizeContextValue } from '../schemas/context-sanitizer.mjs';
+import { sanitizeContextValue } from '../schemas/context-sanitizer.ts';
 import { TRACE_SCHEMA_VERSION } from '../../runtime/trace-contract.mjs';
 
 export const TASK_STATES = [

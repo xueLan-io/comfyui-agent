@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Agent } from '../src/agent/runtime/agent.mjs';
-import { AgentEventTypes, on } from '../src/agent/events/agent-events.mjs';
+import { AgentEventTypes, on } from '../src/agent/events/agent-events.ts';
 import { ComfyUITool } from '../src/agent/tools/comfyui/index.mjs';
 import { ANIME_QUALITY_BASELINE } from '../src/agent/tools/prompt/anime-presets.mjs';
 

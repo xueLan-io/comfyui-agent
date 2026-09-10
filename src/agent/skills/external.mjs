@@ -34,7 +34,10 @@ export function validateExternalSkill(value, source = '') {
   if (!Array.isArray(value.keywords) || value.keywords.length === 0) errors.push('keywords must contain at least one item');
   const target = value.target || {};
   if (target.tool && !ALLOWED_TOOLS.has(target.tool)) errors.push(`unsupported target tool: ${target.tool}`);
-  if (target.workflowName !== undefined && !/^[^\\/:*?"<>|]{1,160}(\.json)?$/i.test(String(target.workflowName))) errors.push('target.workflowName is not a safe workflow name');
+  // workflowName is optional (empty = use the currently selected workflow);
+  // only non-empty values must be a safe single-segment file name.
+  const workflowName = String(target.workflowName ?? '').trim();
+  if (workflowName && !/^[^\\/:*?"<>|]{1,160}(\.json)?$/i.test(workflowName)) errors.push('target.workflowName is not a safe workflow name');
   if (target.promptMode && !ALLOWED_MODES.has(target.promptMode)) errors.push(`unsupported prompt mode: ${target.promptMode}`);
   return { valid: errors.length === 0, errors, source };
 }

@@ -1,8 +1,8 @@
-import { normalizeIntentDecision, parseIntentDecision } from '../schemas/intent-schema.mjs';
+import { normalizeIntentDecision, parseIntentDecision } from '../schemas/intent-schema.ts';
 import { hasRefinementDirection } from '../tools/prompt/readiness.mjs';
 import { attachVisionImages, collectChatImages } from './chat-vision.mjs';
-import { resolveLLMStrategy } from '../llm/provider.mjs';
-import { emit, AgentEventTypes } from '../events/agent-events.mjs';
+import { resolveLLMStrategy } from '../llm/provider.ts';
+import { emit, AgentEventTypes } from '../events/agent-events.ts';
 
 const ROUTER_PROMPT = `You classify the latest request for a local ComfyUI creative assistant.
 Return ONLY JSON with these keys: intent, action, target, slots, execution, confidence, missing, requiresConfirmation, question, reason.
@@ -26,7 +26,7 @@ const PROMPT_ONLY = /(只|仅|先)?(?:修改|优化|润色|改写|重写|检查)
 const PROMPT_OP = /(?:修改|优化|润色|改写|重写|检查|扩写|精简|翻译|美化|改进)(?:一下|下)?(?:我)?(?:的|这个|这段)?(?:提示词|prompt)/i;
 const EDIT = /(图生图|img2img|局部重绘|inpaint|蒙版|遮罩|换背景|重绘|改成油画|改成水彩|风格转换|把这张|参考图|照片改)/i;
 const UPSCALE = /(?:放大|超分|高清|超高分辨率|upscale|super.?resolution|2x|4x)/i;
-const GENERATE = /(生成|画一|画个|绘制|出图|生图|做一张|做个|想要(?:个|一张|一幅)?|创建图片|生成图片|generate|draw|render|create an? image|make an? image|want an? image|img2img)/i;
+const GENERATE = /(生成|画一|画个|绘制|出图|生图|做一张|做个|想要(?:个|一张|一幅|一个|一只|一组|一套|一段|张|幅|只)|创建图片|生成图片|generate|draw|render|create an? image|make an? image|want an? image|img2img)/i;
 const REFINE = /(换成|换个|改成|调整|优化|再来一张|重做|更好看|太普通|不够好|感觉一般|不满意|不好看|加强|减弱|变得|change|adjust|refine|improve|another one)/i;
 const NEW_REFERENCE = /(上一张|上一次|前一张|这个图|这张图|这幅图|this image|that image|previous)/i;
 const REFINEMENT_ACTION = /(?:\u4fee\u6b63|\u4fee\u6539|\u4fee\u590d|\u91cd\u7ed8|\u91cd\u505a|\u6539\u4e00\u4e0b|\u8c03\u6574\u4e00\u4e0b)/i;

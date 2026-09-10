@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Agent } from '../src/agent/runtime/agent.mjs';
-import { AgentEventTypes, on } from '../src/agent/events/agent-events.mjs';
+import { AgentEventTypes, on } from '../src/agent/events/agent-events.ts';
 
 test('Agent chat applies local preference, 1024 output budget, and context window', async () => {
   const agent = new Agent({ llmConfig: { provider: 'openai-compatible', model: 'test-model', apiKey: 'test-key' } });

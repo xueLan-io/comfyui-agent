@@ -8,7 +8,7 @@ import {
   StatusEventSchema,
   StepEventSchema,
   createEvent,
-} from '../src/agent/schemas/event-schema.mjs';
+} from '../src/agent/schemas/event-schema.ts';
 import { TASK_STATUS } from '../src/agent/runtime/task-manager.mjs';
 
 const main = await readFile(new URL('../electron/main.mjs', import.meta.url), 'utf8');

@@ -10,10 +10,10 @@ const files = {
   directService: await readFile(new URL('../src/runtime/direct/direct-service.mjs', import.meta.url), 'utf8'),
   main: await readFile(new URL('../electron/main.mjs', import.meta.url), 'utf8'),
   preload: await readFile(new URL('../electron/preload.cjs', import.meta.url), 'utf8'),
-  worker: await readFile(new URL('../electron/agent-worker.mjs', import.meta.url), 'utf8'),
+  worker: await readFile(new URL('../electron/agent-worker.ts', import.meta.url), 'utf8'),
   agent: await readFile(new URL('../src/agent/runtime/agent.mjs', import.meta.url), 'utf8'),
   chatFlow: await readFile(new URL('../src/agent/runtime/chat-flow.mjs', import.meta.url), 'utf8'),
-  chatRequest: await readFile(new URL('../src/agent/runtime/chat-request.mjs', import.meta.url), 'utf8'),
+  chatRequest: await readFile(new URL('../src/agent/runtime/chat-request.ts', import.meta.url), 'utf8'),
   turnFlow: await readFile(new URL('../src/agent/runtime/turn-flow.mjs', import.meta.url), 'utf8'),
   turnOps: await readFile(new URL('../src/agent/runtime/turn-ops.mjs', import.meta.url), 'utf8'),
 };
@@ -145,7 +145,7 @@ test('creative chat creates a generation record only after the user confirms exe
 test('streamed reasoning is surfaced as thinking plan events and cleared on first content', () => {
   assert.match(files.chatFlow, /emit\(AgentEventTypes\.PLAN, \{ stage: 'thinking', partial: '正在思考…', taskId, traceId, turnId \}\);/);
   assert.match(files.chatRequest, /onReasoningStart: \(\) => \{ thinking = ''; emit\(AgentEventTypes\.PLAN, \{ stage: 'thinking', partial: '正在思考…', taskId, traceId, turnId \}\);/);
-  assert.match(files.chatRequest, /onReasoningText: text => \{ thinking \+= text; emit\(AgentEventTypes\.PLAN, \{ stage: 'thinking', partial: thinking\.slice\(-1500\), taskId, traceId, turnId \}\);/);
+  assert.match(files.chatRequest, /onReasoningText: (?:text|\(text: string\)) => \{ thinking \+= text; emit\(AgentEventTypes\.PLAN, \{ stage: 'thinking', partial: thinking\.slice\(-1500\), taskId, traceId, turnId \}\);/);
   assert.match(files.chatRequest, /if \(!started\) \{ started = true; emit\(AgentEventTypes\.PLAN, \{ stage: 'complete', taskId, traceId, turnId \}\);/);
   assert.match(files.chatRequest, /emit\(AgentEventTypes\.PLAN, \{ stage: 'error', taskId, traceId \}\);/);
   assert.match(files.panel, /thinking-live-text">\{thinking\}<\/pre>/);

@@ -2,7 +2,7 @@
 // extracted from agent.mjs. Behavior-preserving moves: the Agent methods
 // delegate here one line each.
 
-import { emit, AgentEventTypes } from '../events/agent-events.mjs';
+import { emit, AgentEventTypes } from '../events/agent-events.ts';
 
 export async function chatWithDegradation(agent, { buildRequest, isLocal, taskId, traceId, streamMessageId = '' }) {
   // Retrying an empty response must not change the conversation. Context

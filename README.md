@@ -291,3 +291,5 @@ Agent 提供两条不绑定具体显卡型号的 MiniMax H3 首跑参数路线�
 ## 许可证
 
 本项目采用 [MIT License](LICENSE)。
+
+本项目包含来自第三方仓库的提示词词库数据与字体等资源（Danbooru 标签数据、WeiLin 标签词典、Super Grimoire 词典、CloudDB 艺术家词库、Nowar 字体）。第三方内容的版权与许可声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)，其中部分数据来源未附带正式开源许可证，商用前请自行核实。

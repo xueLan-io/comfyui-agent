@@ -69,6 +69,11 @@ export function classifyFailure(error, { tool = '', action = '' } = {}) {
   if (tool === 'filesystem' || tool === 'filesystem_mutate') {
     return { type: 'filesystem', retryable: false, reason: 'Filesystem operations are not retried automatically', userMessage: '文件操作失败，未自动重试' };
   }
+  if (tool === 'web') {
+    // 联网检索失败是环境问题（断网/全源失败/冷却），重试和重规划都无济于事；
+    // run-flow 会把 web 步骤按可选步骤跳过，生成链继续。
+    return { type: 'web_unavailable', retryable: false, reason: message || 'Web research failed', userMessage: '联网搜索不可用，已跳过该步骤' };
+  }
   if (NON_RETRYABLE.some(pattern => pattern.test(message))) {
     const type = /workflow/i.test(message) ? 'workflow_not_found'
       : /node/i.test(message) ? 'node_not_found'

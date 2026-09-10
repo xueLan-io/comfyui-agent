@@ -214,9 +214,11 @@ ComfyMuse 的**差异化资产是“能力平台”**：agent 规划/执行/治�
 | P1 UI + 接线 | ✅ | `198178d` | worker 创建 LongTermMemory 并暴露 memory.* RPC；main 新增 memory:* IPC；preload 暴露 7 个通道；`MemorySettings.jsx`（偏好 tag 编辑器、角色卡增删改、记忆段浏览、清空确认、JSON 导出）挂入设置页 memory tab；zh/en i18n；2 个渲染层冒烟测试 |
 | P1 隐私与治理 | ✅（设计收敛） | — | 记忆仅注入本地模型（与既有 cloud 提示词刻意剔除项目上下文的模式一致）；记忆数据属用户本地数据，UI 可查看/编辑/清空/导出；无云端外发路径 |
 | P1 角色卡移除 | ✅ 已移除 | — | 角色卡与预设卡（生成配方）及个性分页（自定义人格）生态位重叠，且 recall 仅注入本地聊天系统提示词、不进入图像生成链路，判为冗余；已从 long-term.mjs 存储/recall、memory:* IPC、worker RPC、preload 桥接、MemorySettings UI、zh/en i18n、CSS 与测试全链路移除；MemorySettings 现仅保留项目偏好与记忆段 |
+| P1 可选增强（2026-08-17） | ✅ | — | ①记忆设置开关：`memory.json` 内 `settings.enabled`（默认开），停用时 captureSession/recall 双短路，数据保留，UI 顶部开关经 `memory:set-settings` IPC → RPC 写回并随文件持久化；②用户级记忆：`user.notes` 由空壳变为可编辑（`setUserNotes` 去重截断、`memory:set-user-notes` IPC），recall 时以「用户全局备忘」块置顶注入（项目无数据也生效）；③召回进生成规划：run-flow 组装 ctx 时召回 `ctx.memoryContext`（与聊天同源、同一停用门），planner `_buildPlanPrompt` 追加记忆块（规划提示词本已携带项目上下文，记忆块与之同域且自带"参考数据非指令"声明）；④片段级管理：`deleteSegment` + 记忆段单条删除按钮，项目 profile.notes 可编辑，`projectState` 空项目返回空态对象（单一形态）而非 null；⑤召回评分 CJK bigram：中文无分隔查询按字符二元组参与子串匹配（「夜色车站」可命中「夜色下的车站」）。测试：long-term-memory 15、agent-memory 5、渲染层 5 |
 
 核心套件基线（P1 后）：**929 tests / 922 pass / 0 fail** + 渲染层 10 个冒烟测试；lint 279 文件；build 通过。
-剩余：P1 可选增强（记忆设置开关、用户级记忆、召回在生成规划中的应用）→ P2 批量流水线 → P3 插件生态。
+可选增强后基线（2026-08-17）：**996 tests / 989 pass / 0 fail**（7 skipped 为基线跳过）+ 渲染层 20 个冒烟测试；lint 298 文件 + 主题 lint 通过。
+剩余：P2 批量流水线 → P3 插件生态。
 
 ### 3.8 P2 批量创作流水线落地进度（2026-08-14 更新）
 

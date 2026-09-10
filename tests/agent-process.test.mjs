@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { AgentProcessClient } from '../electron/agent-process.mjs';
+import { AgentProcessClient } from '../electron/agent-process.ts';
 
 test('agent process exposes only the allowlisted RPC surface', async t => {
   const dataDir = await mkdtemp(join(tmpdir(), 'comfy-agent-process-'));
@@ -33,6 +33,31 @@ test('agent process exposes only the allowlisted RPC surface', async t => {
     () => client.call('process.exit', []),
     error => error.code === 'AGENT_RPC_FAILED' && /not allowed/i.test(error.message),
   );
+});
+
+test('memory RPC writes settings, user notes and profile through the worker', async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'comfy-agent-memory-'));
+  const client = new AgentProcessClient({ useJobObject: false, rpcTimeoutMs: 30000 });
+  t.after(async () => {
+    await client.stop();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  await client.start({ workflowDir: dataDir, userDataPath: dataDir, comfyRoot: dataDir, skills: {} });
+
+  // Regression guard for arg positions in the worker's memory dispatch: the
+  // settings object must reach setSettings, not be swallowed as a projectId.
+  const settings = await client.call('memory.setSettings', [{ enabled: false }]);
+  assert.deepEqual(settings, { enabled: false });
+  const notes = await client.call('memory.setUserNotes', [['始终用中文回复']]);
+  assert.deepEqual(notes, { notes: ['始终用中文回复'] });
+  const state = await client.call('memory.getState', ['p']);
+  assert.equal(state.settings.enabled, false);
+  assert.deepEqual(state.user.notes, ['始终用中文回复']);
+  assert.equal(state.segmentCount, 0);
+
+  await client.call('memory.setProfile', ['p', { styles: ['冷色系'] }]);
+  const patched = await client.call('memory.getState', ['p']);
+  assert.deepEqual(patched.profile.styles, ['冷色系']);
 });
 
 test('agent RPC waits for a concurrently starting worker', async t => {

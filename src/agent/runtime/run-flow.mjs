@@ -1,13 +1,13 @@
 // Generation execution orchestration extracted from Agent.
-import { attachMediaToPlan } from './planner.mjs';
+import { attachMediaToPlan } from './planner.ts';
 import { ComfyUITool } from '../tools/comfyui/index.mjs';
-import { initTurn, nextTraceId, emit, AgentEventTypes } from '../events/agent-events.mjs';
-import { buildAgentContext } from '../schemas/context-schema.mjs';
-import { validatePlan } from '../schemas/plan-schema.mjs';
+import { initTurn, nextTraceId, emit, AgentEventTypes } from '../events/agent-events.ts';
+import { buildAgentContext } from '../schemas/context-schema.ts';
+import { validatePlan } from '../schemas/plan-schema.ts';
 import { messageAttachments } from './chat-intents.mjs';
 import { newRequestId } from './prepare-ops.mjs';
 import { classifyFailure } from '../optimizer/retry-policy.mjs';
-import { normalizeGenerationResult } from '../../runtime/generation-contract.mjs';
+import { normalizeGenerationResult } from '../../runtime/generation-contract.ts';
 import { researchCharacterIfPlanned, shouldResearchCharacter } from './research-ops.mjs';
 import { APPEARANCE_FIELDS } from '../research/appearance.mjs';
 
@@ -15,6 +15,7 @@ export async function run(agent, userMessage, options = {}) {
     if (options.turnId) initTurn(options.turnId);
     const queued = agent._enqueue(() => agent.run(userMessage, options));
     if (queued) return queued;
+    const runEpoch = (agent._runEpoch = (Number(agent._runEpoch) || 0) + 1);
     agent._running = true;
     agent._cancelRequested = false;
     agent.retryPolicy.reset();
@@ -29,6 +30,8 @@ export async function run(agent, userMessage, options = {}) {
       agent._traceId = nextTraceId();
       agent.taskManager.create({ id: agent._taskId, requestId: agent._requestId, kind: 'run', message: effectiveRequest, traceId: agent._traceId, intent, projectId: agent.sessionManager.activeProjectId, sessionId: agent.sessionManager.activeSessionId });
     }
+    // 本运行自己的任务 id：被取代后 agent._taskId 已易主，返回值必须仍指旧任务。
+    const runTaskId = agent._taskId;
     const traceId = agent._traceId || nextTraceId();
     agent._traceId = traceId;
     void agent.taskManager.persist();
@@ -83,6 +86,7 @@ export async function run(agent, userMessage, options = {}) {
     ctx.filesystemRoots = agent._filesystemRoots();
     ctx.comfyRoot = agent.comfyRoot;
     ctx.signal = options.signal;
+    ctx.runEpoch = runEpoch;
     ctx.onProgress = progress => {
         if (progress.promptId) {
         agent._currentPromptId = progress.promptId;
@@ -120,10 +124,14 @@ export async function run(agent, userMessage, options = {}) {
     ctx.confirmedFileMutation = options.confirmedFileMutation === true;
     ctx.executionPolicy = options.executionPolicy || { retry: false, evaluate: false, mutatePrompt: false };
     ctx.eventMeta = { taskId: agent._taskId, traceId, turnId: options.turnId || '' };
+    // 跨会话记忆召回（与聊天路径同源）：让生成规划延续既定风格偏好与
+    // 约束。停用或无数据时为空串，不占提示词。
+    ctx.memoryContext = await agent._memoryContext(effectiveRequest);
 
     try {
       if (!preparedTask) agent._transitionState('planning', { message: 'Planning task...' });
       let plan = options.preparedPlan || await agent.planner.createPlan(effectiveRequest, ctx);
+      if (runEpoch !== agent._runEpoch) return { cancelled: true, superseded: true, taskId: runTaskId };
       const planValidation = validatePlan(plan, {
         tools: agent.tools,
         context: ctx,
@@ -148,8 +156,11 @@ export async function run(agent, userMessage, options = {}) {
       // 供后续 prompt_enhance 步骤作为 referenceContext 使用；同时移除已消费的 web 步骤，
       // 避免调研结果永远到不了提示词编译器。规划器未输出 web 步骤时，
       // 意图路由器判定需要研究或启发式命中角色外观请求也会强制调研。
-      const researchForced = options.execution?.needsResearch === true || shouldResearchCharacter(effectiveRequest, intent);
+      // researchDone: 确认预览后的执行跳（runPrepared）在 prepare 阶段已强制
+      // 调研过，且 web 步骤已被剥离，这里不再二次强制调研。
+      const researchForced = !options.researchDone && (options.execution?.needsResearch === true || shouldResearchCharacter(effectiveRequest, intent));
       await researchCharacterIfPlanned(agent, plan, ctx, effectiveRequest, { force: researchForced });
+      if (runEpoch !== agent._runEpoch) return { cancelled: true, superseded: true, taskId: runTaskId };
       // 直跑路径的执行器里，raw 模式的 prompt_enhance 步骤会直接返回原文、
       // 忽略 referenceContext。调研出事实后把该步骤模式提升为 anime-character，
       // 保证搜索到的外观事实真正进入编译器（与 prepare 路径的 mode 提升一致）。
@@ -182,6 +193,11 @@ export async function run(agent, userMessage, options = {}) {
           message: step.description || `Executing ${step.tool}`,
         });
         const output = await agent._executeWithRetry(step, ctx);
+        // 取消后新任务可能已启动（代际变化，_taskId/_state 已易主）：
+        // 本运行到此为止，不再改写共享状态或新任务的记录。
+        if (output.superseded || runEpoch !== agent._runEpoch) {
+          return { cancelled: true, superseded: true, taskId: runTaskId };
+        }
 
         if (output.skipped) {
           agent.taskManager.complete(agent._taskId, { result: { cancelled: true, stepId: step.id } });
@@ -189,7 +205,7 @@ export async function run(agent, userMessage, options = {}) {
           agent.conversation.add('agent', 'Task was cancelled.');
           agent.taskManager.update(agent._taskId, { status: 'cancelled', state: 'cancelled' });
           void agent.taskManager.persist();
-          agent.sessionManager.setSessionState?.({ phase: 'cancelled', lastTaskId: agent._taskId, pending: null });
+          agent.sessionManager.setSessionState?.({ phase: 'cancelled', lastTaskId: agent._taskId, pending: null, preparedPreview: null });
           agent.sessionManager.clearCurrentTask?.();
           return { cancelled: true, taskId: agent._taskId };
         }
@@ -198,13 +214,16 @@ export async function run(agent, userMessage, options = {}) {
           const failure = output.failure || classifyFailure(output.error, { tool: step.tool, stepId: step.id, action: step.input?.action });
           if (failure.replan && agent._replanCount < 1) {
             const replanned = await agent._replanPlan(plan, i, step, output, ctx, completedSteps);
+            if (runEpoch !== agent._runEpoch) return { cancelled: true, superseded: true, taskId: runTaskId };
             if (replanned) {
               plan = replanned;
               i = 0;
               continue;
             }
           }
-          if (step.optional) {
+          // web 步骤失败只意味着缺少参考资料：按可选步骤降级跳过，
+          // 后续生成继续走无调研资料的路径，而不是终结整条执行链。
+          if (step.optional || step.tool === 'web') {
             emit(AgentEventTypes.STEP, { stepId: step.id, tool: step.tool, status: 'skipped', description: `${step.description} (optional, failed)`, error: output.error });
             i++;
             continue;
@@ -221,6 +240,7 @@ export async function run(agent, userMessage, options = {}) {
             lastIntent: intent,
             lastTaskId: agent._taskId,
             pending: null,
+            preparedPreview: null,
             taskStatus: 'failed',
             taskFailure: { message: errorMsg, taskId: agent._taskId, type: failure.type },
             retryAction: { type: 'retry', taskId: agent._taskId },
@@ -353,6 +373,10 @@ export async function run(agent, userMessage, options = {}) {
       return taskResult;
 
     } catch (error) {
+      // 代际检查必须在前：新任务启动后 executor.reset() 已清掉取消标志，
+      // 旧运行的迟到错误（如 backoff 中止的 AbortError）会穿过下面的取消
+      // 检查，把新任务误标为 failed 并写坏会话状态。
+      if (runEpoch !== agent._runEpoch) return { cancelled: true, superseded: true, taskId: runTaskId };
       if (agent._cancelRequested || agent._state === 'cancelled' || agent.executor.cancelled) {
         return { cancelled: true, taskId: agent._taskId };
       }
@@ -369,6 +393,7 @@ export async function run(agent, userMessage, options = {}) {
         lastIntent: intent,
         lastTaskId: agent._taskId,
         pending: null,
+        preparedPreview: null,
         taskStatus: 'failed',
         taskFailure: { message: userMessage, taskId: agent._taskId },
         retryAction: { type: 'retry', taskId: agent._taskId },
@@ -376,7 +401,9 @@ export async function run(agent, userMessage, options = {}) {
       agent.sessionManager.clearCurrentTask?.();
       return { error: error.message, taskId: agent._taskId };
     } finally {
-      agent._running = false;
+      // Stale run (cancelled, superseded by a newer one): flipping _running
+      // here would yank the flag from under the new in-flight run.
+      if (agent._runEpoch === runEpoch) agent._running = false;
       await agent._drainQueue();
     }
 }

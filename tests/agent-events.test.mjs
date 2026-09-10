@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { emit, on, off, initSession, AgentEventTypes } from '../src/agent/events/agent-events.mjs';
+import { emit, on, off, initSession, AgentEventTypes } from '../src/agent/events/agent-events.ts';
 
 test('emit calls registered handlers', () => {
   let received = null;

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { OpenAICompatibleProvider } from '../src/agent/llm/openai-compatible.mjs';
-import { LLMProvider } from '../src/agent/llm/provider.mjs';
+import { OpenAICompatibleProvider } from '../src/agent/llm/openai-compatible.ts';
+import { LLMProvider } from '../src/agent/llm/provider.ts';
 import { Agent } from '../src/agent/runtime/agent.mjs';
-import { extractRequestedSettings } from '../src/agent/runtime/planner.mjs';
+import { extractRequestedSettings } from '../src/agent/runtime/planner.ts';
 
 test('adds the standard v1 path to a bare compatible API origin', () => {
   const provider = new OpenAICompatibleProvider({

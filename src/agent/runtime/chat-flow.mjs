@@ -2,10 +2,11 @@
 // deliberately used for overridable behavior (archive, memory, degradation, etc.).
 // P0-5 slice 9: chat() now delegates context/message/request assembly and the
 // reply lifecycle to chat-request.mjs; this file keeps only the orchestration.
-import { emit, AgentEventTypes, initTurn, nextTraceId } from '../events/agent-events.mjs';
+import { emit, AgentEventTypes, initTurn, nextTraceId } from '../events/agent-events.ts';
 import { normalizeResearchSettings } from '../research/settings.mjs';
 import { wantsWebResearch } from './chat-intents.mjs';
-import { assembleChatContext, assembleChatMessages, buildChatRequest, completeChatReply, handleChatFailure, researchReply, chatResearchContext } from './chat-request.mjs';
+import { assembleChatContext, assembleChatMessages, buildChatRequest, completeChatReply, handleChatFailure, researchReply, chatResearchContext } from './chat-request.ts';
+import { chatResearchWithDeadline } from './research-ops.mjs';
 
 export { chatResearchContext };
 
@@ -14,10 +15,22 @@ export async function chat(agent, userMessage, options = {}) {
   const queued = agent._enqueue(() => agent.chat(userMessage, options));
   if (queued) return queued;
   if (agent._state === 'awaiting_confirmation') throw new Error('有待确认的生成预览，请先确认或取消当前预览。');
+  agent._cancelRequested = false;
+  // Join the same run-epoch protocol as run()/prepareGeneration(): once a
+  // newer turn starts, this turn's unwind must not yank _running or the state
+  // machine out from under it.
+  const runEpoch = (agent._runEpoch = (Number(agent._runEpoch) || 0) + 1);
   agent._running = true; agent._taskId = `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; agent._traceId = nextTraceId();
   const taskId = agent._taskId, traceId = agent._traceId, turnId = options.turnId || '', intent = options.intent || 'chat';
   agent.taskManager.create({ id: taskId, kind: 'chat', message: userMessage, traceId, intent, projectId: agent.sessionManager.activeProjectId, sessionId: agent.sessionManager.activeSessionId, turnId }); void agent.taskManager.persist();
-  if (agent._state !== 'classifying') agent._transitionState('classifying', { message: 'Classifying request...' });
+  try {
+    if (agent._state !== 'classifying') agent._transitionState('classifying', { message: 'Classifying request...' });
+  } catch (error) {
+    // Never brick the agent: a failed initial transition must not leave
+    // _running latched true with every later turn queued forever.
+    if (agent._runEpoch === runEpoch) agent._running = false;
+    throw error;
+  }
   agent.sessionManager.setSessionState?.({ turnId, phase: 'running', lastIntent: intent, lastTaskId: taskId, pending: null, pendingIntent: null, pendingRequest: '', supplementalInput: '' });
   if (!options.skipUserMessage) agent._writeTurnMessage('user', userMessage, {}, turnId);
   emit(AgentEventTypes.MESSAGE, { role: 'user', content: userMessage, taskId, traceId }); emit(AgentEventTypes.STATUS, { status: 'running', message: '正在回复...', taskId, traceId });
@@ -29,7 +42,7 @@ export async function chat(agent, userMessage, options = {}) {
   if (local) {
     agent._transitionState('planning', { message: 'Preparing reply...' });
     const result = await finish(local);
-    agent._running = false;
+    if (agent._runEpoch === runEpoch) agent._running = false;
     await agent._drainQueue();
     return result;
   }
@@ -38,7 +51,7 @@ export async function chat(agent, userMessage, options = {}) {
     let response, metadata = null, retryAttempt = 0;
     if (!agent.llm.isConfigured && needsResearch) {
       const settings = normalizeResearchSettings(agent.project.get('researchSettings') || {});
-      response = researchReply(settings.allowNetwork ? await agent._chatResearch(userMessage, settings) : { sources: [], message: 'Online research is disabled in settings.' });
+      response = researchReply(settings.allowNetwork ? await chatResearchWithDeadline(agent, userMessage, settings) : { sources: [], message: 'Online research is disabled in settings.' });
     } else if (!agent.llm.isConfigured) {
       response = '当前没有连接语言模型。你仍可以直接运行本地工作流；如果想进行自然对话，请先在模型设置中连接 Ollama 或 OpenAI 兼容服务。';
     } else {
@@ -55,7 +68,7 @@ export async function chat(agent, userMessage, options = {}) {
   } catch (error) {
     return handleChatFailure(agent, { taskId, traceId, turnId, intent, error });
   } finally {
-    agent._running = false;
+    if (agent._runEpoch === runEpoch) agent._running = false;
     await agent._drainQueue();
   }
 }

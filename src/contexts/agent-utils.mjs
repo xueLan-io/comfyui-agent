@@ -3,7 +3,7 @@
 // module lets the context file focus on state and effects.
 import { normalizeRuntimeStatus, buildRuntimeView } from '../runtime/runtime-status.mjs';
 import { isActive as isPhaseActive } from '../runtime/generation-state-machine.mjs';
-import { normalizeGenerationResult } from '../runtime/generation-contract.mjs';
+import { normalizeGenerationResult } from '../runtime/generation-contract.ts';
 
 export const TOOL_LABELS = {
   comfyui: 'ComfyUI',

@@ -4,9 +4,11 @@
 // and the main window reference.
 
 export function registerSkillsIpc(ctx) {
+  // prefStore is created inside app.whenReady() while this registration runs
+  // at module load; the lazy getter (same pattern as comfyui.mjs) is required.
   const {
     ipcMain,
-    prefStore,
+    getPrefStore,
     configureSkills,
     skillManifest,
     BUILTIN_SKILLS,
@@ -19,6 +21,7 @@ export function registerSkillsIpc(ctx) {
   } = ctx;
 
   ipcMain.handle('skills:list', async () => {
+    const prefStore = getPrefStore();
     const skills = prefStore.get('skills') || {};
     const external = Object.fromEntries((skills.external || []).filter(item => item?.id && item.enabled !== false).map(item => {
       try { return [item.id, normalizeExternalSkill(item, item.source || 'config')]; } catch { return null; }
@@ -28,6 +31,7 @@ export function registerSkillsIpc(ctx) {
   });
 
   ipcMain.handle('skills:set-enabled', async (_, { id, enabled, custom = false, external = false }) => {
+    const prefStore = getPrefStore();
     const skills = prefStore.get('skills');
     if (external) {
       const skill = skills.external.find(item => item.id === id);
@@ -47,6 +51,7 @@ export function registerSkillsIpc(ctx) {
   });
 
   ipcMain.handle('skills:add-custom', async (_, { skill }) => {
+    const prefStore = getPrefStore();
     if (!/^[a-z0-9_-]+$/.test(skill?.id || '')) throw new Error('技能 ID 格式无效');
     const skills = prefStore.get('skills');
     if (skills.custom.some(item => item.id === skill.id) || skill.id in skills.system) throw new Error('技能 ID 已存在');
@@ -57,6 +62,7 @@ export function registerSkillsIpc(ctx) {
   });
 
   ipcMain.handle('skills:delete-custom', async (_, { id }) => {
+    const prefStore = getPrefStore();
     const skills = prefStore.get('skills');
     skills.custom = skills.custom.filter(item => item.id !== id);
     prefStore.set('skills', skills);
@@ -65,6 +71,7 @@ export function registerSkillsIpc(ctx) {
   });
 
   ipcMain.handle('skills:import-external', async () => {
+    const prefStore = getPrefStore();
     const result = await dialog.showOpenDialog(getMainWindow(), {
       properties: ['openFile', 'multiSelections'],
       filters: [{ name: 'External Skill manifest', extensions: ['json'] }],
@@ -85,6 +92,7 @@ export function registerSkillsIpc(ctx) {
   });
 
   ipcMain.handle('skills:delete-external', async (_, { id }) => {
+    const prefStore = getPrefStore();
     const skills = prefStore.get('skills');
     skills.external = skills.external.filter(item => item.id !== id);
     prefStore.set('skills', skills);
@@ -95,6 +103,7 @@ export function registerSkillsIpc(ctx) {
   // Create an external (declarative) skill from form fields instead of a JSON
   // file: validates through the same normalize/validate path as file import.
   ipcMain.handle('skills:add-external', async (_, input = {}) => {
+    const prefStore = getPrefStore();
     const skill = normalizeExternalSkill(input, 'form');
     const skills = prefStore.get('skills');
     if (skills.system[skill.id] || skills.custom.some(item => item.id === skill.id) || skills.external.some(item => item.id === skill.id)) {

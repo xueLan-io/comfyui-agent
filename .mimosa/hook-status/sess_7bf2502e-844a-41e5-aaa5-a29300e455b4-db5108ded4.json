@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-09-05T13:42:56.641Z",
+  "sessionId": "sess_7bf2502e-844a-41e5-aaa5-a29300e455b4",
+  "event": "PostToolUse",
+  "toolName": "Edit",
+  "file": "tests/execution-chain-cancel.test.mjs",
+  "outcome": "clear",
+  "coverage": "complete",
+  "findingCount": 0,
+  "durationMs": 4,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

@@ -110,7 +110,7 @@
 .exec-graph-mark.running,
 .exec-graph-mark.processing {
   border-color: var(--accent-border);
-  color: #d0d0d0;
+  color: var(--text-secondary);
   animation: soft-pulse 1.2s ease-in-out infinite;
 }
 
@@ -612,7 +612,7 @@
 
 .tag-processing {
   background: var(--accent-bg);
-  color: #d0d0d0;
+  color: var(--text-secondary);
   animation: soft-pulse 1.2s ease-in-out infinite;
 }
 
@@ -632,7 +632,7 @@
   gap: 8px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border-subtle);
-  background: linear-gradient(180deg, #10141a 0%, #0e1116 100%);
+  background: var(--content-gradient);
 }
 
 .workflow-picker-row {
@@ -910,7 +910,7 @@
   white-space: nowrap;
 }
 
-.prompt-mode-card.active span { color: #d0d0d0; }
+.prompt-mode-card.active span { color: var(--text-secondary); }
 
 .prompt-template-summary {
   padding-top: 2px;
@@ -1130,7 +1130,7 @@
   padding: 6px 20px;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--accent-bg);
-  color: #d0d0d0;
+  color: var(--text-secondary);
   font-size: 11px;
   animation: fade-in-up 0.15s ease-out;
 }
@@ -1149,7 +1149,7 @@
   flex: 0 0 auto;
   padding: 9px 20px 10px;
   border-bottom: 1px solid var(--border-subtle);
-  background: linear-gradient(180deg, #10141a 0%, #0e1116 100%);
+  background: var(--content-gradient);
   animation: fade-in-up 0.15s ease-out;
 }
 
@@ -1171,7 +1171,7 @@
 
 .generation-progress-meta strong {
   flex: 0 0 auto;
-  color: #c8c8c8;
+  color: var(--text-secondary);
   font-family: var(--font-mono);
   font-weight: 600;
 }
@@ -1187,7 +1187,7 @@
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent) 0%, #5c9fff 50%, var(--accent) 100%);
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-hover) 50%, var(--accent) 100%);
   background-size: 200% 100%;
   animation: shimmer 1.8s linear infinite;
   transition: width 160ms ease;
@@ -1293,7 +1293,7 @@
   display: block;
   width: 100%;
   aspect-ratio: 4 / 3;
-  background: #090b0e;
+  background: var(--bg-media);
   object-fit: contain;
 }
 
@@ -1302,7 +1302,7 @@
   width: 100%;
   padding: 0;
   border: 0;
-  background: #090b0e;
+  background: var(--bg-media);
   color: inherit;
   cursor: zoom-in;
 }
@@ -1316,7 +1316,7 @@
   width: 100%;
   aspect-ratio: 4 / 3;
   place-items: center;
-  background: #090b0e;
+  background: var(--bg-media);
   color: var(--text-dim);
   font-size: 10px;
 }
@@ -1350,7 +1350,7 @@
 }
 
 .image-item-info button:hover {
-  color: #c8c8c8;
+  color: var(--text-secondary);
   text-decoration: underline;
 }
 

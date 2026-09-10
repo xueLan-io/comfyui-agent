@@ -1,7 +1,7 @@
 // Prune fabricated/padding entries from provider-templates.js.
 //
 // Criteria (auditable, one-shot maintenance script):
-//  1. type must be handled by the runtime (src/agent/llm/provider.mjs only
+//  1. type must be handled by the runtime (src/agent/llm/provider.ts only
 //     implements 'ollama' and 'openai-compatible'); anything else cannot run.
 //  2. Consumer-platform / telecom "X LLM" entries whose baseUrl host has no
 //     public OpenAI-compatible chat API (e.g. api.wechat.com, api.shopee.com,

@@ -147,8 +147,14 @@ export function parseArgs(argv = []) {
     }
 
     const next = argv[index + 1];
-    if (BOOLEAN_OPTIONS.has(key) || next === undefined || next.startsWith('--')) {
+    if (BOOLEAN_OPTIONS.has(key)) {
       pushOption(options, key, true);
+    } else if (next === undefined || next.startsWith('--')) {
+      // A missing value must fail loudly: silently coercing it to boolean true
+      // made `--positive --steps 30` queue a generation with the prompt "true".
+      throw new Error(next === undefined
+        ? `Option --${key} requires a value`
+        : `Option --${key} requires a value (found another option "${next}" instead). Quote values that start with "--".`);
     } else {
       pushOption(options, key, next);
       index++;

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { sanitizeContextValue, sanitizeMessages, sanitizeText } from '../src/agent/schemas/context-sanitizer.mjs';
+import { sanitizeContextValue, sanitizeMessages, sanitizeText } from '../src/agent/schemas/context-sanitizer.ts';
 import { ConversationMemory } from '../src/agent/memory/conversation.mjs';
-import { confirmationForPlan } from '../src/agent/schemas/confirmation-schema.mjs';
-import { plannerToolContracts } from '../src/agent/schemas/tool-schema.mjs';
-import { contextToPrompt } from '../src/agent/schemas/context-schema.mjs';
+import { confirmationForPlan } from '../src/agent/schemas/confirmation-schema.ts';
+import { plannerToolContracts } from '../src/agent/schemas/tool-schema.ts';
+import { contextToPrompt } from '../src/agent/schemas/context-schema.ts';
 
 const generationTool = {
   name: 'comfyui',
@@ -37,8 +37,13 @@ test('remote messages truncate content and duplicate tool output', () => {
     { role: 'tool', content: 'same result' },
     { role: 'user', content: 'x'.repeat(50) },
   ], { maxContent: 10 });
-  assert.equal(result.length, 2);
-  assert.match(result[1].content, /TRUNCATED/);
+  // Duplicate tool output is collapsed to a placeholder (not dropped): an
+  // assistant tool_calls message must keep its tool response or the next
+  // request is rejected by OpenAI-compatible APIs.
+  assert.equal(result.length, 3);
+  assert.match(result[0].content, /TRUNCATED/);
+  assert.match(result[1].content, /duplicate tool output/);
+  assert.match(result[2].content, /TRUNCATED/);
 });
 
 test('conversation history keeps recent messages without a task summary', () => {

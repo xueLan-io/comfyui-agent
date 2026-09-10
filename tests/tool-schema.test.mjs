@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { validateToolDefinition, validateToolInput } from '../src/agent/schemas/tool-schema.mjs';
+import { validateToolDefinition, validateToolInput } from '../src/agent/schemas/tool-schema.ts';
 
 test('validateToolDefinition passes valid tool', () => {
   const tool = {

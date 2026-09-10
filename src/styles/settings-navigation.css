@@ -40,7 +40,7 @@
   overflow: hidden;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-lg);
-  background: #090b0e;
+  background: var(--bg-elevated);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.03);
   animation: fade-in-up 0.22s ease-out;
 }
@@ -267,7 +267,7 @@
   padding: 8px 10px;
   border-left: 2px solid var(--accent);
   background: var(--accent-bg);
-  color: #c8c8c8;
+  color: var(--text-secondary);
   font-size: 11px;
 }
 
@@ -362,7 +362,7 @@
 }
 
 .trace-step-tool {
-  color: #c8c8c8;
+  color: var(--text-secondary);
   font-size: 10px;
 }
 
@@ -421,7 +421,7 @@
 .project-sidebar {
   width: 242px;
   min-width: 242px;
-  background: #11161d;
+  background: var(--bg-sidebar);
 }
 
 .project-sidebar-header {
@@ -520,7 +520,7 @@
 .sidebar-delete-project:hover { color: var(--red); background: var(--red-bg); }
 .project-sidebar-footer { min-height: 42px; padding: 7px 8px; }
 
-.workspace-sidebar { width: clamp(360px, 29vw, 440px); min-width: 360px; background: #11161d; }
+.workspace-sidebar { width: clamp(360px, 29vw, 440px); min-width: 360px; background: var(--bg-sidebar); }
 .panel-right-header { min-height: 58px; padding: 9px 13px; }
 .panel-right-header > div:first-child { gap: 1px; }
 .workspace-title { font-size: 13px; }
@@ -641,7 +641,7 @@
 .image-preview-actions { flex-wrap: wrap; justify-content: flex-end; }
 .preview-position { color: var(--text-secondary) !important; font-family: var(--font-mono); font-size: 10px; }
 .preview-zoom-value { width: 48px; padding: 0; }
-.image-preview-body { position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 20px 60px; background: #090b0e; cursor: grab; touch-action: none; }
+.image-preview-body { position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 20px 60px; background: var(--bg-media); cursor: grab; touch-action: none; }
 .image-preview-body.is-panning { cursor: grabbing; }
 .image-preview-canvas { display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; place-items: center; overflow: visible; transform: translate3d(var(--image-pan-x, 0px), var(--image-pan-y, 0px), 0); transform-origin: center; }
 .image-preview-body img,
@@ -1156,7 +1156,7 @@
   padding: 12px 50px 12px 13px;
   border-color: var(--border-default);
   border-radius: 12px;
-  background: #0d141c;
+  background: var(--bg-input);
   color: var(--text-primary);
   font-size: 13px;
   line-height: 1.55;

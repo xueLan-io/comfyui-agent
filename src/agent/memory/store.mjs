@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 const RENAME_RETRIES = 5;
 const RENAME_BACKOFF_MS = 25;
 
-async function renameWithRetry(tmpPath, targetPath) {
+export async function renameWithRetry(tmpPath, targetPath) {
   let lastError;
   for (let attempt = 0; attempt < RENAME_RETRIES; attempt++) {
     try {

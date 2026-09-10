@@ -4,7 +4,7 @@ import tls from 'node:tls';
 import http from 'node:http';
 import https from 'node:https';
 import { execFileSync } from 'node:child_process';
-import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
+import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
 
 const SEARCH_ENDPOINT = 'https://html.duckduckgo.com/html/';
 const BING_ENDPOINT = 'https://cn.bing.com/search';
@@ -14,6 +14,9 @@ const TAVILY_ENDPOINT = 'https://api.tavily.com/search';
 const DEFAULT_TIMEOUT_MS = 12000;
 const DEFAULT_CACHE_TTL_MS = 300000;
 const PROXY_TIMEOUT_MS = 15000;
+// DNS 查询不受 AbortSignal 控制（node:dns lookup 无 signal 参数），必须
+// 单独限时：断网/DNS 无响应时 getaddrinfo 可挂 10s+，会把所有上层超时拖穿。
+const DNS_TIMEOUT_MS = 5000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PAGE_CHARS = 12000;
 const MAX_RESULTS = 10;
@@ -21,6 +24,8 @@ const MAX_CACHE_ENTRIES = 64;
 const TRUST_LEVELS = ['official', 'verified', 'community', 'unknown'];
 // 某来源失败后短期内不再重试（秒级冷却），避免每次搜索都撞墙拖慢整体
 const DEFAULT_FAILURE_COOLDOWN_MS = 30000;
+// 同一 provider 相邻请求的最小间隔，降低连续查询触发风控的概率
+const PROVIDER_MIN_INTERVAL_MS = 800;
 // 系统代理缓存有效期：改代理后最多延迟这么久生效
 const SYSTEM_PROXY_CACHE_TTL_MS = 60000;
 // 常见两段式公共后缀（CC 二级域等），用于精确计算"可注册域"（eTLD+1）
@@ -45,10 +50,14 @@ const PUBLIC_SUFFIX_2 = new Set([
   'com.jo', 'com.kw', 'com.qa', 'com.bh', 'com.om', 'com.ae', 'com.sa',
 ]);
 
+function safeFromCodePoint(code) {
+  return Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
+}
+
 function decodeEntities(value = '') {
   return String(value)
-    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)))
+    .replace(/&#(\d+);/g, (_, code) => safeFromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => safeFromCodePoint(parseInt(code, 16)))
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
     .replace(/&amp;/g, '&')
@@ -222,7 +231,32 @@ function privateAddress(address) {
     || normalized.startsWith('fea') || normalized.startsWith('feb');
 }
 
-async function validateAndResolve(rawUrl, lookupImpl = lookup) {
+// 超时错误用 AbortError 命名，让下游按「provider 超时」降级（跳过该源），
+// 而不是落入 NETWORK_ERROR 代理重试分支再等一个完整超时。
+// signal 让取消立即生效：DNS promise 本身不可中断，但调用方不必陪等。
+async function withLookupDeadline(promise, ms, message, signal) {
+  let timer;
+  let onAbort;
+  const abortError = () => Object.assign(new Error(message), { name: 'AbortError' });
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(abortError()), ms);
+        if (signal) {
+          if (signal.aborted) return reject(abortError());
+          onAbort = () => reject(abortError());
+          signal.addEventListener('abort', onAbort, { once: true });
+        }
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+  }
+}
+
+async function validateAndResolve(rawUrl, lookupImpl = lookup, signal = null) {
   let url;
   try {
     url = new URL(rawUrl);
@@ -238,7 +272,7 @@ async function validateAndResolve(rawUrl, lookupImpl = lookup) {
     throw new Error('Local and private network URLs are not allowed');
   }
   if (!isIP(hostname)) {
-    const addresses = await lookupImpl(hostname, { all: true });
+    const addresses = await withLookupDeadline(lookupImpl(hostname, { all: true }), DNS_TIMEOUT_MS, 'DNS lookup timed out', signal);
     if (addresses.some(item => privateAddress(item.address))) throw new Error('The URL resolves to a local or private network');
     const address = addresses.find(item => !privateAddress(item.address));
     if (!address) throw new Error('The URL has no public address');
@@ -279,24 +313,50 @@ async function readResponse(response, maxBytes = MAX_RESPONSE_BYTES) {
   return decodeResponse(bytes, response.headers);
 }
 
-function decodeResponse(bytes, headers) {
+// Streaming decompression with an output cap: one-shot sync inflation would
+// decompress the entire payload before the size check, so a ~1000:1 gzip bomb
+// (2 MB compressed) could spike memory to ~2 GB and crash the agent.
+function decompressCapped(buffer, encoding) {
+  if (encoding !== 'gzip' && encoding !== 'deflate' && encoding !== 'br') return Promise.resolve(buffer);
+  return new Promise((resolve, reject) => {
+    const stream = encoding === 'gzip' ? createGunzip() : encoding === 'deflate' ? createInflate() : createBrotliDecompress();
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+    stream.on('data', chunk => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > MAX_RESPONSE_BYTES) {
+        settled = true;
+        stream.destroy();
+        reject(new Error('Response is too large'));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    stream.on('error', error => { if (!settled) { settled = true; reject(error); } });
+    stream.on('end', () => { if (!settled) { settled = true; resolve(Buffer.concat(chunks)); } });
+    stream.end(buffer);
+  });
+}
+
+async function decodeResponse(bytes, headers) {
   const encoding = String(headers?.get?.('content-encoding') || '').toLowerCase().split(',').map(item => item.trim()).filter(Boolean).pop();
-  let decoded = Buffer.from(bytes);
-  if (encoding === 'gzip') decoded = gunzipSync(decoded);
-  else if (encoding === 'deflate') decoded = inflateSync(decoded);
-  else if (encoding === 'br') decoded = brotliDecompressSync(decoded);
-  if (decoded.byteLength > MAX_RESPONSE_BYTES) throw new Error('Response is too large');
+  const decoded = await decompressCapped(Buffer.from(bytes), encoding);
   const charset = String(headers?.get?.('content-type') || '').match(/charset\s*=\s*([^;\s]+)/i)?.[1] || 'utf-8';
   try { return new TextDecoder(charset).decode(decoded); } catch { return new TextDecoder().decode(decoded); }
 }
 
 async function fetchText(fetchImpl, rawUrl, signal, redirects = 0, lookupImpl = lookup, policy = {}, proxy = null) {
   if (!allowedDomain(rawUrl, policy.allowedDomains)) throw new Error('The URL domain is not allowed');
-  const resolved = await validateAndResolve(rawUrl, lookupImpl);
+  const resolved = await validateAndResolve(rawUrl, lookupImpl, signal);
   const { url } = resolved;
+  // 搜索引擎对非浏览器 UA 常返回风控页/无摘要降级页；浏览器 UA + 语言偏好
+  // 显著提升抓取成功率与结果完整度。
   const headers = {
     accept: 'text/html, application/xhtml+xml, application/json, text/plain;q=0.9, */*;q=0.1',
-    'user-agent': 'ComfyMuse/0.2',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
+    'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
   };
   const response = fetchImpl === globalThis.fetch
     ? await requestPinned(url, resolved, signal, headers, proxy)
@@ -385,7 +445,10 @@ function decodeRedirectUrl(rawUrl) {
     if (!encoded) return rawUrl;
     let decoded;
     try {
-      const padded = encoded.replace(/-/g, '+').replace(/_/g, '/');
+      // Bing 新版跳转带版本前缀（u=a1aHR0c...）；前缀不是 base64 的一部分，
+      // 不剥离会把 a1 当 base64 解出乱码、导致还原失败。
+      const payload = encoded.match(/^a\d+(.+)$/)?.[1] || encoded;
+      const padded = payload.replace(/-/g, '+').replace(/_/g, '/');
       decoded = Buffer.from(padded + '='.repeat((4 - (padded.length % 4)) % 4), 'base64').toString('utf8');
     } catch {
       return rawUrl;
@@ -402,7 +465,9 @@ function parseBingResults(html, limit, policy = {}) {
   for (const block of blocks) {
     const href = block.match(/<h2\b[^>]*>[\s\S]*?<a\b[^>]*href=["']([^"']+)["']/i)?.[1];
     if (!href) continue;
-    const title = cleanText(block.match(/<h2\b[^>]*>[\s\S]*?<\/a>\s*<\/h2>/i)?.[0] || '');
+    // 标题取 h2 整段文本：部分结果在 </a> 后还带徽标/标注元素，
+    // 只匹配 "</a></h2>" 紧邻形态会漏掉这些标题。
+    const title = cleanText(block.match(/<h2\b[^>]*>([\s\S]*?)<\/h2>/i)?.[1] || '');
     if (!title) continue;
     let url;
     try {
@@ -411,8 +476,12 @@ function parseBingResults(html, limit, policy = {}) {
       continue;
     }
     if (!['http:', 'https:'].includes(url.protocol)) continue;
+    // /ck/ 跳转解码失败（仍指向 bing 自身）说明目标无法还原，跳过该结果
+    if (/(?:^|\.)bing\.com$/i.test(url.hostname) && url.pathname.includes('/ck/')) continue;
     if (!allowedDomain(url, policy.allowedDomains)) continue;
-    const snippet = cleanText(block.match(/<p\b[^>]*class=["'][^"']*b_lineclamp[^"']*["'][^>]*>([\s\S]*?)<\/p>/i)?.[1] || '');
+    // 摘要 class 兼容多种形态：b_lineclamp（多行截断）、b_paractl（段落）、
+    // b_algoSlug（新版摘要）、b_snippet（旧版）
+    const snippet = cleanText(block.match(/<p\b[^>]*class=["'][^"']*(?:b_lineclamp|b_paractl|b_algoSlug|b_snippet)[^"']*["'][^>]*>([\s\S]*?)<\/p>/i)?.[1] || '');
     results.push({ title, url: url.toString(), trustLevel: classifySource(url, policy), snippet });
     if (results.length >= limit) break;
   }
@@ -465,9 +534,24 @@ function parseBaiduApiResults(payload, limit, policy = {}) {
   };
 }
 
+// Bing 端点固定为 cn.bing.com（直连稳定、国内不墙）。mkt/setlang 按查询
+// 语言选择市场：中文走国内市场，英文/其他走 en-US，避免中文市场对英文
+// 术语召回贫乏的问题。
+function bingSearchUrl(query) {
+  const isCjk = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(query);
+  const params = new URLSearchParams({
+    q: query,
+    count: '20',
+    form: 'QBLH',
+    mkt: isCjk ? 'zh-CN' : 'en-US',
+    setlang: isCjk ? 'zh-hans' : 'en-us',
+  });
+  return `${BING_ENDPOINT}?${params.toString()}`;
+}
+
 const SEARCH_PROVIDERS = {
   duckduckgo: { buildUrl: query => `${SEARCH_ENDPOINT}?q=${encodeURIComponent(query)}`, parse: parseSearchResults },
-  bing: { buildUrl: query => `${BING_ENDPOINT}?q=${encodeURIComponent(query)}&count=20`, parse: parseBingResults },
+  bing: { buildUrl: bingSearchUrl, parse: parseBingResults },
   baidu: { buildUrl: query => `${BAIDU_ENDPOINT}?wd=${encodeURIComponent(query)}&rn=20`, parse: parseBaiduResults },
 };
 const DEFAULT_PROVIDERS = ['bing', 'duckduckgo', 'baidu'];
@@ -631,7 +715,9 @@ function wrapResponse(nodeResponse) {
 
 function createAbortSignal(timeoutMs, signal) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error('Web request timed out')), timeoutMs);
+  // abort() 不带自定义 Error：默认 reason 是 AbortError，下游
+  // error.name === 'AbortError' 判定才能可靠区分「超时/取消」与普通网络错误。
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   if (signal) {
     if (signal.aborted) controller.abort(signal.reason);
     else signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
@@ -655,7 +741,7 @@ async function fetchBaiduApi(fetchImpl, lookupImpl, signal, proxy, apiKey, query
     'user-agent': 'ComfyMuse/0.2',
     'X-Appbuilder-Authorization': `Bearer ${apiKey}`,
   };
-  const resolved = await validateAndResolve(BAIDU_AI_SEARCH_ENDPOINT, lookupImpl);
+  const resolved = await validateAndResolve(BAIDU_AI_SEARCH_ENDPOINT, lookupImpl, signal);
   const response = fetchImpl === globalThis.fetch
     ? await requestPinned(resolved.url, resolved, signal, headers, proxy, 'POST', JSON.stringify(payload))
     : await fetchImpl(BAIDU_AI_SEARCH_ENDPOINT, { method: 'POST', redirect: 'manual', signal, headers, body: JSON.stringify(payload) });
@@ -672,7 +758,7 @@ async function fetchBaiduApi(fetchImpl, lookupImpl, signal, proxy, apiKey, query
 // 与 baidu-api 同级：可信配置提供 key/端点，模型无法控制，SSRF 风险面小。
 // Tavily 是固定公网端点，走完整 DNS 钉扎校验；SearXNG 允许自托管回环地址（受信配置）。
 
-async function validateApiUrl(rawUrl, { allowLocal = false } = {}, lookupImpl = lookup) {
+async function validateApiUrl(rawUrl, { allowLocal = false } = {}, lookupImpl = lookup, signal = null) {
   let url;
   try { url = new URL(rawUrl); } catch { throw new Error('Invalid URL'); }
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Only http and https URLs are allowed');
@@ -680,7 +766,7 @@ async function validateApiUrl(rawUrl, { allowLocal = false } = {}, lookupImpl = 
   if (allowLocal && (url.hostname === 'localhost' || url.hostname.endsWith('.localhost') || isIP(url.hostname) && privateAddress(url.hostname))) {
     const addresses = isIP(url.hostname)
       ? [{ address: url.hostname, family: isIP(url.hostname) }]
-      : await lookupImpl(url.hostname, { all: true });
+      : await withLookupDeadline(lookupImpl(url.hostname, { all: true }), DNS_TIMEOUT_MS, 'DNS lookup timed out', signal);
     if (addresses.length === 0 || addresses.some(item => !privateAddress(item.address))) {
       throw new Error('The local Search API must resolve to a loopback or private address');
     }
@@ -691,7 +777,7 @@ async function validateApiUrl(rawUrl, { allowLocal = false } = {}, lookupImpl = 
 }
 
 async function fetchJsonApi(fetchImpl, lookupImpl, signal, proxy, { url: rawUrl, method = 'POST', headers = {}, body = null, allowLocal = false }) {
-  const resolved = await validateApiUrl(rawUrl, { allowLocal }, lookupImpl);
+  const resolved = await validateApiUrl(rawUrl, { allowLocal }, lookupImpl, signal);
   const response = fetchImpl === globalThis.fetch
     ? await requestPinned(resolved.url, resolved, signal, headers, proxy, method, body ? JSON.stringify(body) : null)
     : await fetchImpl(rawUrl, { method, redirect: 'manual', signal, headers, body: body ? JSON.stringify(body) : undefined });
@@ -777,6 +863,7 @@ export function createWebTool(fetchImpl = globalThis.fetch, lookupImpl = lookup,
   const defaultCacheTtlMs = Number.isFinite(options.cacheTtlMs) ? options.cacheTtlMs : DEFAULT_CACHE_TTL_MS;
   // 失败源短期冷却：同一工具实例内某个源失败后，冷却期内不再重试，避免每次搜索都撞墙
   const failures = new Map();
+  const lastRequestAt = new Map();
   const failureCooldownMs = Number.isFinite(options.failureCooldownMs) ? options.failureCooldownMs : DEFAULT_FAILURE_COOLDOWN_MS;
   function recordFailure(name) { failures.set(name, Date.now()); }
   function onCooldown(name) {
@@ -866,9 +953,19 @@ export function createWebTool(fetchImpl = globalThis.fetch, lookupImpl = lookup,
       }
       const request = createAbortSignal(Math.min(timeoutMs, DEFAULT_TIMEOUT_MS), signal);
       const startedAt = Date.now();
-      // 每个 provider 独立计时（上限 4s 且不超过总预算）：
-      // 单个卡死的源（如被墙的 duckduckgo）超时后跳过，已合并的结果不会丢失
-      const providerTimeoutMs = () => Math.max(1000, Math.min(4000, Math.min(timeoutMs, DEFAULT_TIMEOUT_MS) - (Date.now() - startedAt)));
+      // 每个 provider 独立计时（上限 6s 且不超过总预算）：
+      // 单个卡死的源（如被墙的 duckduckgo）超时后跳过，已合并的结果不会丢失。
+      // 6s 而非 4s：无 cookie 的 bing/baidu 首次响应普遍要 3-5s（DNS+重定向+大页面），
+      // 4s 会把慢而可用的源误杀成 aborted。
+      const providerTimeoutMs = () => Math.max(1000, Math.min(6000, Math.min(timeoutMs, DEFAULT_TIMEOUT_MS) - (Date.now() - startedAt)));
+      // 同一 provider 相邻两次请求保持最小间隔：连续快速查询（聊天调研 +
+      // 角色调研连发）会被 bing 风控返回空壳页。跨 execute 生效（实例级）。
+      const providerThrottle = async name => {
+        const last = lastRequestAt.get(name) || 0;
+        const wait = PROVIDER_MIN_INTERVAL_MS - (Date.now() - last);
+        if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+        lastRequestAt.set(name, Date.now());
+      };
       const fetchForProvider = async (target, targetPolicy) => {
         const perRequest = createAbortSignal(providerTimeoutMs(), request.signal);
         try {
@@ -941,19 +1038,19 @@ export function createWebTool(fetchImpl = globalThis.fetch, lookupImpl = lookup,
             }
           }
           // —— HTML 抓取层（并行发起，按 provider 排序顺序合并，结果确定性不变）——
-          const merged = [];
-          const seen = new Set();
           const contributors = [];
           const availableProviders = searchProviders.filter(name => !onCooldown(name) && SEARCH_PROVIDERS[name]);
           attempted.push(...availableProviders);
           const providerTasks = availableProviders.map(name => (async () => {
             const spec = SEARCH_PROVIDERS[name];
+            await providerThrottle(name);
             const endpoint = spec.buildUrl(trimmed);
             const response = await fetchForProvider(endpoint, {});
             const results = spec.parse(response.text, Math.min(maxResults, MAX_RESULTS), policy);
             return { name, results };
           })());
           const settledProviders = await Promise.allSettled(providerTasks);
+          const candidates = [];
           for (let index = 0; index < settledProviders.length; index += 1) {
             const settled = settledProviders[index];
             const name = availableProviders[index];
@@ -965,17 +1062,41 @@ export function createWebTool(fetchImpl = globalThis.fetch, lookupImpl = lookup,
             }
             const { results } = settled.value;
             if (results.length > 0) contributors.push(name);
-            for (const item of results) {
-              const dedupeKey = item.url.split('#')[0];
-              if (seen.has(dedupeKey)) continue;
-              seen.add(dedupeKey);
-              merged.push(item);
-            }
+            for (const item of results) candidates.push({ item, providerRank: index });
+          }
+          // 合并排序：信任级别优先（official > verified > community > unknown），
+          // 同级保持 provider 优先顺序；同一站点最多保留 2 条，防止单站点
+          // 刷屏挤掉其他来源（资料型搜索需要跨源印证）。搜索引擎自身的
+          // 跳转链接（baidu /link、bing /ck）不占域名配额——真实目标域名各不相同。
+          const TRUST_RANK = { official: 0, verified: 1, community: 2 };
+          candidates.sort((a, b) => (TRUST_RANK[a.item.trustLevel] ?? 3) - (TRUST_RANK[b.item.trustLevel] ?? 3) || a.providerRank - b.providerRank);
+          const merged = [];
+          const seen = new Set();
+          const hostCount = new Map();
+          for (const { item } of candidates) {
+            let host = '';
+            let isSearchRedirect = false;
+            try {
+              const parsed = new URL(item.url);
+              host = parsed.hostname.toLowerCase();
+              isSearchRedirect = /(?:^|\.)baidu\.com$/i.test(host) && parsed.pathname.startsWith('/link');
+            } catch { continue; }
+            if (!isSearchRedirect && (hostCount.get(host) || 0) >= 2) continue;
+            const dedupeKey = item.url.split('#')[0];
+            if (seen.has(dedupeKey)) continue;
+            seen.add(dedupeKey);
+            if (!isSearchRedirect) hostCount.set(host, (hostCount.get(host) || 0) + 1);
+            merged.push(item);
           }
           if (merged.length === 0) {
+            const allCooling = availableProviders.length === 0 && searchProviders.length > 0;
             return {
               action, query: trimmed,
-              error: failures.length ? `All search providers failed (${failures.join('; ')})` : 'No search providers configured',
+              error: failures.length
+                ? `All search providers failed (${failures.join('; ')})`
+                : allCooling
+                  ? 'All search providers are cooling down after recent failures; retry in a moment'
+                  : 'No search providers configured',
               researchStatus: 'search_failed',
               // 失败时也报告实际尝试过的来源（含 API 层），供界面显示"搜索来源/尝试了哪些搜索"
               attempted,
@@ -996,7 +1117,10 @@ export function createWebTool(fetchImpl = globalThis.fetch, lookupImpl = lookup,
         }
         return { action, error: `Unknown web action: ${action}` };
       } catch (error) {
-        return { action, error: error.name === 'AbortError' ? 'Web request timed out or was cancelled' : error.message };
+        // 取消时 abort reason 可能是字符串（executor cancel 传 'cancelled'），
+        // error.message 为 undefined；统一按取消/超时归一，避免返回空错误。
+        const cancelled = request.signal.aborted || signal?.aborted || error?.name === 'AbortError';
+        return { action, error: cancelled ? 'Web request timed out or was cancelled' : String(error?.message || error) };
       } finally {
         request.cleanup();
       }
@@ -1022,6 +1146,7 @@ export async function openResultPages(webTool, results, settings = {}) {
       baiduApiKey: settings.baiduApiKey,
       allowedDomains: settings.allowedDomains,
       sourcePolicy: settings,
+      signal: settings.signal,
     }));
     if (index < items.length - 1) await new Promise(resolve => setTimeout(resolve, 200));
   }

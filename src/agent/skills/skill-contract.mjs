@@ -1,4 +1,4 @@
-import { validateSkillContract } from '../schemas/skill-schema.mjs';
+import { validateSkillContract } from '../schemas/skill-schema.ts';
 
 function defaultHandle(request = '', context = {}, skill) {
   const text = typeof request === 'string' ? request : String(request.userIntent || request.goal || '');

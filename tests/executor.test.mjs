@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { Executor } from '../src/agent/runtime/executor.mjs';
-import { emit, on, AgentEventTypes } from '../src/agent/events/agent-events.mjs';
+import { Executor } from '../src/agent/runtime/executor.ts';
+import { emit, on, AgentEventTypes } from '../src/agent/events/agent-events.ts';
 
 const mockTool = {
   name: 'mock_tool',

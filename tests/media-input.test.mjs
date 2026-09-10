@@ -7,8 +7,8 @@ import { ComfyUIClient } from '../src/agent/tools/comfyui/client.mjs';
 import { capReferenceImageResolution, injectInputMedia, referenceMediaInjected } from '../src/agent/tools/comfyui/node-overrides.mjs';
 import { ComfyUITool } from '../src/agent/tools/comfyui/index.mjs';
 import { resolveSandboxPath } from '../src/agent/security/sandbox.mjs';
-import { attachMediaToPlan } from '../src/agent/runtime/planner.mjs';
-import { buildAgentContext, contextToPrompt } from '../src/agent/schemas/context-schema.mjs';
+import { attachMediaToPlan } from '../src/agent/runtime/planner.ts';
+import { buildAgentContext, contextToPrompt } from '../src/agent/schemas/context-schema.ts';
 
 function makePrompt() {
   return {

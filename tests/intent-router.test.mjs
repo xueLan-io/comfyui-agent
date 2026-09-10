@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { IntentRouter, isExplicitNewGeneration, ruleIntent } from '../src/agent/runtime/intent-router.mjs';
-import { LLMProvider } from '../src/agent/llm/provider.mjs';
+import { LLMProvider } from '../src/agent/llm/provider.ts';
 
 function decision(message, context = {}) {
   return ruleIntent(message, {

@@ -4,7 +4,7 @@ import { useComfyUI } from './ComfyUIContext.jsx';
 import { useSession } from './SessionContext.jsx';
 import { buildPresetGenerationRequest, presetWorkflowName } from '../runtime/preset-generation.mjs';
 import { normalizeProgressEvent } from '../runtime/progress.mjs';
-import { normalizeGenerationResult } from '../runtime/generation-contract.mjs';
+import { normalizeGenerationResult } from '../runtime/generation-contract.ts';
 import { IDLE as PHASE_IDLE, PREPARING as PHASE_PREPARING, PREVIEW as PHASE_PREVIEW, RUNNING as PHASE_RUNNING, STOPPING as PHASE_STOPPING, COMPLETED as PHASE_COMPLETED, ERROR as PHASE_ERROR, CANCELLED as PHASE_CANCELLED, canTransition, isActive as isPhaseActive, isTerminal as isPhaseTerminal, restorePhase as pureRestorePhase } from '../runtime/generation-state-machine.mjs';
 import { buildRuntimeView, normalizeRuntimeStatus } from '../runtime/runtime-status.mjs';
 import { playCompletionSound, playFailureSound } from '../utils/sounds.mjs';
@@ -78,6 +78,10 @@ export function AgentProvider({ children }) {
     }
   }, []);
 
+  // 取消收尾的兜底定时器句柄。任何成功的相位迁移都会清掉它，
+  // 避免它在后台任务已正常结束（或新一轮已开始）后强行把状态拽回 idle。
+  const cancelIdleTimeoutRef = useRef(null);
+
   const transitionGeneration = useCallback((nextPhase, patch = {}) => {
     const previous = generationPhaseRef.current;
     if (!canTransition(previous, nextPhase)) {
@@ -86,6 +90,10 @@ export function AgentProvider({ children }) {
     }
     generationPhaseRef.current = nextPhase;
     setGenerationPhase(nextPhase);
+    if (cancelIdleTimeoutRef.current) {
+      clearTimeout(cancelIdleTimeoutRef.current);
+      cancelIdleTimeoutRef.current = null;
+    }
     Object.entries(patch).forEach(([key, value]) => {
       if (key === 'statusMsg') setStatusMsg(value);
       else if (key === 'status') setStatus(value);
@@ -990,6 +998,8 @@ export function AgentProvider({ children }) {
       if (thinkingFrameRef.current) window.cancelAnimationFrame(thinkingFrameRef.current);
       thinkingFrameRef.current = 0;
       thinkingUpdateRef.current = null;
+      if (cancelIdleTimeoutRef.current) window.clearTimeout(cancelIdleTimeoutRef.current);
+      cancelIdleTimeoutRef.current = null;
     };
   }, [session.activeProjectId, session.activeSessionId, terminateStreamingTask, addActivityEvent, refreshAssets, playTerminalSound]);
 
@@ -1941,10 +1951,9 @@ export function AgentProvider({ children }) {
       statusMsg: stopping ? '取消请求已发送，正在等待后台任务收尾' : cancelMessage,
     });
     if (stopping) {
-      const cancelTimeoutRef = { current: null };
-      cancelTimeoutRef.current = setTimeout(() => {
+      cancelIdleTimeoutRef.current = setTimeout(() => {
+        cancelIdleTimeoutRef.current = null;
         transitionGeneration(PHASE_IDLE, { status: 'idle', statusMsg: '取消超时，已强制终止' });
-        cancelTimeoutRef.current = null;
       }, 30000);
     }
   }, [promptPreview, terminateStreamingTask, discardGenerationTurn, upsertRecord]);

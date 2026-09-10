@@ -7,24 +7,24 @@ import { fileURLToPath } from 'url';
 import { readFile, readdir, stat, writeFile, mkdir, copyFile, unlink, rename, rm, realpath, lstat, mkdtemp } from 'fs/promises';
 import { createWriteStream, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
 import { createHash, randomUUID } from 'crypto';
-import { ComfyUITool, on, AgentEventTypes, configureSkills, skillManifest, createCustomSkill, SKILLS, BUILTIN_SKILLS, CloudPolicyBlockedError, CloudPolicyRouter, createMcpHttpServer, createWebMcpServer } from '../src/agent/index.mjs';
+import { ComfyUITool, on, AgentEventTypes, configureSkills, skillManifest, createCustomSkill, SKILLS, BUILTIN_SKILLS, CloudPolicyBlockedError, CloudPolicyRouter, createMcpHttpServer, createWebMcpServer } from '../src/agent/index.ts';
 import { externalSkillConfig, loadExternalSkillFile, normalizeExternalSkill } from '../src/agent/skills/external.mjs';
-import { LLMProvider, resolveLLMRouting } from '../src/agent/llm/provider.mjs';
+import { LLMProvider, resolveLLMRouting } from '../src/agent/llm/provider.ts';
 import { OpenAIImageProvider } from '../src/agent/llm/openai-image.mjs';
 import { PreferenceMemory } from '../src/agent/memory/preference.mjs';
 import { ComfyUIClient } from '../src/agent/tools/comfyui/client.mjs';
 import { ComfyUIManager, hasPortableLayout, findPortableRoot } from './comfyui-manager.mjs';
-import { sanitizeContextValue } from '../src/agent/schemas/context-sanitizer.mjs';
+import { sanitizeContextValue } from '../src/agent/schemas/context-sanitizer.ts';
 import { normalizeUIPreferences } from '../src/ui-preferences.mjs';
 import { DirectService } from '../src/runtime/direct/direct-service.mjs';
 import { ComfyExecutor } from '../src/runtime/executor/comfy-executor.mjs';
-import { AgentProcessClient } from './agent-process.mjs';
+import { AgentProcessClient } from './agent-process.ts';
 import { ExecutionCoordinator } from './execution-coordinator.mjs';
 import { SANDBOX_AUTHORIZED_FILES, createSandboxPolicy, resolveSandboxPath } from '../src/agent/security/sandbox.mjs';
 import { assetRecipePath, normalizeAssetPath, projectAssetRoot, removeEmptyAssetDirectories, scanProjectAssets } from '../src/runtime/project-assets.mjs';
 import { displayPath } from '../src/runtime/path-display.mjs';
 import { importWorkflowFiles, collectWorkflowFiles, deleteWorkflowFile, renameWorkflowFile } from '../src/runtime/workflow-import.mjs';
-import { directGenerationRequest, normalizeGenerationResult } from '../src/runtime/generation-contract.mjs';
+import { directGenerationRequest, normalizeGenerationResult } from '../src/runtime/generation-contract.ts';
 import { traceError, validateTaskTrace, assertTraceOwner } from '../src/runtime/trace-contract.mjs';
 import { verifyUpdateManifest } from '../src/runtime/update-signature.mjs';
 import { RequestLedger, RequestStates } from './request-ledger.mjs';
@@ -495,7 +495,14 @@ async function commitCopies(comfyRoot, files, finalDir, subfolder) {
   return staged.map(entry => ({ filename: entry.filename, subfolder, type: 'project' }));
 }
 
-async function archiveProjectResult(result, owner = {}) {
+async function archiveProjectResult(result, owner = {}, options = {}) {
+  // Cancellation checkpoints: archiving copies many files (and can compose a
+  // video), so a cancel request must not wait for the whole phase to finish.
+  const assertNotAborted = () => {
+    if (options.signal?.aborted) {
+      throw Object.assign(new Error('Archive cancelled'), { name: 'AbortError', code: 'ARCHIVE_CANCELLED' });
+    }
+  };
   const mediaKey = item => JSON.stringify([
     item?.path || item?.url || item?.filename || item?.name || '',
     item?.subfolder || '',
@@ -545,6 +552,7 @@ async function archiveProjectResult(result, owner = {}) {
   }
   const ownerSessionId = owner.sessionId || agent?.sessionManager.activeSessionId;
   const taskId = result.taskId || '';
+  assertNotAborted();
   const imageDir = join(project.dir, 'images', taskId);
   const imageEntries = await commitCopies(
     resolve(comfyManager.portableRoot, 'ComfyUI'),
@@ -584,6 +592,7 @@ async function archiveProjectResult(result, owner = {}) {
     parameters: result.settings || result.parameters || {},
   }));
   if (result.isVideoWorkflow && (result.videos?.length || 0) === 0 && (result.images?.length || 0) > 1) {
+    assertNotAborted();
     try {
       await mkdir(videoDir, { recursive: true });
       const { composeVideo } = await import('../src/agent/video/video-compose.mjs');
@@ -619,6 +628,7 @@ async function archiveProjectResult(result, owner = {}) {
      }
   }
   if (archived.length === 0 && archivedVideos.length === 0) return result;
+  assertNotAborted();
   await Promise.all([...archived, ...archivedVideos].map(asset => {
     const filePath = join(project.dir, asset.subfolder, asset.filename);
     return writeFile(assetRecipePath(filePath), JSON.stringify({
@@ -652,7 +662,8 @@ async function archiveProjectResult(result, owner = {}) {
   };
   if (projectMemory) {
     await projectMemory.set('lastResult', archivedResult);
-    await projectMemory.set('lastImages', archived);
+    // 纯视频结果时 archived 为空：不能把上次生成留下的 lastImages 覆盖成空数组。
+    if (archived.length > 0) await projectMemory.set('lastImages', archived);
   }
   if (existingTask) {
     agent.taskManager.update(result.taskId, { archiveStatus: 'archived', result: archivedResult });
@@ -767,13 +778,19 @@ function mcpGenerationBridge() {
       return executionCoordinator.execute({
         source: 'mcp', taskId: requestId, owner,
         work: async entry => {
-          const preview = await ensureDirectService().prepare(directGenerationRequest({
-            ...request, requestId, projectId: owner.projectId, sessionId: owner.sessionId, principalId: owner.principalId, tenantId: owner.tenantId,
-          }), { sandboxInput: directSandboxInput() });
-          Object.assign(preview, owner);
-          requestLedger.update(requestId, { state: 'prepared', previewId: preview.previewId, preview });
-          executionCoordinator.registerPreview({ source: 'mcp', previewId: preview.previewId, taskId: requestId, requestId, owner, entry });
-          return preview;
+          try {
+            const preview = await ensureDirectService().prepare(directGenerationRequest({
+              ...request, requestId, projectId: owner.projectId, sessionId: owner.sessionId, principalId: owner.principalId, tenantId: owner.tenantId,
+            }), { sandboxInput: directSandboxInput() });
+            Object.assign(preview, owner);
+            requestLedger.update(requestId, { state: 'prepared', previewId: preview.previewId, preview });
+            executionCoordinator.registerPreview({ source: 'mcp', previewId: preview.previewId, taskId: requestId, requestId, owner, entry });
+            return preview;
+          } catch (error) {
+            // Without this the ledger entry would stay 'created' forever.
+            requestLedger.fail(requestId, error);
+            throw error;
+          }
         },
       });
     },
@@ -918,10 +935,17 @@ async function createDirectTask(preview) {
 async function updateDirectTask(taskId, state, patch = {}) {
   if (!taskId || !agent?.taskManager?.get(taskId)) return;
   const task = agent.taskManager.get(taskId);
-  if (state === 'executing' && ['failed', 'cancelled'].includes(task.state)) {
-    agent.taskManager.transition(taskId, 'classifying');
+  try {
+    if (state === 'executing' && ['failed', 'cancelled'].includes(task.state)) {
+      await agent.taskManager.transition(taskId, 'classifying');
+    }
+    await agent.taskManager.transition(taskId, state, patch);
+  } catch (error) {
+    // Some callers fire-and-forget this bookkeeping update (line ~2106); an
+    // invalid transition must surface in the log, not as an unhandled rejection.
+    console.error(`[direct] task ${taskId} transition to ${state} failed:`, error?.message || error);
+    return;
   }
-  agent.taskManager.transition(taskId, state, patch);
   await agent.taskManager.persist();
 }
 
@@ -2602,6 +2626,7 @@ ipcMain.handle('projects:create', async (_, input = {}) => {
 });
 
 ipcMain.handle('projects:rename', async (_, { projectId, name }) => {
+  await startAgent(getStoredConfig());
   await runGovernedIpcMutation({ action: 'project.write', input: { projectId, name }, projectId, execute: () => agent.sessionManager.renameProject(projectId, name) });
   syncProjectPreferences();
   return agent.sessionManager.getState();
@@ -2615,7 +2640,7 @@ ipcMain.handle('projects:delete', async (_, { projectId }) => {
 });
 
 ipcMain.handle('sessions:list', async (_, { projectId } = {}) => {
-  const project = agent?.sessionManager.getProject(projectId || agent.sessionManager.activeProjectId);
+  const project = agent?.sessionManager?.getProject(projectId || agent?.sessionManager?.activeProjectId);
   return project?.sessions || [];
 });
 
@@ -2634,15 +2659,18 @@ ipcMain.handle('sessions:create', async (_, { title, projectId } = {}) => {
 });
 
 ipcMain.handle('sessions:delete', async (_, { sessionId, projectId } = {}) => {
+  await startAgent(getStoredConfig());
   if (executionCoordinator.isBusy) throw new Error('当前会话仍有直接生成任务或待确认预览，请先取消后再删除会话');
   return runGovernedIpcMutation({ action: 'session.write', input: { sessionId, projectId }, projectId, sessionId, execute: () => agent.deleteSession(sessionId, projectId) });
 });
 
 ipcMain.handle('sessions:rename', async (_, { sessionId, title, projectId } = {}) => {
+  await startAgent(getStoredConfig());
   return runGovernedIpcMutation({ action: 'session.write', input: { sessionId, title, projectId }, projectId, sessionId, execute: () => agent.sessionManager.renameSession(sessionId, title, projectId) });
 });
 
 ipcMain.handle('session:activate', async (_, { projectId, sessionId }) => {
+  await startAgent(getStoredConfig());
   if (executionCoordinator.isBusy) throw new Error('当前会话仍有直接生成任务或待确认预览，请先取消后再切换会话');
   const activateSession = (targetProjectId, targetSessionId) => agent.useSession(targetProjectId, targetSessionId);
   const state = await runGovernedIpcMutation({ action: 'session.write', input: { projectId, sessionId }, projectId, sessionId, execute: () => activateSession(projectId, sessionId) });
@@ -2689,9 +2717,18 @@ ipcMain.handle('image:generate', async (_, { prompt, size = 'auto', count = 1, q
   const provider = llm.providers.find(item => item.id === llm.imageProviderId);
   const model = provider?.models?.find(item => item.id === llm.imageModelId && item.kind === 'image' && item.enabled !== false);
   const config = provider && model ? { ...provider, model: model.id } : null;
-  if (!config) throw new Error('请先在设置中添加并选择 OpenAI Image 提供商');
-  if (model.runtime === 'local') throw new Error('本地生图请使用 ComfyUI，云端 Image API 不会重复发送请求');
-  const imageLease = governanceAdmission.admit(imageContext, { action: 'llm.invoke', resource: { projectId: owner.projectId, sessionId: owner.sessionId }, input: { confirmation: true }, operation: 'image:generate', quota: { generation_count: 1 } });
+  let imageLease;
+  try {
+    // These pre-flight throws happen after requestLedger.begin — without
+    // failing the entry it would stay 'created' forever (never pruned, and
+    // reported as an in-flight request to the UI).
+    if (!config) throw new Error('请先在设置中添加并选择 OpenAI Image 提供商');
+    if (model.runtime === 'local') throw new Error('本地生图请使用 ComfyUI，云端 Image API 不会重复发送请求');
+    imageLease = governanceAdmission.admit(imageContext, { action: 'llm.invoke', resource: { projectId: owner.projectId, sessionId: owner.sessionId }, input: { confirmation: true }, operation: 'image:generate', quota: { generation_count: 1 } });
+  } catch (error) {
+    requestLedger.fail(normalizedRequestId, error);
+    throw error;
+  }
   await getGovernanceGateway().audit.emit({ ...imageContext, action: 'llm.invoke', decision: 'started', data: { projectId: owner.projectId, sessionId: owner.sessionId } });
   let imageSucceeded = false;
   const referenceInputs = Array.isArray(images) ? images : [];
@@ -3123,8 +3160,8 @@ ipcMain.handle('prompt:save-settings', async (_, settings = {}) => {
 
 // Agent-adjacent IPC (memory + plugins) extracted to ./ipc/agent-extras.mjs
 registerAgentExtrasIpc({ ipcMain, getAgent: () => agent, startAgent, getStoredConfig });
-registerSkillsIpc({ ipcMain, prefStore, configureSkills, skillManifest, BUILTIN_SKILLS, createCustomSkill, normalizeExternalSkill, externalSkillConfig, loadExternalSkillFile, dialog, getMainWindow: () => mainWindow });
-registerMcpIpc({ ipcMain, prefStore, mcpModuleFlags, restartEmbeddedMcp });
+registerSkillsIpc({ ipcMain, getPrefStore: () => prefStore, configureSkills, skillManifest, BUILTIN_SKILLS, createCustomSkill, normalizeExternalSkill, externalSkillConfig, loadExternalSkillFile, dialog, getMainWindow: () => mainWindow });
+registerMcpIpc({ ipcMain, getPrefStore: () => prefStore, mcpModuleFlags, restartEmbeddedMcp });
 registerComfyuiIpc({ ipcMain, dialog, shell, app, join, resolve, basename, existsSync, rename, copyFile, stat, writeFile, mkdir, rm, spawnSync, comfyManager, getAgent: () => agent, getPrefStore: () => prefStore, getMainWindow: () => mainWindow, getImageDataUrl, getAuthorizedMediaDataUrl, getRecentImages, resolveImagePath, normalizeHttpUrl, getWorkflowDir, getStoredConfig, sendToRenderer, downloadToFile, formatBytes, findPortableRootUnder, hasPortableLayout, ComfyUITool, ComfyUIClient, COMFYUI_PORTABLE_URLS, DEFAULT_BASE_URL, COMFY_START_DIRS, envConfig });
 registerWorkflowsIpc({ ipcMain, dialog, shell, app, join, basename, extname, stat, writeFile, nativeImage, clipboard, getWorkflowDir, getDisplayPath, listWorkflowFiles, deleteWorkflowFile, renameWorkflowFile, importWorkflowFiles, resolveSandboxPath, getAgent: () => agent, getDirectService: () => directService, getPrefStore: () => prefStore, getMainWindow: () => mainWindow, getAuthorizedMediaPaths: () => authorizedMediaPaths });
 
@@ -3345,7 +3382,12 @@ if (hasSingleInstanceLock) app.whenReady().then(async () => {
     else showFloatingWindow();
   });
   void startAgent(prefStore.getAll()).catch(() => {});
-  void comfyManager.ensureStarted().catch(error => console.error(`ComfyUI startup failed: ${error.message}`));
+  const uiPrefs = prefStore.get('ui') || {};
+  if (uiPrefs.startComfyOnLaunch === false) {
+    void comfyManager.refreshState().catch(error => console.error(`ComfyUI state refresh failed: ${error.message}`));
+  } else {
+    void comfyManager.ensureStarted().catch(error => console.error(`ComfyUI startup failed: ${error.message}`));
+  }
   void startEmbeddedMcp(config).catch(error => console.error(`MCP initialization failed: ${error.message}`));
 });
 

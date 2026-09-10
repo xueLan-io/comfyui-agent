@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Agent } from '../src/agent/runtime/agent.mjs';
+import { Planner } from '../src/agent/runtime/planner.ts';
 import { LongTermMemory } from '../src/agent/memory/long-term.mjs';
 
 function stubAgent({ memory } = {}) {
@@ -39,6 +40,24 @@ test('_memoryContext returns recall for the active project and empty string with
 
   const bare = stubAgent();
   assert.equal(await bare._memoryContext('hi'), '');
+});
+
+test('disabled memory short-circuits recall for chat injection', async () => {
+  const memory = new LongTermMemory();
+  await memory.init();
+  await memory.captureSession('project-a', { summary: { facts: ['用户偏好冷色系风格'] } });
+  await memory.setUserNotes(['始终用中文回复']);
+  await memory.setSettings({ enabled: false });
+  const agent = stubAgent({ memory });
+  assert.equal(await agent._memoryContext('帮我生成'), '');
+});
+
+test('planner plan prompt carries recalled memory context', () => {
+  const planner = new Planner({}, { tools: {} });
+  const withMemory = planner._buildPlanPrompt('画一只猫', { memoryContext: '【长期记忆】用户偏好冷色系' });
+  assert.match(withMemory, /用户偏好冷色系/);
+  const without = planner._buildPlanPrompt('画一只猫', {});
+  assert.ok(!without.includes('【长期记忆】'), 'no memory block should be appended without recalled context');
 });
 
 test('_prepareConversationArchive distills an archived segment into long-term memory', async () => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { evaluateTechnical, buildEvaluation } from '../src/agent/schemas/evaluation-schema.mjs';
+import { evaluateTechnical, buildEvaluation } from '../src/agent/schemas/evaluation-schema.ts';
 import { Evaluator } from '../src/agent/runtime/evaluator.mjs';
 
 test('evaluateTechnical passes with images', () => {

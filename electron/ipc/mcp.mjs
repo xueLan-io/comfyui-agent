@@ -3,14 +3,18 @@
 // the restart hook owned by main.mjs.
 
 export function registerMcpIpc(ctx) {
-  const { ipcMain, prefStore, mcpModuleFlags, restartEmbeddedMcp } = ctx;
+  // prefStore is created inside app.whenReady() while this registration runs
+  // at module load; the lazy getter (same pattern as comfyui.mjs) is required.
+  const { ipcMain, getPrefStore, mcpModuleFlags, restartEmbeddedMcp } = ctx;
 
   ipcMain.handle('mcp:settings', async () => {
+    const prefStore = getPrefStore();
     const mcp = prefStore.get('mcp') || {};
     return { enabled: mcp.enabled === true, host: mcp.host || '127.0.0.1', port: mcp.port || 3333, hasToken: Boolean(mcp.token), modules: mcpModuleFlags(mcp.modules || {}) };
   });
 
   ipcMain.handle('mcp:save-settings', async (_, settings = {}) => {
+    const prefStore = getPrefStore();
     const current = prefStore.get('mcp') || {};
     const port = Number(settings.port);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('MCP 端口必须是 1-65535 的整数');

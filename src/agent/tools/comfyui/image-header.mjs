@@ -83,9 +83,11 @@ function parseWebp(bytes) {
     return { format: 'webp', width, height, hasAlpha: true };
   }
   if (chunkType === 'VP8X' && bytes.length >= 30) {
-    const flags = bytes[24];
-    const width = 1 + bytes[24 + 4] + (bytes[24 + 5] << 8) + (bytes[24 + 6] << 16);
-    const height = 1 + bytes[27 + 4] + (bytes[27 + 5] << 8) + (bytes[27 + 6] << 16);
+    // VP8X payload starts at offset 20: flags at 20, 3 reserved bytes, then
+    // canvas width-1 (uint24 LE) at 24 and height-1 at 27.
+    const flags = bytes[20];
+    const width = 1 + bytes[24] + (bytes[25] << 8) + (bytes[26] << 16);
+    const height = 1 + bytes[27] + (bytes[28] << 8) + (bytes[29] << 16);
     return { format: 'webp', width, height, hasAlpha: Boolean(flags & 0x10) };
   }
   return { format: 'webp', width: null, height: null, hasAlpha: false };

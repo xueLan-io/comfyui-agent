@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createToolRegistry, validateToolDefinitions, validateUniqueNames } from '../src/agent/tools/registry.mjs';
 import { Agent } from '../src/agent/runtime/agent.mjs';
-import { buildAgentContext } from '../src/agent/schemas/context-schema.mjs';
-import { validatePlan } from '../src/agent/schemas/plan-schema.mjs';
+import { buildAgentContext } from '../src/agent/schemas/context-schema.ts';
+import { validatePlan } from '../src/agent/schemas/plan-schema.ts';
 
 function tool(name, overrides = {}) {
   return {

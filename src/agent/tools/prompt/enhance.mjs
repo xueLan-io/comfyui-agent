@@ -420,11 +420,21 @@ function normalizeCompiled(parsed, input) {
   };
 }
 
+const CJK_CHAR_G = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g;
+
+function richnessScore(text = '') {
+  const value = String(text);
+  // 空格分词对 CJK 无意义（整段中文只有 1-2 个"词"），按字计数才可比。
+  const cjk = (value.match(CJK_CHAR_G) || []).length;
+  const words = value.replace(CJK_CHAR_G, ' ').trim().split(/\s+/).filter(Boolean).length;
+  return cjk + words;
+}
+
 function preserveRefinementBaseline(compiled, sourcePrompt, intent) {
   if (intent !== 'refine' || !sourcePrompt || !compiled?.positive) return compiled;
-  const sourceWords = sourcePrompt.trim().split(/\s+/).filter(Boolean).length;
-  const compiledWords = compiled.positive.trim().split(/\s+/).filter(Boolean).length;
-  if (compiledWords >= Math.max(4, Math.ceil(sourceWords * 0.6))) return compiled;
+  const sourceUnits = richnessScore(sourcePrompt);
+  const compiledUnits = richnessScore(compiled.positive);
+  if (compiledUnits >= Math.max(4, Math.ceil(sourceUnits * 0.6))) return compiled;
   return {
     ...compiled,
     positive: sourcePrompt,

@@ -1,6 +1,6 @@
-import { emit, AgentEventTypes } from '../events/agent-events.mjs';
-import { evaluateTechnical, buildEvaluation } from '../schemas/evaluation-schema.mjs';
-import { resolveLLMStrategy } from '../llm/provider.mjs';
+import { emit, AgentEventTypes } from '../events/agent-events.ts';
+import { evaluateTechnical, buildEvaluation } from '../schemas/evaluation-schema.ts';
+import { resolveLLMStrategy } from '../llm/provider.ts';
 
 export class Evaluator {
   constructor(llmProvider = null, options = {}) {

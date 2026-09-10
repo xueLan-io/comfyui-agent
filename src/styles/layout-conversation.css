@@ -217,7 +217,7 @@
 .asset-library-filters button:hover,
 .asset-library-view-toggle button:hover { border-color: var(--border-strong); color: var(--text-primary); }
 .asset-library-filters button.active,
-.asset-library-view-toggle button.active { border-color: var(--accent-border); background: var(--accent-bg); color: #d0d0d0; }
+.asset-library-view-toggle button.active { border-color: var(--accent-border); background: var(--accent-bg); color: var(--text-secondary); }
 .asset-library-toolbar-actions { display: flex; align-items: center; gap: 5px; }
 .asset-library-toolbar-actions select { height: 28px; padding: 0 7px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--bg-surface); color: var(--text-muted); font-size: 10px; }
 .asset-library-view-toggle { display: flex; gap: 3px; }
@@ -255,7 +255,7 @@
 .asset-library-save-preset:hover { border-color: var(--accent); color: var(--accent); }
 .asset-library-delete:hover { border-color: var(--red); color: var(--red); }
 .asset-library-favorite:hover,
-.asset-library-favorite.active { border-color: var(--accent-border); color: #d0d0d0; }
+.asset-library-favorite.active { border-color: var(--accent-border); color: var(--text-secondary); }
 .asset-library-select { position: absolute; z-index: 1; top: 8px; left: 8px; }
 .asset-library-select input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .asset-library-select span { width: 11px; height: 11px; border: 1px solid var(--text-muted); border-radius: 2px; }

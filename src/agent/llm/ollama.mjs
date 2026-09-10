@@ -42,6 +42,9 @@ export class OllamaProvider {
       options: {
         temperature,
         num_predict: maxTokens,
+        // Without this Ollama silently uses its own small default context and
+        // truncates the prompt server-side, undoing all client-side fitting.
+        num_ctx: this.contextWindow,
       },
     };
 
@@ -60,13 +63,20 @@ export class OllamaProvider {
     this._controller = controller;
     let timer;
     let rejectAbort;
+    let timeoutReject;
     const abortRace = new Promise((_, reject) => { rejectAbort = reject; });
-    const timeoutPromise = new Promise((_, reject) => {
-      timer = setTimeout(() => {
-        controller.abort('timeout');
-        reject(this._abortError('timeout', timeoutMs));
-      }, timeoutMs);
-    });
+    const timeoutPromise = new Promise((_, reject) => { timeoutReject = reject; });
+    const fireTimeout = () => {
+      controller.abort('timeout');
+      timeoutReject(this._abortError('timeout', timeoutMs));
+    };
+    // Idle timeout: reset on every received chunk so long local generations
+    // streaming steadily are not killed mid-answer.
+    const resetTimer = () => {
+      clearTimeout(timer);
+      timer = setTimeout(fireTimeout, timeoutMs);
+    };
+    resetTimer();
     const abortFromCaller = () => {
       rejectAbort(this._abortError('cancelled', timeoutMs));
       controller.abort(signal.reason || 'cancelled');
@@ -128,6 +138,7 @@ export class OllamaProvider {
       let usage = null;
       let finishReason = 'unknown';
       let sawDone = false;
+      const toolCalls = [];
       const readLine = line => {
         const value = line.trim();
         if (!value) return;
@@ -144,6 +155,17 @@ export class OllamaProvider {
             totalTokens: (Number(data.prompt_eval_count) || 0) + (Number(data.eval_count) || 0),
           };
         }
+        if (Array.isArray(data.message?.tool_calls)) {
+          for (const part of data.message.tool_calls) {
+            toolCalls.push({
+              type: 'function',
+              function: {
+                name: part.function?.name || part.name || '',
+                arguments: typeof part.function?.arguments === 'string' ? part.function.arguments : JSON.stringify(part.function?.arguments ?? part.arguments ?? {}),
+              },
+            });
+          }
+        }
         const delta = data.message?.content || '';
         if (delta) {
           content += delta;
@@ -153,6 +175,7 @@ export class OllamaProvider {
 
       while (true) {
         const { done, value } = await guarded(reader.read());
+        resetTimer();
         buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
@@ -165,13 +188,13 @@ export class OllamaProvider {
         error.code = 'LLM_STREAM_INTERRUPTED';
         throw error;
       }
-      if (!content.trim()) {
+      if (!content.trim() && toolCalls.length === 0) {
         const error = new Error('本地模型返回了空响应');
         error.code = 'EMPTY_MODEL_RESPONSE';
         if (finishReason === 'length') error.budgetExhausted = true;
         throw error;
       }
-      return { role: 'assistant', content, ...(usage ? { usage } : {}), finishReason };
+      return { role: 'assistant', content, ...(toolCalls.length ? { tool_calls: toolCalls } : {}), ...(usage ? { usage } : {}), finishReason };
     } finally {
       clearTimeout(timer);
       if (this._controller === controller) this._controller = null;

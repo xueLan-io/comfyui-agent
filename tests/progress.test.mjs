@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Agent } from '../src/agent/runtime/agent.mjs';
-import { AgentEventTypes, on } from '../src/agent/events/agent-events.mjs';
+import { AgentEventTypes, on } from '../src/agent/events/agent-events.ts';
 
 test('agent state transitions emit stage progress without fake percentages', () => {
   const agent = new Agent({ llmConfig: { provider: 'openai-compatible', model: 'test' } });

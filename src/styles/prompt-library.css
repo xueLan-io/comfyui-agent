@@ -69,7 +69,7 @@
 .prompt-library-categories { display: flex; min-width: 0; flex: 1 1 100%; flex-wrap: wrap; gap: 5px; }
 .prompt-library-categories button { height: 30px; padding: 0 9px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; white-space: nowrap; }
 .prompt-library-categories button:hover { border-color: var(--border-strong); color: var(--text-primary); }
-.prompt-library-categories button.active { border-color: var(--accent-border); background: var(--accent-bg); color: #d0d0d0; }
+.prompt-library-categories button.active { border-color: var(--accent-border); background: var(--accent-bg); color: var(--text-secondary); }
 .prompt-library-categories small { margin-left: 3px; color: var(--text-dim); font-family: var(--font-mono); font-size: 9px; }
 .prompt-library-categories button.active small { color: var(--accent); }
 
@@ -104,7 +104,7 @@
 .prompt-library-card-usage .icon { flex: 0 0 auto; color: var(--accent); }
 .prompt-library-card-meta { margin-top: 4px; overflow: hidden; color: var(--text-dim); font-family: var(--font-mono); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .prompt-library-card-prompt { display: -webkit-box; min-height: 66px; margin-top: 10px; overflow: hidden; padding: 8px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--bg-canvas); color: var(--text-secondary); font-family: var(--font-mono); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
-.prompt-library-add { display: flex; height: 30px; align-items: center; justify-content: center; gap: 6px; margin-top: auto; padding: 0 8px; border: 1px solid var(--accent-border); border-radius: var(--radius-sm); background: var(--accent-bg); color: #d0d0d0; cursor: pointer; font-size: 10px; }
+.prompt-library-add { display: flex; height: 30px; align-items: center; justify-content: center; gap: 6px; margin-top: auto; padding: 0 8px; border: 1px solid var(--accent-border); border-radius: var(--radius-sm); background: var(--accent-bg); color: var(--text-secondary); cursor: pointer; font-size: 10px; }
 .prompt-library-add:hover { border-color: var(--accent); background: rgba(208, 208, 208, .2); color: #fff; }
 .prompt-library-add span { font-size: 16px; line-height: 1; }
 .prompt-library-add.added { border-color: rgba(160, 160, 160, .4); background: var(--green-bg); color: var(--green); }
@@ -133,11 +133,11 @@
 
 .prompt-library-launch { display: flex; width: 100%; min-width: 0; align-items: center; gap: 9px; margin-top: 11px; padding: 9px; border: 1px solid var(--accent-border); border-radius: var(--radius-md); background: var(--accent-bg); color: var(--text-primary); cursor: pointer; text-align: left; transition: border-color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast); }
 .prompt-library-launch:hover { border-color: var(--accent); background: rgba(208, 208, 208, .18); transform: translateY(-1px); }
-.prompt-library-launch-mark { display: grid; width: 25px; height: 25px; flex: 0 0 25px; place-items: center; border: 1px solid var(--accent-border); border-radius: var(--radius-sm); color: #d0d0d0; font-size: 17px; }
+.prompt-library-launch-mark { display: grid; width: 25px; height: 25px; flex: 0 0 25px; place-items: center; border: 1px solid var(--accent-border); border-radius: var(--radius-sm); color: var(--text-secondary); font-size: 17px; }
 .prompt-library-launch > span:nth-child(2) { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 1px; }
 .prompt-library-launch strong { font-size: 11px; }
-.prompt-library-launch small { color: #d0d0d0; font-size: 9px; }
-.prompt-library-launch-arrow { color: #d0d0d0; font-size: 16px; }
+.prompt-library-launch small { color: var(--text-secondary); font-size: 9px; }
+.prompt-library-launch-arrow { color: var(--text-secondary); font-size: 16px; }
 
 @media (max-width: 920px) {
   .prompt-library-layout { grid-template-columns: minmax(0, 1fr) 280px; gap: 14px; }

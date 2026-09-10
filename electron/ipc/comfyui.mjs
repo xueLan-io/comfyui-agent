@@ -3,6 +3,8 @@
 // preview. Shared helpers (image data URLs, downloadToFile, formatBytes) are
 // injected through ctx so they stay owned by main.mjs.
 
+import { spawn } from 'node:child_process';
+
 export function registerComfyuiIpc(ctx) {
   const {
     ipcMain,
@@ -123,15 +125,24 @@ export function registerComfyuiIpc(ctx) {
       await rm(extractDir, { recursive: true, force: true });
       await mkdir(extractDir, { recursive: true });
       sendToRenderer('comfyui:download-progress', { phase: 'extract', percent: -1, message: '正在解压，请稍候...' });
-      const extraction = spawnSync('tar', ['-xf', archivePath, '-C', extractDir], { windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+      // Async spawn: a synchronous tar extraction of the multi-GB portable
+      // archive would freeze the whole main process (window, IPC, tray) for
+      // minutes. Progress events keep flowing this way.
+      const extraction = await new Promise((resolveExtract, rejectExtract) => {
+        const child = spawn('tar', ['-xf', archivePath, '-C', extractDir], { windowsHide: true });
+        child.on('error', rejectExtract);
+        child.on('close', code => resolveExtract({ status: code }));
+      });
       if (extraction.status !== 0) {
         throw new Error('解压失败：系统 tar 无法读取 7z 文件（需要 Windows 10 1803 及以上版本）');
       }
       const root = findPortableRootUnder(extractDir);
       if (!root) throw new Error('解压结果中未找到 ComfyUI 目录');
       const finalRoot = join(targetDir, basename(root));
-      if (existsSync(finalRoot)) await rm(finalRoot, { recursive: true, force: true });
-      await rename(root, finalRoot);
+      if (resolve(finalRoot) !== resolve(root)) {
+        if (existsSync(finalRoot)) await rm(finalRoot, { recursive: true, force: true });
+        await rename(root, finalRoot);
+      }
       comfyManager.setPortableRoot(finalRoot);
       getPrefStore().set('comfyui', { ...getPrefStore().get('comfyui'), portableRoot: finalRoot });
       sendToRenderer('comfyui:download-progress', { phase: 'done', message: '安装完成' });

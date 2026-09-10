@@ -293,6 +293,18 @@ export class PreferenceMemory {
         }
       }
     }
+    // llm 同理：IPC 全量写回的是全新对象（结构化克隆已丢掉隐藏字段），
+    // 按 provider id/位置回填 _encryptedApiKey，否则 _save 会把 apiKey 永久写成空串。
+    if (keyPath === 'llm' && value && Array.isArray(value.providers)) {
+      const previous = Array.isArray(this.data.llm?.providers) ? this.data.llm.providers : [];
+      const previousById = new Map(previous.map(provider => [provider?.id, provider]));
+      value.providers.forEach((provider, index) => {
+        const source = previousById.get(provider?.id) || previous[index];
+        if (source?._encryptedApiKey && !provider.apiKey) {
+          Object.defineProperty(provider, '_encryptedApiKey', { value: source._encryptedApiKey, configurable: true });
+        }
+      });
+    }
     target[keys.at(-1)] = value;
     this._save();
   }

@@ -4,11 +4,11 @@ import { join, basename, relative } from 'path';
 import { randomUUID } from 'crypto';
 import { WorkflowAdapter, resolveWorkflowPath } from './workflow-adapter.mjs';
 import { applyWorkflowOverrides, capReferenceImageResolution, extractCommonSettings, injectExecutionPrompts, injectInputMedia, isEditableValue, referenceMediaInjected, selectExecutionOutputs, selectPreferredExecutionOutputs } from './node-overrides.mjs';
-import { artifactFromComfyUIImage, createArtifact } from '../../schemas/artifact-schema.mjs';
+import { artifactFromComfyUIImage, createArtifact } from '../../schemas/artifact-schema.ts';
 import { ComfyUIClient, queueContains } from './client.mjs';
 import { workflowToPrompt, findNodeGroup, checkModelRequirements, getInputDefinition, describeInput } from './prompt-builder.mjs';
 import { assertSandboxMedia, resolveSandboxFile } from '../../security/sandbox.mjs';
-import { normalizeGenerationResult } from '../../../runtime/generation-contract.mjs';
+import { normalizeGenerationResult } from '../../../runtime/generation-contract.ts';
 import { buildPreflightReport, preflightError } from '../../../runtime/preflight-contract.mjs';
 import { inspectRuntimeCapabilities } from '../../../runtime/runtime-capabilities.mjs';
 import { estimateGenerationResources } from '../../../runtime/resource-estimator.mjs';
@@ -325,6 +325,10 @@ export const ComfyUITool = {
       const history = typeof client.observe === 'function'
         ? await client.observe(promptId, 1000, input.signal)
         : await client.waitForCompletion(promptId, 1000, input.signal);
+      // 先判定执行状态：工作流真实失败（如 OOM）时 outputs 为空，若先跑
+      // output-mismatch 检查会把真实错误掩盖成"输出节点未产出媒体"并误触发 replan。
+      const state = historyStatus(history);
+      if (!state.completed) throw Object.assign(new Error(state.error), { failureType: 'execution_failed' });
       const imageNodeIds = this._imageNodeIds(history);
       const mediaItems = this._extractMedia(history, selectedOutputIds);
       const videoNodeIds = new Set(mediaItems.filter(isVideoRef).map(item => String(item.nodeId || '')));
@@ -336,8 +340,6 @@ export const ComfyUITool = {
       }
       rawImages = mediaItems.filter(item => !isVideoRef(item));
       rawVideos = mediaItems.filter(isVideoRef);
-      const state = historyStatus(history);
-      if (!state.completed) throw Object.assign(new Error(state.error), { failureType: 'execution_failed' });
       const checks = await assertValidMedia(rawImages, rawVideos, {
         expectedBatch: Number.isInteger(input.settings?.batch) ? input.settings.batch : null,
       });

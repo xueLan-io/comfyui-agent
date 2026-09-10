@@ -1,0 +1,96 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-delivery-20260906T055408964Z-18040-bd99c25d4693",
+  "runId": "20260906T055408964Z-18040-bd99c25d4693",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "StopDelivery"
+  },
+  "revision": "2a021b064cbd5b92217efce6cb0f235be0e76609",
+  "diffHash": "233e73b7b15c2efe018d90a15bd691f2adbb1bfe342d4a7998a942bae03313c9",
+  "rulesVersion": "unavailable",
+  "sessionHash": "a20808218e46e125d420118cf39473caaf00447da6582f3dd512193b55f848f0",
+  "reportRef": ".mimosa/reports/task-review-sess_58341dae-bbeb-4af7-8c76-e6646b52e821-20260906T055408964Z-18040-bd99c25d4693.json",
+  "events": [
+    {
+      "eventId": "hook-d1eb52a62e3a2354a37b05dfb3902571",
+      "findingId": "mimosa-faee715ff1886e68b568b525",
+      "type": "finding_blocked",
+      "at": "2026-09-06T05:54:09.412Z",
+      "identity": {
+        "projectRelativeFile": "updater.cs",
+        "ruleId": "security",
+        "codeEvidenceHash": "6739e00f428fe2ba15b13f59e1a6c2d6a3a6cee0f22767de7e256bb601afcbc1",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 41,
+      "endLine": 41,
+      "reasonCode": "stop_rewake",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "6739e00f428fe2ba15b13f59e1a6c2d6a3a6cee0f22767de7e256bb601afcbc1"
+      },
+      "sequence": 0
+    },
+    {
+      "eventId": "hook-1076fc1d67fbf7e0a19539052a0c03b0",
+      "findingId": "mimosa-6f821165c609ac28635c2eb9",
+      "type": "finding_blocked",
+      "at": "2026-09-06T05:54:09.412Z",
+      "identity": {
+        "projectRelativeFile": "updater.cs",
+        "ruleId": "security",
+        "codeEvidenceHash": "b416b7017ff20ed981c513e63065a483d5a2ce56fffbc810859c93bd809ba5a9",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 46,
+      "endLine": 46,
+      "reasonCode": "stop_rewake",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "b416b7017ff20ed981c513e63065a483d5a2ce56fffbc810859c93bd809ba5a9"
+      },
+      "sequence": 1
+    },
+    {
+      "eventId": "hook-df5e84cde7c33ca3ff38c3f1d23e0fc5",
+      "findingId": "mimosa-da10da3e04f5405eef1407fb",
+      "type": "finding_blocked",
+      "at": "2026-09-06T05:54:09.412Z",
+      "identity": {
+        "projectRelativeFile": "updater.cs",
+        "ruleId": "security",
+        "codeEvidenceHash": "9d9af551dd66928f6edc29b92587fa841db601420811494f581d31a4e259ea57",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 59,
+      "endLine": 59,
+      "reasonCode": "stop_rewake",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "9d9af551dd66928f6edc29b92587fa841db601420811494f581d31a4e259ea57"
+      },
+      "sequence": 2
+    }
+  ],
+  "observedFindingIds": [],
+  "verifiedFiles": [],
+  "recordedAt": "2026-09-06T05:54:09.862Z"
+}

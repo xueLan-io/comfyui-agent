@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LLMProvider, providerKind, resolveLLMRouting, resolveLLMStrategy } from '../src/agent/llm/provider.mjs';
+import { LLMProvider, providerKind, resolveLLMRouting, resolveLLMStrategy } from '../src/agent/llm/provider.ts';
 
 const BOTH_PROVIDERS = [
   { id: 'lmstudio', name: 'LM Studio', type: 'openai-compatible', baseUrl: 'http://127.0.0.1:1234/v1', models: [{ id: 'local-model' }] },

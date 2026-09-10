@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { AgentProcessClient } from '../electron/agent-process.mjs';
+import { AgentProcessClient } from '../electron/agent-process.ts';
 import { TaskStore } from '../src/runtime/task-store.mjs';
 import { createFakeClock } from './harness/fake-clock.mjs';
 import { createFakeComfyUI } from './harness/fake-comfyui.mjs';

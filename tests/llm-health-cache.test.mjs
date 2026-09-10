@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LLMProvider } from '../src/agent/llm/provider.mjs';
+import { LLMProvider } from '../src/agent/llm/provider.ts';
 
 test('failed local health probe is cached and never falls back to cloud', async () => {
   const originalFetch = globalThis.fetch;

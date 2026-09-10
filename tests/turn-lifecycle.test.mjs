@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Agent } from '../src/agent/runtime/agent.mjs';
 import { ConversationMemory } from '../src/agent/memory/conversation.mjs';
-import { normalizeIntentDecision } from '../src/agent/schemas/intent-schema.mjs';
-import { AgentEventTypes, on } from '../src/agent/events/agent-events.mjs';
+import { normalizeIntentDecision } from '../src/agent/schemas/intent-schema.ts';
+import { AgentEventTypes, on } from '../src/agent/events/agent-events.ts';
 
 function fakeTurnAgent(decisions) {
   const agent = Object.create(Agent.prototype);

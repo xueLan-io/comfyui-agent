@@ -11,8 +11,16 @@ files:
   - comfy-client.mjs
   - dist/**/*
   - src/**/*
+  - !src/fonts/**
   - package.json
   - workflows/**/*
+extraResources:
+  - from: src/fonts/LICENSE-Nowar.txt
+    to: fonts/LICENSE-Nowar.txt
+  - from: THIRD-PARTY-NOTICES.md
+    to: THIRD-PARTY-NOTICES.md
+  - from: LICENSE
+    to: LICENSE
 win:
   icon: electron/icon.ico
   signAndEditExecutable: true

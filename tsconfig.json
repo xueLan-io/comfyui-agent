@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "types": ["node"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "noImplicitOverride": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": [
+    "src/agent/types/**/*.ts",
+    "src/agent/schemas/**/*.ts",
+    "src/agent/events/**/*.ts",
+    "src/agent/llm/openai-compatible.ts",
+    "src/agent/llm/provider.ts",
+    "src/agent/runtime/planner.ts",
+    "src/agent/runtime/executor.ts",
+    "src/agent/runtime/execution-ops.ts",
+    "src/agent/runtime/chat-request.ts",
+    "src/agent/index.ts",
+    "src/runtime/generation-contract.ts",
+    "electron/agent-process.ts",
+    "electron/agent-worker.ts"
+  ]
+}

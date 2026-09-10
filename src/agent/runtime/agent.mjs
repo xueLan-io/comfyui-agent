@@ -1,7 +1,7 @@
-import { Planner } from './planner.mjs';
-import { Executor } from './executor.mjs';
+import { Planner } from './planner.ts';
+import { Executor } from './executor.ts';
 import { Evaluator } from './evaluator.mjs';
-import { LLMProvider } from '../llm/provider.mjs';
+import { LLMProvider } from '../llm/provider.ts';
 import { JSONFileStore } from '../memory/store.mjs';
 import { SessionManager } from './session-manager.mjs';
 import { TaskManager, canTransition } from './task-manager.mjs';
@@ -23,8 +23,8 @@ import { SystemTool } from '../tools/system/index.mjs';
 import { WebTool } from '../tools/web/index.mjs';
 import { WorkflowAdapter } from '../tools/comfyui/workflow-adapter.mjs';
 import { registerAdapters } from '../tools/comfyui/adapters/index.mjs';
-import { emit, AgentEventTypes, initSession, nextTraceId } from '../events/agent-events.mjs';
-import { confirmationForPlan } from '../schemas/confirmation-schema.mjs';
+import { emit, AgentEventTypes, initSession, nextTraceId } from '../events/agent-events.ts';
+import { confirmationForPlan } from '../schemas/confirmation-schema.ts';
 import { IntentRouter, isExplicitNewGeneration, questionFor } from './intent-router.mjs';
 import { assessPromptReadiness } from '../tools/prompt/readiness.mjs';
 import { normalizePersonality } from './chat-prompt.mjs';
@@ -35,7 +35,7 @@ import { randomUUID } from 'node:crypto';
 import { wantsWebResearch } from './chat-intents.mjs';
 import { createAgentToolRegistry } from './agent-tools.mjs';
 import { contextArchiveOf, archivePrompt, compactConversationSegment, prepareConversationArchive, prefetchContextArchive, compactConversation, memoryContext, archiveMessage } from './context-archive.mjs';
-import { resultSummary, recordGenerationArtifact, recordArtifact, replanPlan, executeWithRetry, retryDecision, retryParameters, rotateRetryParameters, recordStepAttempt, recompilePrompt, collectPromptIssues, collectArtifacts } from './execution-ops.mjs';
+import { resultSummary, recordGenerationArtifact, recordArtifact, replanPlan, executeWithRetry, retryDecision, retryParameters, rotateRetryParameters, recordStepAttempt, recompilePrompt, collectPromptIssues, collectArtifacts } from './execution-ops.ts';
 import { researchCharacter, buildSearchQuery, chatResearch } from './research-ops.mjs';
 import { useSession as sessionUse, createProject as createProjectOp, createSession as createSessionOp, suggestSessionTitle as suggestSessionTitleOp, deleteProject as deleteProjectOp, deleteSession as deleteSessionOp } from './session-ops.mjs';
 import { chatWithDegradation, localResponse } from './chat-ops.mjs';
@@ -136,7 +136,13 @@ export class Agent {
     this._maxReplans = options.maxReplans ?? 2;
     this._pendingQueue = [];
     this._cancelRequested = false;
+    // 运行代际：cancel() 会提前置 _running=false 放行新任务，旧流程的
+    // finally 不得再把新任务的 _running 翻回 false。每个流程入口自增。
+    this._runEpoch = 0;
     this._promptCompileController = null;
+    // 联网调研专用取消信号：调研发生在 executor 步骤循环之外，
+    // executor.cancel()/llm.cancel() 都够不着，cancel() 通过它中止调研。
+    this._researchController = null;
     this._policyPreprocessing = false;
 
     const storageDir = this.userDataPath ? join(this.userDataPath, 'agent-data') : '';
@@ -374,6 +380,14 @@ export class Agent {
     return researchCharacter(this, request, inputSettings);
   }
 
+  // 每次调研开始时换取新的取消信号，并中止上一次还在后台跑的调研
+  // （deadline 超时/取消后旧调研可能尚未退出，不得继续占用网络）。
+  _beginResearchSignal() {
+    this._researchController?.abort('superseded');
+    this._researchController = new AbortController();
+    return this._researchController.signal;
+  }
+
   // 口语消息 → 搜索关键词。cn.bing 对中文口语长句解析很差（"帮我查一下"只剩"帮"），
   // 优先用 LLM 提炼，失败时用规则剥离口语前缀兜底
   async _buildSearchQuery(message) {
@@ -467,6 +481,7 @@ export class Agent {
     this._needsConfirmation = false;
     this._replanCount = 0;
     this._pendingQueue = [];
+    this._runEpoch = 0;
   }
 
   async useSession(projectId, sessionId) {
@@ -546,7 +561,13 @@ export class Agent {
     if (!this._pendingQueue || this._pendingQueue.length === 0) return;
     while (!this._running && !this._cancelRequested && this._pendingQueue.length > 0) {
       const next = this._pendingQueue.shift();
-      await next();
+      try {
+        await next();
+      } catch (error) {
+        // Isolate queued turns: one rejected thunk must not replace the
+        // draining flow's own result nor drop the remaining queued turns.
+        console.error('[agent] queued turn failed:', error);
+      }
     }
   }
 
@@ -746,24 +767,30 @@ export class Agent {
     const discarded = this._preparedRuns.delete(previewId);
     const persisted = this.sessionManager.getSessionState?.().preparedPreview?.previewId === previewId;
     if (discarded || persisted) {
+      // A live run owns the state machine (its prepared entry flips to
+      // 'consuming' while agent state is executing/observing) — a late or
+      // duplicate discard must not force it back to idle mid-flight.
+      const liveRun = ['classifying', 'planning', 'executing', 'observing'].includes(this._state);
       if (this._taskId && this._state === 'awaiting_confirmation') {
         this.taskManager.complete(this._taskId, { result: { cancelled: true, reason: 'confirmation_declined' } });
         this._transitionState('cancelled', { message: 'Confirmation declined', needsConfirmation: false });
         this._transitionState('idle', { message: 'Ready for next turn', needsConfirmation: false });
-      } else {
+      } else if (!liveRun) {
         this._state = 'idle';
         this._needsConfirmation = false;
       }
-      void this.taskManager.persist();
-      this.sessionManager.setSessionState?.({
-        state: 'idle',
-        phase: 'idle',
-        pending: null,
-        pendingIntent: null,
-        pendingRequest: '',
-        preparedPreview: null,
-        taskStatus: 'cancelled',
-      });
+      if (!liveRun) {
+        void this.taskManager.persist();
+        this.sessionManager.setSessionState?.({
+          state: 'idle',
+          phase: 'idle',
+          pending: null,
+          pendingIntent: null,
+          pendingRequest: '',
+          preparedPreview: null,
+          taskStatus: 'cancelled',
+        });
+      }
     }
     return { discarded: discarded || persisted };
   }
@@ -903,6 +930,7 @@ export class Agent {
     this._pendingQueue = [];
     const cancelledTaskId = this._taskId;
     this._promptCompileController?.abort('cancelled');
+    this._researchController?.abort('cancelled');
     this.llm?.cancel();
     if (this.executor) this.executor.cancel();
     const promptIds = [...this._activePromptIds];
@@ -914,10 +942,13 @@ export class Agent {
         await ComfyUITool.cancel();
       }
     } catch {}
-    // 取消竞态：等待 ComfyUI 中断返回期间执行可能已完成（取消到达太晚），
-    // 此时不能再把已完成的任务覆写成取消状态，否则已生成成果会被吞掉。
-    const alreadyCompleted = cancelledTaskId ? this.taskManager.get(cancelledTaskId)?.status === 'completed' : false;
-    if (!alreadyCompleted) {
+    // 取消竞态：等待 ComfyUI 中断返回期间执行可能已结算（完成/失败/取消），
+    // 此时不能再把任务覆写成取消状态——完成的成果会被吞掉，失败的错误
+    // 信息也会丢失。只有未结算的任务才允许改写为取消。
+    const cancelledTask = cancelledTaskId ? this.taskManager.get(cancelledTaskId) : null;
+    const taskAlreadySettled = ['completed', 'failed', 'cancelled', 'abandoned', 'error']
+      .includes(cancelledTask?.state || cancelledTask?.status || '');
+    if (!taskAlreadySettled) {
       if (cancelledTaskId) {
         this.taskManager.complete(cancelledTaskId, { result: { cancelled: true } });
         if (this._state !== 'cancelled' && canTransition(this._state, 'cancelled')) this._transitionState('cancelled', { message: 'Cancelled', needsConfirmation: false });
@@ -941,6 +972,7 @@ export class Agent {
 
   async abandon() {
     this.llm?.cancel();
+    this._researchController?.abort('cancelled');
     if (this.executor) this.executor.cancel();
     this._pendingQueue = [];
     if (this._taskId) {
@@ -957,8 +989,15 @@ export class Agent {
       taskStatus: 'idle',
     });
     this.sessionManager.clearCurrentTask?.();
+    // Hard reset of the turn machinery: abandon() can land in any mid-run
+    // state, and leaving _state/_cancelRequested/_taskId stale would wedge the
+    // next turn (invalid transition) and keep the agent looking busy forever.
+    this._state = 'idle';
+    this._needsConfirmation = false;
+    this._cancelRequested = false;
+    this._taskId = '';
     this._running = false;
-    return { abandoned: true, taskId: this._taskId };
+    return { abandoned: true, taskId: '' };
   }
 
   async listQueue() {
