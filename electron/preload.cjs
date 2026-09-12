@@ -78,6 +78,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   agentMonitorTask: (taskId) => ipcRenderer.invoke('agent:monitor-task', { taskId }),
   agentRetryRecovery: (taskId) => ipcRenderer.invoke('agent:retry-recovery', { taskId }),
   agentArchiveTask: (taskId) => ipcRenderer.invoke('agent:archive-task', { taskId }),
+  // v2 kernel approval protocol (agent-worker-v2): confirmation card round-trip
+  agentOnApproval: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('agent:approval', handler);
+    return () => ipcRenderer.removeListener('agent:approval', handler);
+  },
+  agentRespondApproval: (payload) => ipcRenderer.invoke('agent:approval-response', payload),
   projectsList: () => ipcRenderer.invoke('projects:list'),
   projectCreate: (input) => ipcRenderer.invoke('projects:create', input),
   projectRename: (projectId, name) => ipcRenderer.invoke('projects:rename', { projectId, name }),

@@ -1474,6 +1474,8 @@ function initAgent(config) {
   bindAgentEvent(AgentEventTypes.PROGRESS, (data) => sendToRenderer('agent:progress', data));
   bindAgentEvent(AgentEventTypes.FEEDBACK, (data) => sendToRenderer('agent:feedback', data));
   bindAgentEvent(AgentEventTypes.CONTEXT_USAGE, (data) => sendToRenderer('agent:context-usage', data));
+  // v2 kernel confirmation cards (agent-worker-v2 only; never fires on the legacy worker)
+  bindAgentEvent('agent:approval', (data) => sendToRenderer('agent:approval', data));
   configureSkills({ systemEnabled: config.skills?.system, custom: config.skills?.custom, external: config.skills?.external });
   const started = agent.start({
     llm: llmConfig,
@@ -1485,7 +1487,8 @@ function initAgent(config) {
     comfyBaseUrl: comfyManager.baseUrl,
       projectId: previousProjectId,
       sessionId: previousSessionId,
-    skills: config.skills || {},
+      skills: config.skills || {},
+    agentV2Kernel: config.agentV2Kernel === true,
   });
   return started.then(async result => {
     await requestLedger.load(join(app.getPath('userData'), 'agent-data', 'request-ledger.json'));
@@ -2283,6 +2286,13 @@ ipcMain.handle('direct:cancel', async () => {
     });
   }
   return result;
+});
+
+ipcMain.handle('agent:approval-response', async (_, payload = {}) => {
+  await startAgent(getStoredConfig());
+  const id = String(payload.id || '');
+  if (!id) throw new Error('approval id is required');
+  return agent.call('approval.response', [id, payload.approved === true, String(payload.reason || '')]);
 });
 
 ipcMain.handle('agent:turn', async (_, turn = {}) => {

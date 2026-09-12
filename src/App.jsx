@@ -20,6 +20,7 @@ import ComfyUISetup from './components/ComfyUISetup.jsx';
 import Icon from './components/Icon.jsx';
 import QuickGenerateFloat from './components/QuickGenerateFloat.jsx';
 import ErrorFeedbackModal from './components/ErrorFeedbackModal.jsx';
+import AgentApprovalCard from './components/AgentApprovalCard.jsx';
 import { I18nProvider, useI18n } from './i18n/I18nContext.jsx';
 
 function AppLayout({ floating = false }) {
@@ -200,6 +201,7 @@ function AppLayout({ floating = false }) {
           onClose={() => setShowNodeControls(false)}
         />
       )}
+      <AgentApprovalCard />
     </div>
   );
 }

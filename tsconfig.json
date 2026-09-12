@@ -26,9 +26,12 @@
     "src/agent/runtime/executor.ts",
     "src/agent/runtime/execution-ops.ts",
     "src/agent/runtime/chat-request.ts",
+    "src/agent/core-loop/**/*.ts",
+    "src/agent/v2-bridge/**/*.ts",
     "src/agent/index.ts",
     "src/runtime/generation-contract.ts",
     "electron/agent-process.ts",
-    "electron/agent-worker.ts"
+    "electron/agent-worker.ts",
+    "electron/agent-worker-v2.ts"
   ]
 }

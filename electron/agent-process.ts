@@ -183,16 +183,21 @@ export class AgentProcessClient {
   async _start(config: Record<string, any> = {}) {
     this.ready = null;
     this.usesUtilityProcess = Boolean(process.versions.electron);
+    // Kernel switch (agent-v2-design.md §7.3): opt-in v2 core-loop worker,
+    // legacy worker stays the default until the parity checklist passes.
+    const workerPath = config.agentV2Kernel === true
+      ? join(__dirname, 'agent-worker-v2.ts')
+      : WORKER_PATH;
     if (this.usesUtilityProcess) {
       const { utilityProcess } = await import('electron');
-      this.child = utilityProcess.fork(WORKER_PATH, [], {
+      this.child = utilityProcess.fork(workerPath, [], {
         env: process.env,
         execArgv: [],
         stdio: ['ignore', 'ignore', 'pipe'],
         serviceName: 'ComfyUI Agent Worker',
       });
     } else {
-      this.child = (fork as any)(WORKER_PATH, [], {
+      this.child = (fork as any)(workerPath, [], {
         execArgv: [],
         stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
         windowsHide: true,
