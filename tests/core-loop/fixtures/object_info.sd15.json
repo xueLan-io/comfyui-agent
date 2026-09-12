@@ -1,0 +1,151 @@
+{
+  "CheckpointLoaderSimple": {
+    "input": {
+      "required": {
+        "ckpt_name": [
+          ["sd_xl_base_1.0.safetensors", "v1-5-pruned-emaonly.safetensors", "dreamshaper_8.safetensors"],
+          { "default": "v1-5-pruned-emaonly.safetensors" }
+        ]
+      }
+    },
+    "output": ["MODEL", "CLIP", "VAE"],
+    "output_name": ["MODEL", "CLIP", "VAE"],
+    "name": "CheckpointLoaderSimple",
+    "display_name": "Load Checkpoint",
+    "description": "Loads a diffusion model checkpoint and returns its model, CLIP, and VAE components.",
+    "category": "loaders",
+    "output_node": false
+  },
+  "CLIPTextEncode": {
+    "input": {
+      "required": {
+        "text": ["STRING", { "multiline": true, "dynamicPrompts": true, "default": "" }],
+        "clip": ["CLIP", {}]
+      }
+    },
+    "output": ["CONDITIONING"],
+    "output_name": ["CONDITIONING"],
+    "name": "CLIPTextEncode",
+    "display_name": "CLIP Text Encode (Prompt)",
+    "description": "Encodes a text prompt into conditioning using CLIP.",
+    "category": "conditioning",
+    "output_node": false
+  },
+  "EmptyLatentImage": {
+    "input": {
+      "required": {
+        "width": ["INT", { "default": 512, "min": 16, "max": 16384, "step": 8 }],
+        "height": ["INT", { "default": 512, "min": 16, "max": 16384, "step": 8 }],
+        "batch_size": ["INT", { "default": 1, "min": 1, "max": 4096 }]
+      }
+    },
+    "output": ["LATENT"],
+    "output_name": ["LATENT"],
+    "name": "EmptyLatentImage",
+    "display_name": "Empty Latent Image",
+    "description": "Creates a blank latent image of the given size to be denoised.",
+    "category": "latent",
+    "output_node": false
+  },
+  "KSampler": {
+    "input": {
+      "required": {
+        "model": ["MODEL", {}],
+        "seed": ["INT", { "default": 0, "min": 0, "max": 18446744073709552000 }],
+        "steps": ["INT", { "default": 20, "min": 1, "max": 10000 }],
+        "cfg": ["FLOAT", { "default": 7.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01 }],
+        "sampler_name": [
+          ["euler", "euler_ancestral", "heun", "dpm_2", "dpmpp_2m", "dpmpp_sde", "ddim", "uni_pc"],
+          { "default": "euler" }
+        ],
+        "scheduler": [
+          ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta"],
+          { "default": "normal" }
+        ],
+        "positive": ["CONDITIONING", {}],
+        "negative": ["CONDITIONING", {}],
+        "latent_image": ["LATENT", {}],
+        "denoise": ["FLOAT", { "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01 }]
+      }
+    },
+    "output": ["LATENT"],
+    "output_name": ["LATENT"],
+    "name": "KSampler",
+    "display_name": "KSampler",
+    "description": "Denoises a latent image using the given sampler, scheduler, and conditioning.",
+    "category": "sampling",
+    "output_node": false
+  },
+  "VAEDecode": {
+    "input": {
+      "required": {
+        "samples": ["LATENT", {}],
+        "vae": ["VAE", {}]
+      }
+    },
+    "output": ["IMAGE"],
+    "output_name": ["IMAGE"],
+    "name": "VAEDecode",
+    "display_name": "VAE Decode",
+    "description": "Decodes a latent image back into pixel space.",
+    "category": "latent",
+    "output_node": false
+  },
+  "SaveImage": {
+    "input": {
+      "required": {
+        "images": ["IMAGE", {}],
+        "filename_prefix": ["STRING", { "default": "ComfyUI" }]
+      }
+    },
+    "output": [],
+    "output_name": [],
+    "name": "SaveImage",
+    "display_name": "Save Image",
+    "description": "Saves the incoming images to the ComfyUI output folder.",
+    "category": "image",
+    "output_node": true
+  },
+  "PreviewImage": {
+    "input": {
+      "required": {
+        "images": ["IMAGE", {}]
+      }
+    },
+    "output": [],
+    "output_name": [],
+    "name": "PreviewImage",
+    "display_name": "Preview Image",
+    "description": "Shows a preview of the incoming images in the UI.",
+    "category": "image",
+    "output_node": true
+  },
+  "LoadImage": {
+    "input": {
+      "required": {
+        "image": [["example.png", "input_photo.jpg"], { "image_upload": true }]
+      }
+    },
+    "output": ["IMAGE", "MASK"],
+    "output_name": ["IMAGE", "MASK"],
+    "name": "LoadImage",
+    "display_name": "Load Image",
+    "description": "Loads an image from the ComfyUI input folder.",
+    "category": "image",
+    "output_node": false
+  },
+  "Note": {
+    "input": {
+      "required": {
+        "text": ["STRING", { "multiline": true, "default": "" }]
+      }
+    },
+    "output": [],
+    "output_name": [],
+    "name": "Note",
+    "display_name": "Note",
+    "description": "A comment node. It does nothing.",
+    "category": "utils",
+    "output_node": false
+  }
+}

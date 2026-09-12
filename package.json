@@ -15,8 +15,9 @@
     "icons": "node scripts/generate-icons.mjs",
     "test": "node scripts/run-tests.mjs",
     "test:ui": "vitest run",
+    "test:core-loop": "vitest run --config vitest.core-loop.config.mjs",
     "typecheck": "tsc",
-    "lint": "tsc && node scripts/lint.mjs && node scripts/lint-theme.mjs",
+    "lint": "tsc && node scripts/lint.mjs && node scripts/lint-theme.mjs && node scripts/lint-core-loop.mjs",
     "agent": "node src/cli.mjs",
     "mcp": "node src/mcp-server.mjs",
     "mcp:http": "set COMFY_AGENT_MCP_TRANSPORT=http&&node src/mcp-server.mjs",
@@ -24,18 +25,23 @@
     "test:update-signature": "node --test tests/update-signature.test.mjs"
   },
   "dependencies": {
+    "dotenv": "^17.4.2",
     "katex": "^0.16.47",
     "mermaid": "^11.16.1",
+    "openai": "^5.23.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
-    "remark-math": "^6.0.0"
+    "remark-math": "^6.0.0",
+    "ws": "^8.21.3",
+    "zod": "^4.6.2"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^24.13.3",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.0",
     "electron": "^44.2.0",
